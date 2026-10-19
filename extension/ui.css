@@ -1,0 +1,9 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; font-size: 14px; }
+body { margin: 0; min-width: 320px; }
+main { padding: 22px; max-width: 540px; }
+h1 { font-size: 20px; margin: 0 0 16px; }
+p { line-height: 1.6; }
+button, input { box-sizing: border-box; display: block; width: 100%; margin: 10px 0; padding: 10px 12px; font: inherit; border-radius: 6px; border: 1px solid #8888; }
+button { cursor: pointer; }
+button:hover { background: #13755b; color: white; }
+.hint { color: #888; font-size: 12px; }

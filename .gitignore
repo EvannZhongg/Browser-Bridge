@@ -1,0 +1,7 @@
+.venv/
+.local/
+__pycache__/
+*.egg-info/
+extension/config.generated.js
+.pytest_cache/
+test-results/
