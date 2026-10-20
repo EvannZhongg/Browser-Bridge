@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于当前 **0.6.0 源码**：Node.js 22+、Chrome / Edge 125+、19 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.7.0**：Node.js 22+、Chrome / Edge 125+、19 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 

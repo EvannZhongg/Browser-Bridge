@@ -36,7 +36,7 @@ browser-attach setup
 也可以不全局安装：
 
 ```sh
-npx --yes --package=@evan_zhong/browser-attach@0.6.0 browser-attach setup
+npx --yes --package=@evan_zhong/browser-attach@0.7.0 browser-attach setup
 ```
 
 ### 2. 配置 MCP 客户端
@@ -48,7 +48,7 @@ npx --yes --package=@evan_zhong/browser-attach@0.6.0 browser-attach setup
   "mcpServers": {
     "browser_attach": {
       "command": "npx",
-      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.6.0", "browser-attach", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.7.0", "browser-attach", "mcp"]
     }
   }
 }
