@@ -18,7 +18,9 @@ export function createClick(cdp, value, viewport, position, sessions) {
   }
   function cancel(tabId) { pending.get(tabId)?.reject(new Error('Tab detached during click; outcome is unknown. Observe before retrying.')); }
   async function click(tabId, node, args) {
-    if ((args.ref != null) === (args.x != null || args.y != null)) throw new Error('Provide either ref or x/y');
+    if (!!node === (args.x != null || args.y != null)) throw new Error('Provide either ref/selector or x/y');
+    if (args.coordinate_space != null && !['viewport', 'document'].includes(args.coordinate_space)) throw new Error('coordinate_space must be viewport or document');
+    if (node && args.coordinate_space != null) throw new Error('coordinate_space applies to coordinate clicks only');
     const options = clickOptions(args);
     const budget = args.budget || deadline(args.timeout_ms);
     let target = node?.target || { tabId };
@@ -35,7 +37,16 @@ export function createClick(cdp, value, viewport, position, sessions) {
         if (point) break;
       }
       if (!point) throw new Error('Element has no visible click point. Inspect a screenshot.');
-    } else { view = await budget.run(() => viewport(target)); point = position(view, args.x, args.y); }
+    } else {
+      view = await budget.run(() => viewport(target));
+      if (args.coordinate_space === 'document') {
+        if (!Number.isFinite(args.x) || !Number.isFinite(args.y) || args.x < 0 || args.y < 0) throw new Error('Document coordinates must be finite and nonnegative');
+        value(await send('Runtime.evaluate', { returnByValue: true,
+          expression: `scrollTo({left:${Math.max(0, args.x - view.width / 2)},top:${Math.max(0, args.y - view.height / 2)},behavior:'instant'})` }));
+        view = await budget.run(() => viewport(target));
+        point = position(view, args.x - view.scroll_x, args.y - view.scroll_y);
+      } else point = position(view, args.x, args.y);
+    }
     // DOM hit testing uses document CSS coordinates; Input uses viewport CSS coordinates.
     let hitNode = await send('DOM.getNodeForLocation', {
       x: Math.floor(point.x + view.scroll_x), y: Math.floor(point.y + view.scroll_y), includeUserAgentShadowDOM: true,
@@ -57,6 +68,8 @@ export function createClick(cdp, value, viewport, position, sessions) {
     }
     const { backendNodeId, frameId } = hitNode;
     const hit = await send('DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
+    const hitTarget = value(await send('Runtime.callFunctionOn', { objectId: hit.object.objectId,
+      functionDeclaration: describeHit.toString(), returnByValue: true }));
     if (node) {
       const unblocked = value(await send('Runtime.callFunctionOn', {
         objectId: node.objectId, functionDeclaration: 'function(hit) { for (let e = hit; e; e = e.parentNode || e.host) if (e === this) return true; return false; }',
@@ -113,7 +126,7 @@ export function createClick(cdp, value, viewport, position, sessions) {
         commands.push(dispatch({ type: 'mouseReleased', button: options.button, buttons: 0, clickCount: count, modifiers: options.modifiers }));
       }
       await budget.run(() => Promise.all([Promise.all(commands), receipt]));
-      return { clicked: rootPoint, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
+      return { clicked: rootPoint, hit_target: hitTarget, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
     } finally {
       pending.delete(tabId);
       // A page handler may have opened a modal. Renderer cleanup can finish after
@@ -127,6 +140,13 @@ export function createClick(cdp, value, viewport, position, sessions) {
     }
   }
   return { click, event, cancel };
+}
+
+export function describeHit() {
+  const element = this.nodeType === 3 ? this.parentElement : this;
+  return { tag: element.tagName?.toLowerCase(), text: (element.innerText || element.textContent || '').slice(0, 300),
+    role: element.getAttribute('role'), disabled: element.matches(':disabled') || !!element.closest('[inert]'),
+    clickable_hint: element.matches('button,a[href],input,select,textarea,summary,[role="button"],[role="link"],[onclick]') };
 }
 
 function installGuard(name, options, expiryMs, verifyDelivery) {

@@ -11,7 +11,7 @@ try {
   } });
   const action = positionals[0] || 'mcp', configPath = values.config;
   if (values.help) {
-    console.log(`browser-attach [mcp|setup|start|status|stop]\n  setup [--extension-dir PATH] [--port 47831] [--nosis]\n  --config PATH (default: ${DEFAULT_CONFIG})`);
+    console.log(`browser-attach [mcp|setup|hub|start|status|stop]\n  setup [--extension-dir PATH] [--port 47831] [--nosis]\n  --config PATH (default: ${DEFAULT_CONFIG})`);
   } else if (action === 'mcp') {
     const { runMcp } = await import('../src/mcp.mjs'); await runMcp(configPath);
   } else if (action === 'hub') {

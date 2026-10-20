@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { startHub } from '../src/hub.mjs';
 import { AttachClient } from '../src/client.mjs';
-import { ROOT, writeJson } from '../src/config.mjs';
+import { ROOT, VERSION, writeJson } from '../src/config.mjs';
 import { setup, configureNosis } from '../src/setup.mjs';
 import { validateFiles } from '../src/upload.mjs';
 
@@ -28,7 +28,7 @@ async function fixture(t, options) {
     const ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
     sockets.push(ws); await once(ws, 'open');
     const response = once(ws, 'message');
-    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.5.0' } }));
+    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: VERSION } }));
     const connected = JSON.parse((await response)[0].toString());
     ws.on('message', raw => {
       const data = JSON.parse(raw.toString()); requests.push(data);
@@ -101,6 +101,15 @@ test('disconnect releases owner; browser restart invalidates old handles', async
   await assert.rejects(b.call('snapshot', { tab_handle: claim.tab_handle }), /expired/);
 });
 
+test('claim by listed tab_id permits omitted guards and preserves current extension identity', async t => {
+  const f = await fixture(t), browser = await f.extension(), client = f.client();
+  await assert.rejects(client.call('claim_tab', { browser_id: browser.id, tab_id: 9 }), /latest/);
+  await client.call('list_tabs', { browser_id: browser.id });
+  const result = await client.call('claim_tab', { browser_id: browser.id, tab_id: 9 });
+  assert.ok(result.tab_handle);
+  assert.equal(f.requests.find(item => item.command === 'claim_tab').arguments.expected_title, undefined);
+});
+
 test('tab lifecycle routes to the selected browser and close expires only the owning handle', async t => {
   const f = await fixture(t), browser = await f.extension(), a = f.client(), b = f.client();
   await assert.rejects(a.call('open_tab', { browser_id: 'absent', url: 'https://example.com/' }), /not connected/);
@@ -158,6 +167,10 @@ test('real stdio MCP exposes 20 tools, single JSON content, PNG image, and valid
   }
   const evaluationCount = f.requests.filter(item => item.command === 'evaluate').length;
   assert.equal((await call('evaluate', { tab_handle: handle, expression: '42', timeout_ms: 60000 })).isError, true);
+  for (const max_chars of [0, 100001]) {
+    const invalid = await call('evaluate', { tab_handle: handle, expression: '42', max_chars });
+    assert.equal(invalid.isError, true); assert.match(invalid.content[0].text, /1\.\.100000/);
+  }
   assert.equal(f.requests.filter(item => item.command === 'evaluate').length, evaluationCount);
   assert.ok(!(await call('click', { tab_handle: handle, ref: 'current-ref', mode: 'dom' })).isError);
   assert.equal(f.requests.find(item => item.command === 'click').arguments.mode, 'dom');
@@ -209,7 +222,7 @@ test('setup installs stable extension data outside package, and preserves curren
   assert.equal(a.config.extension_id.length, 32);
   assert.equal(a.extensionDir, join(temp, 'extension'));
   assert.ok((await readFile(join(a.extensionDir, 'config.generated.js'), 'utf8')).includes(a.config.token));
-  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.5.0');
+  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, VERSION);
 });
 
 test('Nosis configuration uses the current server schema and preserves unrelated servers', async t => {

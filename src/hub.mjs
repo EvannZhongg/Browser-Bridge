@@ -63,8 +63,8 @@ export async function startHub(config, { port = config.port, operationTimeout = 
         return result;
       }
       const key = keyFor(browser.id, args.tab_id), tab = observed.get(key);
-      if (!tab || tab.url !== args.expected_url || tab.title !== args.expected_title)
-        throw new Error("Claim requires exact URL/title from this session's latest browser_list_tabs result");
+      if (!tab || (args.expected_url != null && tab.url !== args.expected_url) || (args.expected_title != null && tab.title !== args.expected_title))
+        throw new Error("Claim requires a tab_id from this session's latest browser_list_tabs result; optional expected_url/title must match exactly");
       return queued(key, async () => {
         const existing = tabClaims.get(key);
         if (existing) {
@@ -76,7 +76,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
         if (browsers.get(browser.id) !== browser) throw new Error('Browser disconnected during claim');
         claims.set(handle, { owner, browser_id: browser.id, tab_id: args.tab_id });
         tabClaims.set(key, handle);
-        return { ...result, tab_handle: handle, browser_id: browser.id, tab_id: args.tab_id, title: tab.title, url: tab.url };
+        return { ...result, tab_handle: handle, browser_id: browser.id, tab_id: args.tab_id, title: result.title ?? tab.title, url: result.url ?? tab.url };
       });
     }
     if (!OPERATIONS.has(method)) throw new Error(`Unknown browser operation: ${method}`);

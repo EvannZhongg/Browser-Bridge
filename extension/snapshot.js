@@ -44,8 +44,8 @@ export function renderAX(nodes, token, refs, frameId, sessionId) {
 }
 
 export function snapshotPage(state, { max_nodes = 600, max_chars = 24000, cursor } = {}) {
-  if (!Number.isInteger(max_nodes) || max_nodes < 10 || max_nodes > 3000) throw new Error('max_nodes must be 10..3000');
-  if (!Number.isInteger(max_chars) || max_chars < 1000 || max_chars > 2000000) throw new Error('max_chars must be 1000..2000000');
+  if (!Number.isInteger(max_nodes) || max_nodes < 1 || max_nodes > 3000) throw new Error('max_nodes must be 1..3000');
+  if (!Number.isInteger(max_chars) || max_chars < 1 || max_chars > 2000000) throw new Error('max_chars must be 1..2000000');
   let offset = 0;
   if (cursor != null) {
     if (cursor !== state.nextCursor) throw new Error('Snapshot cursor is stale or unknown. Take a new browser_snapshot.');

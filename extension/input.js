@@ -99,7 +99,7 @@ export function createInput(cdp, value, sessions) {
   }
 
   async function fill(tabId, node, args) {
-    if (!node || typeof args.text !== 'string') throw new Error('fill requires a fresh ref and text');
+    if (!node || typeof args.text !== 'string') throw new Error('fill requires ref or selector, and text');
     const mode = inputMode(args);
     const budget = args.budget || deadline(args.timeout_ms), target = node.target;
     const send = (method, params) => budget.run(() => cdp(target, method, params));
@@ -115,7 +115,7 @@ export function createInput(cdp, value, sessions) {
   }
 
   async function domClick(tabId, node, args) {
-    if (!node || args.x != null || args.y != null) throw new Error('DOM click requires a fresh ref; coordinates are unsupported.');
+    if (!node || args.x != null || args.y != null) throw new Error('DOM click requires ref or selector; coordinates are unsupported.');
     clickOptions(args);
     const budget = args.budget || deadline(args.timeout_ms), target = node.target;
     const send = (method, params) => budget.run(() => cdp(target, method, params));

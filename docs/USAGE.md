@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.5.0**：Node.js 22+、Chrome / Edge 125+、20 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.6.0**：Node.js 22+、Chrome / Edge 125+、20 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 ## 基本流程
 
@@ -11,7 +11,7 @@
 5. 用当前 ref 执行**一次**动作，动作后重新观察。
 6. `browser_release_tab(tab_handle)` 释放控制，页面保持打开。
 
-`expected_url` / `expected_title` 必须逐字符等于本连接最近一次 `list_tabs` 的结果；标签在此期间变化时 claim 失败，需要重新 list。同一标签只允许一个 owner，`tab_handle` 不能跨连接使用。
+`tab_id` 必须来自本连接最近一次 `list_tabs`。`expected_url` / `expected_title` 是可选的精确校验；提供时须与列表及接管时的实际标签逐字符一致。标题易变时只传 `expected_url`，或明确按 `tab_id` 接管并检查返回的当前身份。同一标签只允许一个 owner，`tab_handle` 不能跨连接使用。
 
 ## 工具速查
 
@@ -22,7 +22,7 @@
 | `browser_list_browsers` | — | 已连接的浏览器配置、`browser_id`、能力表 |
 | `browser_list_tabs` | `browser_id` | `tab_id`、标题、URL、`active`、`group_id`、`controllable`、控制状态 |
 | `browser_open_tab` | `browser_id`, `url`, `active=false` | 仅 HTTP(S)；默认后台打开，返回 `tab_id`，加载后 list + claim |
-| `browser_claim_tab` | `browser_id`, `tab_id`, `expected_url`, `expected_title` | 校验身份后独占接管 |
+| `browser_claim_tab` | `browser_id`, `tab_id`, 可选 `expected_url` / `expected_title` | 按列出的 ID 接管，可显式加身份校验 |
 | `browser_release_tab` | `tab_handle` | 解除调试并释放控制，不关闭页面 |
 | `browser_activate_tab` | `tab_handle`, `focus_window=true` | 显式选中标签并聚焦窗口；`false` 只选中标签 |
 | `browser_close_tab` | `tab_handle` | 关闭标签并作废句柄，可能丢失未保存状态 |
@@ -32,14 +32,14 @@
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
 | `browser_snapshot` | `max_nodes=600`, `max_chars=24000`, `cursor` | AX 语义树、元素 ref、frame 覆盖、待处理文件选择器 |
-| `browser_read_text` | `max_chars=20000` | 主 frame 可见正文（`innerText`） |
+| `browser_read_text` | `mode`, `selector`, `offset=0`, `max_chars=20000` | 主 frame 的 DOM、字段值或支持的编辑器模型 |
 
 ### 输入
 
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
-| `browser_click` | `ref` 或 `x`/`y`、`button`、`click_count`、`modifiers`、`mode`、`timeout_ms` | 原生可信点击或显式 DOM 点击 |
-| `browser_fill` | `ref`, `text`, `mode`, `timeout_ms` | 文本 / textarea / contenteditable，写入后核验文本 |
+| `browser_click` | `ref` / `selector` / `x`+`y`、`coordinate_space`、`button`、`click_count`、`modifiers`、`mode`、`timeout_ms` | 原生可信点击或显式 DOM 点击 |
+| `browser_fill` | `ref` / `selector`, `text`, `mode`, `timeout_ms` | 文本 / textarea / contenteditable，写入后核验文本 |
 | `browser_press_key` | `key`, `timeout_ms` | 单键或组合键，核验可信 keydown 送达 |
 | `browser_scroll` | `delta_y`, `delta_x`, `x`, `y`, `mode`, `timeout_ms` | 容器 `scrollBy` 或原生 wheel |
 
@@ -62,7 +62,7 @@
 `browser_snapshot` 返回 `snapshot` 文本（每行 `[token:n] role "name" 状态`）、`snapshot_id`、`node_count`、`total_node_count`、`truncated`、`truncation_reason`（`node_limit` / `text_budget`）、`next_cursor`、`viewport`、`omitted_frames`，以及当前 `title` / `url`。
 
 - 渲染时移除 `InlineTextBox`，合并纯文本列表项与段落名称，只保留 `disabled`、`focused`、`expanded`、`checked`、`selected`、`required`、`level` 等状态；`[token:n]` 即后续动作使用的 `ref`。
-- `max_nodes` 为 10–3000（默认 600）；`max_chars` 为 1000–2000000（默认 24000），按行序列化长度累计，与节点数是两个独立预算。
+- `max_nodes` 为 1–3000（默认 600）；`max_chars` 为 1–2000000（默认 24000），按行序列化长度累计，与节点数是两个独立预算。
 - `truncated: true` 时把 `next_cursor` 传回同一个工具继续读取同一份观察，refs 在续读期间保持有效；也可以调整预算。单个超长节点放不下时会明确报出所需预算，不静默丢尾部。
 - 覆盖主 frame、同进程 iframe 与递归 OOPIF；读取失败、读取期间变化或附着失败的 frame 列入 `omitted_frames`。
 
@@ -70,13 +70,15 @@
 
 | 事件 | 影响 |
 |---|---|
-| `click` / `fill` / `press_key` / `scroll` / `upload_file` / `evaluate` | 全部 refs 与 cursor 失效 |
+| `click` / `fill` / `press_key` / `scroll` / `upload_file` / `evaluate`（新表达式） | 全部 refs 与 cursor 失效；`evaluate` 的 `cursor` 续读不失效 |
 | 新的 `browser_snapshot` | 旧 refs 失效 |
 | 主文档导航、同文档导航、文档更新 | 全部 refs 与 cursor 失效 |
 | 子 frame 导航或移除 | 仅该子树 refs 失效，其余保留 |
 | `release_tab` / `close_tab` / 断连 | 全部失效 |
 
-`browser_read_text` 只读取主 frame 的可见正文，`max_chars` 为 1–100000（默认 20000），返回 `returned_chars` 与 `truncated`。
+`browser_read_text` 读取主 frame，`max_chars` 为 1–100000（默认 20000）。`mode=visible` 使用 innerText；`text_content` 使用 textContent；`value` 要求用 selector 唯一选中 input、textarea 或 contenteditable；`editor` 要求 selector 对应支持的 Monaco 或 CodeMirror 5 实例并读取完整模型。Monaco 必须在页面暴露 `monaco.editor.getEditors()`，CodeMirror 5 必须在选中节点暴露实例。未知编辑器明确报错，使用站点专用 evaluate 适配；不猜测模块内部状态。
+
+返回 `source`、`complete_source`、`total_chars`、`returned_chars`、`truncated`、`next_offset`。DOM 和 contenteditable 无法保证包含虚拟化内容，`complete_source=false`；字段 value / 支持的模型为 true。`next_offset` 用于下一次实时读取，内容变化可能导致重复或遗漏；需要一致结果时用 evaluate 一次提取并续读缓存。
 
 ## 输入：可操作性与两种模式
 
@@ -86,13 +88,19 @@
 
 | 参数 | 取值 | 说明 |
 |---|---|---|
-| `ref` / `x`,`y` | 二选一 | ref 来自最新快照；坐标为顶层视口 CSS 像素 |
+| `ref` / `selector` / `x`,`y` | 三选一 | ref 来自最新快照；selector 每次重解析 |
+| `selector_type` / `frame_id` | `css`（默认）或 `xpath` / 快照中的 frame ID | 仅 selector 使用；默认主 frame，必须恰好匹配一个元素 |
+| `coordinate_space` | `viewport`（默认）/ `document` | 仅坐标点击使用；document 自动滚动顶层文档后换算到视口 |
 | `button` | `left`（默认）/ `middle` / `right` | |
 | `click_count` | `1`（默认）/ `2` | 双击按顺序重复 down/up |
 | `modifiers` | `Alt` / `Control` / `Meta` / `Shift` | 默认空数组 |
-| `mode` | `native`（默认）/ `dom` | DOM 模式只接受 ref |
+| `mode` | `native`（默认）/ `dom` | DOM 模式接受 ref 或 selector |
 
-原生模式按序派发 move → down → up，显式设置 `buttons` 与修饰键，并在隔离世界安装命中校验：成功返回 `target_verified: true`、`application_result: "not_checked"`。左键单击 / 双击分别校验 `click` / `dblclick`，中键校验 `auxclick`，右键校验 `contextmenu`。目标被遮挡、在 hover 后移动或派发中变化时会明确报错，不会产生错误点击。
+原生模式按序派发 move → down → up，显式设置 `buttons` 与修饰键，并在隔离世界安装命中校验：成功返回 `target_verified: true`、`application_result: "not_checked"`。左键单击 / 双击分别校验 `click` / `dblclick`，中键校验 `auxclick`，右键校验 `contextmenu`。目标被遮挡、在 hover 后移动或派发中变化时会明确报错并阻止不匹配事件；已送达的前序事件可能已有副作用，不能撤销或自动重试。
+
+原生 ref/selector 点击已自动滚入视口；viewport 坐标保留严格视口边界。document 坐标针对顶层文档，嵌套滚动容器和动态布局优先用 selector/ref。`hit_target` 返回派发前命中的 tag、最多 300 字符 text、role、disabled、clickable_hint；hint 仅为 HTML/ARIA 启发式判断，不能覆盖所有事件代理。坐标点击只知道当前位置的元素，无法推断调用者想点谁。DOM/网络变化也不能证明业务成功，需按具体任务观察。
+
+`selector` 可复用，但不是永久元素身份。每次解析使用当前 DOM，零个或多个匹配会报错；解析后目标被替换仍会安全失败，不自动重放。CSS/XPath 不穿透 Shadow DOM，那里继续使用 AX ref；iframe 用明确 `frame_id`。例如 `browser_click({tab_handle, selector:"#save"})` 或 `browser_fill({tab_handle, selector:"//input[@name='title']", selector_type:"xpath", text:"新标题", mode:"dom"})`。
 
 `mode: "dom"` 只对 HTML 元素调用一次 `HTMLElement.click()`，返回 `method: "dom"`、`events_trusted: false`：没有 pointer 事件、没有用户激活，也不支持修饰键或坐标。自绘控件、拖拽、依赖 pointerdown 的功能仍需原生输入。两种模式都不会自动互相降级。
 
@@ -100,10 +108,10 @@
 
 ### browser_fill
 
-支持文本类 `input`（text / search / email / password / tel / url）、`textarea` 与 `contenteditable`，要求 `ref` 来自最新快照。
+支持文本类 `input`（text / search / email / password / tel / url）、`textarea` 与 `contenteditable`；传当前 ref 或严格 selector。
 
 - `native`（默认）：聚焦、选中后发送原生 `insertText`。
-- `dom`：用原生 value setter（contenteditable 用 `textContent`）写入，派发非可信 `input` / `change`，不主动聚焦。
+- `dom`：用原型上的原生 value setter（contenteditable 用 `textContent`）写入，派发非可信 `input` / `change`，不主动聚焦；可通知 React/Vue 受控字段，不能保证所有自定义编辑器的内部状态。
 - 两种模式都核对字段最终文本，成功返回 `value_verified: true`；被吞、失焦或页面同步格式化导致不匹配时报错，且不回显字段内容。
 - 不会按 Enter；需要提交时单独调用 `browser_press_key`。
 
@@ -139,7 +147,11 @@
 
 导航成功后另有一次 10000 ms 的观察预算；观察失败会返回导航结果加 `observation_error`、`observe_again`，不会把已成功的导航报告为失败。Hub 侧操作上限 60 秒、客户端 65 秒，覆盖最长导航加观察并保留传输余量。超时不代表导航已取消，SPA 在 `DOMContentLoaded` 之后仍可能异步更新。
 
+观察遇到文档变化、执行上下文销毁等瞬时错误时，内部只重读一次，共享原来的 10 秒预算；不会重新导航。权限错误和预算耗尽不重试。
+
 页面弹出 JavaScript 对话框时，`browser_snapshot` 会返回 `dialog` 对象，其他动作（除 `release_tab`）被拒绝；用 `browser_handle_dialog` 接受或取消，`prompt_text` 只在 prompt 时使用。对话框打开期间仍可读取控制台和网络日志。
+
+handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`。`default_button=null`，协议不提供浏览器默认按钮焦点。beforeunload 只有实际弹出时才能观察，浏览器可能因缺少用户激活而抑制它。DOM 值写入不证明应用已保存或 dirty=false；不存在跨框架可靠的通用 dirty 检测，导航前按任务检查保存标志或业务接口。
 
 `browser_screenshot` 返回 PNG 与 `capture` 元数据：`scope`（`viewport` / `full_page`）、`viewport`、`css_width`、`css_height`、`image_origin_css`、`image_to_viewport_css`。像素到视口坐标的换算为 `css = 像素 × scale + offset`。超时为 5 秒；被遮挡或非活动的 Chromium 页面可能暂停渲染，此时先 `browser_activate_tab`，或改用 AX / 正文。整页截图超过 4000 万像素会被拒绝；整页图中的视口外位置需要先滚动。
 
@@ -176,10 +188,14 @@
 `expression` 最多 100000 字符，需要多条语句时使用 `(() => { ...; return result; })()`，异步使用 `(async () => { ... })()` 或直接返回 Promise。表达式在主 frame 的页面世界执行一次，可访问页面变量、DOM 和当前登录态，可产生写操作，但不授予用户激活；函数值不会被自动调用。
 
 - `timeout_ms` 默认 10000、范围 100–30000；CDP 同步执行时间与 Promise 等待共用该预算。超时会释放工具队列，但不保证取消已调度的异步代码或网络请求。
-- `max_chars` 默认 20000、范围 1000–100000，限制结果值的 JSON 字符预算（不含返回元数据）。
-- 序列化只读取自有可枚举数据属性，不调用 getter；数组按索引读取，稀疏项标为 undefined；最多访问 1000 个节点、8 层，裁剪时 `truncated: true`。超过预算时改用 `serialized_preview`，它不保证是完整 JSON。
+- `max_chars` 默认 20000、范围 1–100000，限制每页 value 的 JSON 字符预算（不含元数据）。
+- 每个被控标签最多缓存一份结果，捕获预算为 1000000 个 JSON 字符、50000 个节点、8 层；只读取自有可枚举数据属性，不调用 getter，数组按索引读取。捕获损失由 `capture_truncated` 标记；转义后超出捕获上限时返回结构化 `$type=truncated` 标记，不返回半截 JSON。
+- 数组按完整项、对象按完整键值对、字符串按片段分页，返回 `result_kind`、`has_more`、`next_cursor`。下一页只传 `cursor`，不能再传 expression；续读只读缓存，不执行页面脚本，也不使当前 AX refs 失效。输入不改变已捕获结果；新求值、主文档导航/更新、释放或断连清空缓存。
+- 单项放不下时返回 `budget_too_small`、`required_chars`、`next_cursor`，可提高预算续读，不必重新执行。单个嵌套值超过 100000 字符时应在表达式中提取更小的字段；分页不递归拆解嵌套对象。
 - 特殊值用 `$type` 标记：`undefined`、`bigint`、`number`（NaN / Infinity / -0）、`date`、`error`、`function`、`symbol`、`accessor`、`circular_or_repeated`、`truncated`。Map、Set、DOM 等实例只遍历可枚举属性，需要稳定结果时返回普通对象或字符串。
-- 执行后 refs 全部失效；报错或超时前可能已修改页面，先观察，不要自动重放。
+- 执行新表达式后 refs 全部失效；报错或超时前可能已修改页面，先观察，不要自动重放。
+
+异步 IIFE 已能表达多步 JavaScript 流程，例如 `(async()=>{const r=await fetch('/api/state');return await r.json()})()`；它不能调用 MCP 原生输入工具。最多 30 秒，没有后台 job 或超时后的结果续接。长工作流按可观察检查点拆分；游标仅续读成功捕获的结果。超时不等于取消异步副作用。
 
 ## 诊断日志
 

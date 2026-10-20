@@ -11,7 +11,7 @@ import WebSocket from 'ws';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { setup } from '../src/setup.mjs';
-import { ROOT, DEFAULT_CONFIG } from '../src/config.mjs';
+import { ROOT, DEFAULT_CONFIG, VERSION } from '../src/config.mjs';
 import { startHub } from '../src/hub.mjs';
 
 const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, connected: { type: 'boolean', default: false } } });
@@ -136,6 +136,35 @@ try {
   assert.equal((await rawCall('evaluate', { ...handle, expression: 'new Promise(()=>{})', timeout_ms: 100 })).isError, true);
   assert.equal((await rawCall('evaluate', { ...handle, expression: '(()=>{while(true){}})()', timeout_ms: 200 })).isError, true);
   assert.equal((await evaluate('42')).value, 42); checks.push('evaluate promise/special values/truncation/errors/async and synchronous timeouts');
+  let page = await evaluate('(window.pageRuns=(window.pageRuns||0)+1, Array.from({length:40},(_,i)=>({i,text:"escaped\\\\text"})))', { max_chars: 120 });
+  const all = [...page.value];
+  while (page.next_cursor) {
+    page = await call('evaluate', { ...handle, cursor: page.next_cursor, max_chars: 120 });
+    all.push(...page.value);
+  }
+  assert.equal(all.length, 40); assert.deepEqual(all.map(item => item.i), Array.from({ length: 40 }, (_, i) => i));
+  assert.equal((await evaluate('window.pageRuns')).value, 1);
+  await evaluate(`(()=>{
+    const button=document.createElement('button');button.id='offscreen';button.textContent='Offscreen target';
+    button.style='position:absolute;left:20px;top:2200px;width:160px;height:40px';
+    button.onclick=()=>window.extraClicks=(window.extraClicks||0)+1;document.body.append(button);
+    const text=document.createElement('textarea');text.id='full-text';text.value='all\\nlines\\nhere';document.body.append(text);
+  })()`);
+  const located = await call('click', { ...handle, selector: '#offscreen' });
+  assert.equal(located.hit_target.tag, 'button'); assert.equal(located.hit_target.text, 'Offscreen target');
+  assert.equal(located.hit_target.clickable_hint, true);
+  await call('click', { ...handle, selector: '//*[@id="offscreen"]', selector_type: 'xpath' });
+  await call('click', { ...handle, x: 100, y: 2220, coordinate_space: 'document' });
+  assert.equal((await evaluate('window.extraClicks')).value, 3);
+  assert.equal((await rawCall('click', { ...handle, selector: 'button' })).isError, true);
+  await call('fill', { ...handle, selector: '#name', mode: 'dom', text: 'selector input' });
+  assert.equal((await call('read_text', { ...handle, selector: '#name', mode: 'value' })).text, 'selector input');
+  const textPage = await call('read_text', { ...handle, selector: '#full-text', mode: 'value', max_chars: 4 });
+  const textRest = await call('read_text', { ...handle, selector: '#full-text', mode: 'value', offset: textPage.next_offset });
+  assert.equal(textPage.text + textRest.text, 'all\nlines\nhere'); assert.equal(textRest.complete_source, true);
+  assert.equal((await rawCall('read_text', { ...handle, selector: '#name', mode: 'editor' })).isError, true);
+  await evaluate(`(()=>{document.querySelector('#offscreen').remove();document.querySelector('#full-text').remove();scrollTo(0,0)})()`);
+  checks.push('CSS/XPath strict selectors, offscreen auto-scroll, document coordinates, hit metadata, value text pagination, cached evaluate pagination without replay');
   await evaluate(`(async()=>{
     console.warn('attach diagnostic warning', {answer:42});
     setTimeout(()=>{throw new Error('attach uncaught fixture')},0);
@@ -219,7 +248,9 @@ try {
   assert.equal((await rawCall('upload_file', { ...handle, files: [] })).isError, true); checks.push('navigation clears chooser');
   await call('click', { ...handle, ref: await ref('Confirm') }).catch(() => {});
   const dialog = await snapshot(); assert.equal(dialog.dialog.type, 'confirm');
-  await call('handle_dialog', { ...handle, accept: false }); checks.push('existing dialog handling');
+  const handled = await call('handle_dialog', { ...handle, accept: false });
+  assert.equal(handled.dialog.type, 'confirm'); assert.equal(handled.accepted, false); assert.equal(handled.dialog.default_button, null);
+  checks.push('existing dialog handling and original type/acceptance metadata');
   const final = await state(); assert.deepEqual(final.errors, []); checks.push('no page JavaScript errors');
 
   await call('navigate', { ...handle, url: `${url}frames` });
@@ -242,6 +273,11 @@ try {
   await until(async () => (await frameState('child'))?.text === 'OOPIF nativez', 'OOPIF fill and key');
   await call('fill', { ...handle, ref: await childRef('textbox', 'Child name'), text: 'DOM child', mode: 'dom' });
   assert.equal((await frameState('child')).text, 'DOM child');
+  const childFrame = (await snapshot()).snapshot.split('\n').find(line => /^Frame /.test(line) && line.includes(`http://localhost:${fixture.address().port}/frame`)).split(' ')[1];
+  await call('fill', { ...handle, selector: '#name', frame_id: childFrame, text: 'OOPIF selector', mode: 'dom' });
+  assert.equal((await frameState('child')).text, 'OOPIF selector');
+  await call('click', { ...handle, selector: '#go', frame_id: childFrame });
+  await until(async () => (await frameState('child'))?.clicks === 3, 'OOPIF selector click');
   for (const options of [{button:'right'}, {button:'middle'}, {click_count:2}, {modifiers:['Control']}, {button:'right',click_count:2}, {button:'middle',click_count:2}]) {
     try { await call('click', { ...handle, ref: await childRef('button', 'Child button'), ...options }); }
     catch (error) { console.error('Mouse options', options, await frameState('child')); throw error; }
@@ -289,7 +325,7 @@ try {
   checks.push('F8/Insert/PageUp trusted keys, shifted punctuation text, DOM default and native wheel custom handler');
 
   await call('release_tab', handle);
-  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.5.0', checks, calls: calls.length, results: calls };
+  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: VERSION, checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });
   await writeFile(join(out, `npm-live-${values.family}.json`), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, results: undefined }, null, 2));

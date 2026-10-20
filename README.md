@@ -11,7 +11,7 @@
 ## 能做什么
 
 - 发现多个浏览器配置，精确选择并独占接管标签页，完成后释放。
-- 读取可访问性树和页面正文，通过当前快照的元素引用点击、填写、滚动和按键。
+- 读取可访问性树、字段值和支持的编辑器模型，通过当前快照引用或严格 CSS/XPath 定位点击与填写。
 - 导航、打开或关闭标签页，处理 JavaScript 对话框，上传本机文件并截图。
 - 在主页面执行 JavaScript 表达式，读取接管后的控制台、页面异常和网络生命周期日志。
 - 使用标准 stdio MCP，共提供 20 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
@@ -36,7 +36,7 @@ browser-attach setup
 也可以不全局安装：
 
 ```sh
-npx --yes --package=@evan_zhong/browser-attach@0.5.0 browser-attach setup
+npx --yes --package=@evan_zhong/browser-attach@0.6.0 browser-attach setup
 ```
 
 ### 2. 配置 MCP 客户端
@@ -48,7 +48,7 @@ npx --yes --package=@evan_zhong/browser-attach@0.5.0 browser-attach setup
   "mcpServers": {
     "browser_attach": {
       "command": "npx",
-      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.5.0", "browser-attach", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.6.0", "browser-attach", "mcp"]
     }
   }
 }
@@ -61,9 +61,11 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 ### 3. 开始操作
 
 1. `browser_list_browsers` → `browser_list_tabs`，确认浏览器、标签页标题和 URL。
-2. `browser_claim_tab`，传入准确身份并取得本连接的 `tab_handle`。
+2. `browser_claim_tab`，用 `list_tabs` 的 `tab_id` 接管（可选 `expected_url` / `expected_title` 精确校验），取得本连接的 `tab_handle`。
 3. `browser_snapshot` 取得元素 `ref`，再执行点击、填写或其他动作。
 4. 动作后重新观察，结束时调用 `browser_release_tab`。
+
+标题易变时，claim 可省略 `expected_title`；`expected_url` 也可选。点击/填写可改用每次重新解析的 `selector`。原生元素点击自动滚动；整页坐标点击使用 `coordinate_space: "document"`。求值结果使用 `next_cursor` 续读缓存，不会重新运行脚本。逐项问题评估、修复范围和复杂度见 [交互能力评估](docs/INTERACTION-REVIEW.md)。
 
 接管和普通输入不会主动激活标签或窗口；需要前台渲染时显式调用 `browser_activate_tab`。操作结果未知时先重新观察，避免重复提交。完整参数、分页、上传与输入语义见 [使用指南](docs/USAGE.md)。
 

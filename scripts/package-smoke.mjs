@@ -7,7 +7,7 @@ import WebSocket from 'ws';
 import { once } from 'node:events';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { ROOT } from '../src/config.mjs';
+import { ROOT, VERSION } from '../src/config.mjs';
 import { startHub } from '../src/hub.mjs';
 
 if (!process.env.npm_execpath) throw new Error('Run through npm run test:package');
@@ -33,7 +33,7 @@ try {
   assert.equal(paired.extensionDir, join(home, 'extension'));
   ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
   await once(ws, 'open'); const hello = once(ws, 'message');
-  ws.send(JSON.stringify({ type: 'hello', token: config.token, browser: { family: 'chrome', instance_id: 'package', run_id: 'one', profile_name: 'test', extension_version: '0.5.0' } }));
+  ws.send(JSON.stringify({ type: 'hello', token: config.token, browser: { family: 'chrome', instance_id: 'package', run_id: 'one', profile_name: 'test', extension_version: VERSION } }));
   await hello;
   ws.on('message', raw => { const data = JSON.parse(raw.toString()); if (data.id) ws.send(JSON.stringify({ id: data.id, result: { released: true } })); });
   client = new Client({ name: 'package-test', version: '1' });

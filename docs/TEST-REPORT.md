@@ -1,10 +1,10 @@
 # 验证报告
 
-当前版本 **0.5.0**（2026-10-20）。历史版本的验证记录不再维护，可在 git 历史中查看。
+当前版本 **0.6.0**（2026-10-21，交互与定位能力更新）。逐项设计判断见 [交互能力评估](INTERACTION-REVIEW.md)。历史版本的验证记录可在 git 历史中查看。
 
 ## 自动测试
 
-`npm test`：**89 项通过**。覆盖：
+`npm test`：**101 项通过**。覆盖：
 
 - 独占所有权、Origin / Bearer / 配对校验、连接断开的 claim 清理。
 - ref / cursor 失效、分页不丢尾部、节点与字符双预算、超长节点报错。
@@ -13,6 +13,9 @@
 - 滚动：DOM 默认模式、wheel 参数与坐标、超时语义。
 - 会话：递归附着 / 清理、重复 requestId 与 executionContextId 隔离。
 - 快照、导航等待与观察预算、上传校验、选项卡分组恢复与回滚、Nosis 配置生成。
+- 严格 CSS/XPath 的歧义拒绝、每次重定位、文档坐标滚动与视口换算、按 tab_id 接管及可选身份约束。
+- 求值结果缓存续读不重放、字符串转义/Unicode 拼接、对象项预算不足后续读、捕获裁剪标志、主文档失效、释放后迟到结果不复活。
+- 导航只重试瞬时观察一次；字段 value 分页、Monaco / CodeMirror 5 适配分支及不支持编辑器明确拒绝。
 
 `npm run test:package`：在仓库外含空格路径安装 tgz，复制稳定扩展目录，从包内启动 stdio MCP 并确认 **20 个工具**；`prepack` 检查拒绝配对密钥与 `config.generated.js`。
 
@@ -20,18 +23,20 @@
 
 使用临时 profile、独立配对扩展与本地 fixture，经完整扩展 → Hub → stdio MCP 链路执行：
 
-- Chromium 156 与 Edge 155 各 **143 次**真实工具调用，全部通过。
+- Chromium 156 与 Edge 155 各 **175 次**真实工具调用，全部通过（2026-10-21 以 0.6.0 扩展复跑）。
+- CSS/XPath 视口外点击、文档坐标自动滚动、命中 tag/text/clickable_hint、重复 selector 操作，以及 OOPIF 内明确 frame_id 的 click/fill。
+- textarea/input 完整 value 与 offset 续读、成功 evaluate 的缓存分页只执行一次、对话框原始类型/acceptance 元数据。
 - 键盘：F8 / Insert / PageUp 的可信 keydown，Shift 标点实际输入。
 - 滚动：DOM 滚动不触发 wheel 处理器；显式 wheel 收到正确的可信 `deltaX` / `deltaY`，含 OOPIF 内的事件。
 - 点击、填充、单 / 多文件上传、隐藏 input、`showPicker`、Unicode / 空文件、清空、对话框继续通过。
 - OOPIF（`--site-per-process`）：快照与 ref、顶层坐标点击、原生 / DOM 填充、焦点键盘、右键 / 中键 / 双击 / 修饰键、拦截 chooser 上传、子 session 日志、子 frame 导航及父页面遮挡拒绝。
-- 标签组：无标题红色分组、导航保持、释放恢复用户分组、MCP 断连恢复、固定标签提示。
+- 标签组独立交互测试已在 2026-10-20 验证：无标题红色分组、导航保持、释放恢复用户分组、MCP 断连恢复、固定标签提示；本轮相关单元回归继续通过，没有重跑独立交互脚本。
 
-并行运行两套浏览器时曾出现一次 OOPIF 点击未收到可信回执，工具按设计报告"结果未知"并停止，没有重放输入；随后在独立 profile 中复跑通过。原生输入仍受浏览器渲染与输入状态影响，超时不等于动作未发生。
+2026-10-20 并行运行两套浏览器时曾出现一次 OOPIF 点击未收到可信回执，工具按设计报告"结果未知"并停止，没有重放输入；随后在独立 profile 中复跑通过。本轮 Chromium / Edge 并行回归均通过。原生输入仍受浏览器渲染与输入状态影响，超时不等于动作未发生。
 
 ## Nosis 端到端
 
-在 0.4.0 完成并通过，0.5.0 未改变工具集合与结果封装，因此未重跑：
+在 0.4.0 完成并通过。2026-10-21 未重跑 Nosis GUI 端到端；本轮 schema 与部分结果结构已变化，需要客户端重新发现工具，不以历史 GUI 记录替代本轮兼容性验证：
 
 - 运行中的 Nosis GUI（`127.0.0.1:8737`）经真实 Bridge / Runtime / MCP 启动链报告 `browser_attach` ready、`tool_count` 20。
 - 通过 Nosis ToolCatalog 调用全部 20 个工具、34 次成功调用，覆盖截图到模型消息的图片适配、`isError` 后连接继续可用、失效句柄与 JS 弹窗错误路径。
@@ -44,6 +49,7 @@
 - 后台截图可能因浏览器暂停渲染而在 5 秒后超时；原生菜单与标签拖动可能抑制输入。
 - 计时数据仅代表本机 fixture，不构成对任意网站的耗时承诺。
 - `target_verified` / `delivery_verified` / `value_verified` 只证明事件送达或文本写入，不代表业务完成。
+- Monaco / CodeMirror 5 分支通过接口级测试；未针对第三方生产编辑器或 React/Vue 的具体版本做站点验收。dirty 状态、后台 job 与超时任务续接未实现。
 
 ## 复跑
 

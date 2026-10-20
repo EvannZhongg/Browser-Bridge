@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.5.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.6.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -24,7 +24,8 @@ MCP 客户端
 | `extension/controller.js` | 操作实现；传输层从不暴露原始 CDP |
 | `extension/sessions.js` | 扁平 debugger session 与 frame/OOPIF 归属 |
 | `extension/{click,input,actionability}.js` | 原生/DOM 输入、可操作性等待与送达校验 |
-| `extension/{snapshot,navigation,evaluate,diagnostics}.js` | 观察、导航、求值、日志缓冲 |
+| `extension/{snapshot,navigation,evaluate,diagnostics}.js` | 观察、导航、有界求值结果缓存与分页、日志缓冲 |
+| `extension/{locator,text}.js` | 严格 CSS/XPath 定位、DOM/字段/支持的编辑器模型读取 |
 | `extension/visuals.js`、`click-visuals.js` | 无标题红色原生标签组、临时点击反馈 |
 
 Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopback。
@@ -32,7 +33,7 @@ Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopbac
 ## 控制模型
 
 1. **发现**：`list_tabs` 的结果被 Hub 记为本次连接的观察快照。
-2. **校验身份**：`claim_tab` 必须传入与该快照逐字符一致的 URL / 标题，扩展侧再用 `chrome.tabs.get` 复核一次，避免申领错误的标签。
+2. **校验身份**：`claim_tab` 必须使用本连接列出的 tab_id；可选 expected_url / expected_title 在 Hub 与扩展侧逐字符校验。省略标题校验可容忍标题漂移；省略全部校验表示明确按 ID 接管，返回当前身份。
 3. **独占**：Hub 为每个 `(browser_id, tab_id)` 维护唯一 owner；同一标签第二次 claim 会返回已有的 `tab_handle`（同 owner）或报错（其他 owner）。
 4. **句柄**：`tab_handle` 是 Hub 生成的随机 UUID，只在当前 MCP 连接内有效；跨连接不共享。
 5. **串行**：Hub 与扩展都对每个标签维护 Promise 队列，动作不会并发穿插。
@@ -62,7 +63,7 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 ```
 
 - **只重试准备**：等待阶段可以反复轮询，但一旦派发就不再重试。超时分为"未派发"和"已派发、结果未知"两种错误文本。
-- **送达不等于业务完成**：`target_verified` / `delivery_verified` / `value_verified` 分别证明可信事件命中、keydown 送达、字段文本写入；返回中固定带 `application_result: "not_checked"`。
+- **送达不等于业务完成**：`target_verified` / `delivery_verified` / `value_verified` 分别证明可信事件命中、keydown 送达、字段文本写入；点击与按键另返回 `application_result: "not_checked"`，`fill` 只表示写入校验通过。
 - **OOPIF 坐标**：点击从顶层派发。逐层用 `DOM.getBoxModel` 把坐标换算到祖先文档，并用 `DOM.getNodeForLocation` 确认该位置确实落在 frame owner 上，防止祖先页面的遮挡被跳过。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
 - **不做通用 CDP 透传**：`browser_evaluate` 是页面表达式 API，不是 CDP 通道；没有暴露任意 domain/method 的工具。
@@ -86,7 +87,7 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 
 | 能力 | 决策 | 原因 |
 |---|---|---|
-| 定位方式 | 只用 AX ref，不做 role/text 选择器族 | 快照已给出语义节点；额外选择器容易让模型跨页面猜测目标 |
+| 定位方式 | AX ref + 独立严格 CSS/XPath selector | ref 保持观察身份，selector 每次重解析；不从旧快照猜测同名目标，不加入旧 ref 兼容层 |
 | 动作重试 | 只重试派发前的准备 | 网页操作可能提交真实数据，重复派发不可接受 |
 | DOM 模式 | 需要显式 `mode: "dom"` | 非可信事件、无用户激活，不能当作原生输入的透明替代 |
 | hover / drag | 未提供 | 需求明确前不为每种鼠标事件增加工具；可用 `evaluate` 或原生点击覆盖部分场景 |

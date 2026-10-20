@@ -5,7 +5,9 @@ import { renderAX, snapshotPage } from './snapshot.js';
 import { createNavigation } from './navigation.js';
 import { createClick, clickOptions } from './click.js';
 import { createInput, inputMode } from './input.js';
-import { evaluatePage } from './evaluate.js';
+import { createEvaluations } from './evaluate.js';
+import { targetOptions, resolveSelector } from './locator.js';
+import { readText } from './text.js';
 import { createDiagnostics } from './diagnostics.js';
 import { createSessions } from './sessions.js';
 import { NAVIGATION_OBSERVATION_TIMEOUT_MS } from './limits.js';
@@ -27,6 +29,7 @@ export function createController(api, notify = () => {}) {
   const sessions = createSessions(cdp, invalidateFrame, (tabId, sessionId) => diagnostics.detach(tabId, sessionId));
   const mouse = createClick(cdp, value, viewport, position, sessions);
   const input = createInput(cdp, value, sessions);
+  const evaluations = createEvaluations(cdp);
 
   function queued(tabId, operation) {
     const result = (queues.get(tabId) || Promise.resolve()).catch(() => {}).then(operation);
@@ -99,6 +102,7 @@ export function createController(api, notify = () => {}) {
     try { await clickVisuals.remove(tabId, dialogs.has(tabId)); await visuals.remove(tabId); }
     finally { await api.debugger.detach({ tabId }); }
     claims.delete(tabId);
+    evaluations.forget(tabId);
     snapshots.delete(tabId);
     documents.delete(tabId);
     frameStates.delete(tabId);
@@ -117,6 +121,7 @@ export function createController(api, notify = () => {}) {
   }
 
   function forget(tabId) {
+    evaluations.forget(tabId);
     navigation.cancel(tabId);
     mouse.cancel(tabId);
     input.cancel(tabId);
@@ -150,6 +155,7 @@ export function createController(api, notify = () => {}) {
     if (method === 'Page.frameNavigated' && params.frame?.parentId) frames?.parents.set(params.frame.id, params.frame.parentId);
     const sameDocumentMain = method === 'Page.navigatedWithinDocument' && params.frameId === frames?.mainId;
     if ((!source.sessionId && method === 'DOM.documentUpdated') || mainNavigation || sameDocumentMain) {
+      evaluations.forget(source.tabId);
       documents.set(source.tabId, (documents.get(source.tabId) || 0) + 1);
       snapshots.delete(source.tabId);
       fileChoosers.delete(source.tabId);
@@ -165,7 +171,7 @@ export function createController(api, notify = () => {}) {
     }
     if (mainNavigation) clickVisuals.navigated(source.tabId);
     if (method === 'Page.javascriptDialogOpening') {
-      dialogs.set(source.tabId, { sessionId: source.sessionId, type: params.type, message: params.message, default_prompt: params.defaultPrompt });
+      dialogs.set(source.tabId, { sessionId: source.sessionId, type: params.type, message: params.message, default_prompt: params.defaultPrompt, default_button: null });
       snapshots.delete(source.tabId);
       for (const reject of dialogWaiters.get(source.tabId) || []) {
         reject(new Error('The action opened a JavaScript dialog. It may already have executed; use browser_snapshot and browser_handle_dialog before continuing.'));
@@ -178,6 +184,7 @@ export function createController(api, notify = () => {}) {
     // A subframe reload can also set the TAB status to loading. CDP main-frame
     // events identify document changes; a status-only update carries no identity.
     if (change.url) {
+      evaluations.forget(tabId);
       documents.set(tabId, (documents.get(tabId) || 0) + 1);
       snapshots.delete(tabId); fileChoosers.delete(tabId);
     }
@@ -276,11 +283,12 @@ export function createController(api, notify = () => {}) {
     if (command === 'network_logs') return diagnostics.read(tabId, 'network', args);
     if (command === 'handle_dialog') {
       if (typeof args.accept !== 'boolean') throw new Error('accept must be a boolean');
+      const dialog = dialogs.get(tabId);
       await cdp({ tabId, ...(dialogs.get(tabId)?.sessionId ? { sessionId: dialogs.get(tabId).sessionId } : {}) }, 'Page.handleJavaScriptDialog', { accept: args.accept,
         ...(args.prompt_text != null ? { promptText: String(args.prompt_text) } : {}) });
       dialogs.delete(tabId);
       snapshots.delete(tabId);
-      return { handled: true, observe_again: true };
+      return { handled: true, dialog: dialog ?? null, accepted: args.accept, observe_again: true };
     }
     if (dialogs.has(tabId)) {
       if (command === 'snapshot') return { dialog: dialogs.get(tabId), note: 'Use browser_handle_dialog to accept or dismiss this dialog.' };
@@ -288,14 +296,11 @@ export function createController(api, notify = () => {}) {
     }
     if (command === 'snapshot') return await snapshot(tabId, args);
     if (command === 'evaluate') {
-      snapshots.delete(tabId);
-      return await evaluatePage(cdp, tabId, args);
+      if (args.cursor == null) snapshots.delete(tabId);
+      return await evaluations.read(tabId, args);
     }
     if (command === 'read_text') {
-      const limit = args.max_chars ?? 20000;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 100000) throw new Error('max_chars must be 1..100000');
-      return value(await cdp(tabId, 'Runtime.evaluate', { returnByValue: true,
-        expression: `(() => { const text = document.body?.innerText || ''; return {title: document.title, url: location.href, text: text.slice(0, ${limit}), returned_chars: Math.min(text.length, ${limit}), truncated: text.length > ${limit}, scope: 'main_frame'}; })()` }));
+      return await readText(cdp, value, tabId, args);
     }
     if (command === 'screenshot') {
       const view = await viewport(tabId);
@@ -326,11 +331,12 @@ export function createController(api, notify = () => {}) {
     if (command === 'release_tab') { await release(tabId); return { released: true }; }
     if (command === 'navigate') {
       const url = httpUrl(args.url);
+      evaluations.forget(tabId);
       snapshots.delete(tabId);
       fileChoosers.delete(tabId);
       const result = await navigation.navigate(tabId, url, args);
       const budget = deadline(NAVIGATION_OBSERVATION_TIMEOUT_MS, 'observation');
-      try {
+      for (let attempt = 0; attempt < 2; attempt++) try {
         if (args.include_snapshot === false) {
           const metadata = value(await budget.run(() => cdp(tabId, 'Runtime.evaluate', {
             expression: '({title: document.title, url: location.href})', returnByValue: true,
@@ -340,14 +346,26 @@ export function createController(api, notify = () => {}) {
         return { ...result, ...await snapshot(tabId, {}, budget) };
       } catch (error) {
         snapshots.delete(tabId);
+        if (attempt === 0 && budget.remaining() > 100 && /context.*(destroyed|not found)|cannot find context|document (changed|updated)|inspected target navigated|no frame with given id/i.test(error.message)) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          continue;
+        }
         return { ...result, observation_error: error.message, observe_again: true };
       }
     }
     // Resolve the ref before consuming it; every input invalidates the whole observation.
     if (command === 'click' || command === 'fill') inputMode(args);
+    if (command === 'click' || command === 'fill') targetOptions(args, { coordinates: command === 'click' && inputMode(args) !== 'dom' });
     if (command === 'click') clickOptions(args);
     if (['click', 'fill', 'press_key', 'scroll'].includes(command)) args = { ...args, budget: deadline(args.timeout_ms) };
-    const node = args.ref ? await getObject(tabId, args.ref, args.budget || deadline(30000)) : null;
+    // Reusable selectors permit many actions without a snapshot. Release the
+    // previous operation's remote wrappers before resolving this one. Refs store
+    // backend ids, not object handles; this cannot change their identity.
+    if (args.budget) for (const target of sessions.targets(tabId)) {
+      await args.budget.run(() => cdp(target, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach' }));
+    }
+    const node = args.selector ? await resolveSelector(cdp, value, sessions, tabId, args, args.budget || deadline(30000)) :
+      args.ref ? await getObject(tabId, args.ref, args.budget || deadline(30000)) : null;
     snapshots.delete(tabId);
     if (command === 'upload_file') {
       if (!Array.isArray(args.files) || args.files.length > 100 || args.files.some(file => typeof file !== 'string' || !file || file.includes('\0'))) {
@@ -439,7 +457,7 @@ export function createController(api, notify = () => {}) {
       if (args.active != null && typeof args.active !== 'boolean') throw new Error('active must be a boolean');
       const tab = await api.tabs.create({ url, active: args.active ?? false });
       return { opened: true, tab_id: tab.id, window_id: tab.windowId, active: tab.active,
-        note: 'List tabs after loading, then claim the exact URL/title before controlling this tab.' };
+        note: 'List tabs after loading, then claim tab_id with optional exact URL/title guards before controlling this tab.' };
     }
     if (command === 'list_tabs') {
       const tabs = await api.tabs.query({});
@@ -452,7 +470,7 @@ export function createController(api, notify = () => {}) {
     return await queued(tabId, async () => {
       if (command === 'claim_tab') {
         const tab = await api.tabs.get(tabId);
-        if (tab.url !== args.expected_url || tab.title !== args.expected_title) throw new Error('Tab title/URL changed. List tabs again.');
+        if ((args.expected_url != null && tab.url !== args.expected_url) || (args.expected_title != null && tab.title !== args.expected_title)) throw new Error('Tab title/URL changed. List tabs again or omit optional identity guards to claim by tab_id.');
         httpUrl(tab.url);
         const existing = claims.get(tabId);
         if (existing) {
@@ -474,7 +492,7 @@ export function createController(api, notify = () => {}) {
           let visualWarning;
           try { await visuals.install(tabId); }
           catch (error) { visualWarning = error.message; }
-          return { claimed: true, activation_requested: false,
+          return { claimed: true, activation_requested: false, title: tab.title, url: tab.url,
             ...(visualWarning ? { visual_warning: visualWarning } : {}) };
         } catch (error) {
           diagnostics.forget(tabId);

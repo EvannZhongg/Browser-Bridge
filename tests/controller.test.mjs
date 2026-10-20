@@ -85,6 +85,93 @@ function fixture() {
   return { controller, exec, claim, ref, calls, api, notices, tabs, block: () => { blocked = true; }, modal: () => { modalOnClick = true; }, nodes: value => { customNodes = value; } };
 }
 
+test('tab_id claim tolerates title drift; explicitly supplied identity guards still fail', async () => {
+  const f = fixture(); f.tabs.get(9).title = 'New title';
+  await assert.rejects(f.claim(), /changed/);
+  const claimed = await f.exec('claim_tab');
+  assert.equal(claimed.title, 'New title');
+  await assert.rejects(f.exec('click', { ref: 'old', selector: '#submit' }), /exactly one/);
+  await assert.rejects(f.exec('click', { selector: '#submit', mode: 'dom', coordinate_space: 'document' }), /coordinate clicks only/);
+});
+
+test('selectors resolve afresh per action, route isolated frame nodes and refuse ambiguous targets', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  let resolutions = 0;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.evaluate' && args.expression.includes('function queryElement')) {
+      resolutions++;
+      if (args.expression.endsWith('("button","css")')) return { exceptionDetails: { text: 'Selector must match exactly one element; matched 2' } };
+      return { result: { objectId: 'selector-node' } };
+    }
+    if (method === 'DOM.describeNode' && args.objectId === 'selector-node') return { node: { backendNodeId: 12 } };
+    return send(target, method, args);
+  };
+  await f.exec('click', { selector: '#submit' });
+  await f.exec('click', { selector: '//button[@id="submit"]', selector_type: 'xpath' });
+  await f.exec('fill', { selector: '#name', text: 'controlled', mode: 'dom' });
+  const dispatched = f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length;
+  await assert.rejects(f.exec('click', { selector: 'button' }), /matched 2/);
+  assert.equal(resolutions, 4);
+  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, dispatched);
+  await assert.rejects(f.exec('click', { selector: '#submit', frame_id: 'missing' }), /unknown/);
+});
+
+test('document coordinate click scrolls once and converts back to viewport before dispatch', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand; let scrolled = false;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Runtime.evaluate' && args.expression.startsWith('scrollTo(')) scrolled = true;
+    if (scrolled && method === 'Runtime.evaluate' && args.expression.includes('scroll_x: scrollX')) result.result.value.scroll_y = 1200;
+    return result;
+  };
+  const result = await f.exec('click', { x: 100, y: 1500, coordinate_space: 'document' });
+  assert.deepEqual(result.clicked, { x: 100, y: 300 });
+  assert.equal(f.calls.filter(call => call.args?.expression?.startsWith('scrollTo(')).length, 1);
+  assert.ok(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').every(call => call.args.y === 300));
+});
+
+test('navigation retries transient observation once, never replays navigation or arbitrary observation failures', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand; let reads = 0;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Accessibility.getFullAXTree' && ++reads === 1) throw new Error('Execution context was destroyed');
+    return send(target, method, args);
+  };
+  const result = await f.exec('navigate', { url: 'http://localhost:8000/new' });
+  assert.ok(result.snapshot); assert.equal(reads, 2);
+  assert.equal(f.calls.filter(call => call.method === 'Page.navigate').length, 1);
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Accessibility.getFullAXTree') { reads++; throw new Error('Permission denied'); }
+    return send(target, method, args);
+  };
+  assert.match((await f.exec('navigate', { url: 'http://localhost:8000/fail' })).observation_error, /Permission denied/);
+  assert.equal(reads, 3);
+});
+
+test('evaluation cursor reads an immutable captured result without replay and expires on navigation', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  const page = vm.createContext({ runs: 0 });
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.evaluate' && args.awaitPromise) return { result: { value: await vm.runInContext(args.expression, page) } };
+    return send(target, method, args);
+  };
+  let result = await f.exec('evaluate', { expression: '(runs++, ["one", "two", "three"])', max_chars: 8 });
+  const items = [...result.value]; const oldCursor = result.next_cursor;
+  assert.equal(result.capture_truncated, false);
+  while (result.next_cursor) {
+    result = await f.exec('evaluate', { cursor: result.next_cursor, max_chars: 10 });
+    items.push(...result.value);
+  }
+  assert.equal(page.runs, 1); assert.deepEqual(items, ['one', 'two', 'three']);
+  await assert.rejects(f.exec('evaluate', { cursor: oldCursor }), /stale/);
+  const small = await f.exec('evaluate', { expression: '(runs++, 12345)', max_chars: 1 });
+  assert.equal(small.required_chars, 5); assert.ok(small.next_cursor);
+  assert.equal((await f.exec('evaluate', { cursor: small.next_cursor, max_chars: 5 })).value, 12345);
+  assert.equal(page.runs, 2);
+  const next = await f.exec('evaluate', { expression: '[1,2,3]', max_chars: 3 });
+  await f.exec('navigate', { url: 'http://localhost:8000/new' });
+  await assert.rejects(f.exec('evaluate', { cursor: next.next_cursor }), /stale/);
+});
+
 test('claim verifies title and URL before attaching; ownership is enforced', async () => {
   const f = fixture();
   await assert.rejects(f.exec('claim_tab', { expected_title: 'Wrong', expected_url: 'http://localhost:8000/' }), /changed/);
@@ -241,7 +328,7 @@ test('DOM click invokes HTML activation once without native input, rejects coord
   const result = await f.exec('click', { ref: f.ref(await f.exec('snapshot')), mode: 'dom' });
   assert.equal(clicks, 1); assert.equal(result.events_trusted, false); assert.equal(result.target_verified, undefined);
   assert.equal(f.calls.filter(call => call.method.startsWith('Input.')).length, 0);
-  await assert.rejects(f.exec('click', { x: 5, y: 5, mode: 'dom' }), /requires a fresh ref/);
+  await assert.rejects(f.exec('click', { x: 5, y: 5, mode: 'dom' }), /ref or selector/);
   await assert.rejects(f.exec('click', { ref: f.ref(await f.exec('snapshot')), mode: 'typo' }), /mode must/);
   disabled = true;
   await assert.rejects(f.exec('click', { ref: f.ref(await f.exec('snapshot')), mode: 'dom' }), /disabled/);
@@ -727,7 +814,8 @@ test('evaluation serializer handles cycles, avoids getters and bounds traversal 
   assert.equal(serializeEvaluation(cyclic, 2000).value.self.$type, 'circular_or_repeated');
   assert.equal(serializeEvaluation(cyclic, 2000).value.dangerous.$type, 'accessor');
   const huge = serializeEvaluation({ value: '\\'.repeat(100000) }, 1000);
-  assert.equal(huge.truncated, true); assert.ok(huge.serialized_preview.length <= 1000);
+  assert.equal(huge.truncated, true); assert.equal(huge.value.$type, 'truncated');
+  assert.equal(huge.serialized_preview, undefined);
   const nodes = serializeEvaluation(Array.from({ length: 10000 }, () => ({})), 100000);
   assert.equal(nodes.truncated, true); assert.ok(nodes.value.length <= 1000);
   const deep = {}; let child = deep;

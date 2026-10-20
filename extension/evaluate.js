@@ -1,15 +1,16 @@
 // Deliberately a page expression API, not a raw CDP transport.
-export async function evaluatePage(cdp, tabId, args) {
+const CAPTURE_CHARS = 1000000, CAPTURE_NODES = 50000;
+async function evaluatePage(cdp, tabId, args) {
   const timeout = args.timeout_ms ?? 10000, maxChars = args.max_chars ?? 20000;
   if (typeof args.expression !== 'string' || !args.expression.trim() || args.expression.length > 100000)
     throw new Error('expression must contain 1..100000 characters of JavaScript');
   if (!Number.isInteger(timeout) || timeout < 100 || timeout > 30000) throw new Error('timeout_ms must be 100..30000');
-  if (!Number.isInteger(maxChars) || maxChars < 1000 || maxChars > 100000) throw new Error('max_chars must be 1000..100000');
+  if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > 100000) throw new Error('max_chars must be 1..100000');
   let timer;
   try {
     const response = await Promise.race([
       cdp(tabId, 'Runtime.evaluate', {
-        expression: `(async () => { const result = await (\n${args.expression}\n); return (${serializeEvaluation.toString()})(result, ${maxChars}); })()`,
+        expression: `(async () => { const result = await (\n${args.expression}\n); return (${serializeEvaluation.toString()})(result, ${CAPTURE_CHARS}, ${CAPTURE_NODES}); })()`,
         awaitPromise: true, returnByValue: true, userGesture: false, timeout,
       }),
       new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(
@@ -26,12 +27,12 @@ export async function evaluatePage(cdp, tabId, args) {
 
 // Runs in the page. Bound traversal before transferring the result across CDP.
 // Preserve ordinary JSON; explicitly mark values that JSON cannot represent.
-export function serializeEvaluation(value, maxChars) {
+export function serializeEvaluation(value, maxChars, maxNodes = 1000) {
   const seen = new WeakSet();
   let nodes = 0, chars = 0, truncated = false;
   const mark = type => ({ $type: type });
   function visit(item, depth) {
-    if (++nodes > 1000 || depth > 8 || chars > maxChars) { truncated = true; return mark('truncated'); }
+    if (++nodes > maxNodes || depth > 8 || chars > maxChars) { truncated = true; return mark('truncated'); }
     if (item === null || typeof item === 'boolean') return item;
     if (typeof item === 'number') return Number.isFinite(item) && !Object.is(item, -0) ? item : { $type: 'number', value: String(Object.is(item, -0) ? '-0' : item) };
     if (typeof item === 'string') {
@@ -49,7 +50,7 @@ export function serializeEvaluation(value, maxChars) {
     if (Array.isArray(item)) {
       const output = [];
       // Do not copy a sparse index into an array with an unbounded length.
-      for (let i = 0; i < item.length && nodes < 1000 && chars < maxChars && depth < 8; i++) {
+      for (let i = 0; i < item.length && nodes < maxNodes && chars < maxChars && depth < 8; i++) {
         const property = Object.getOwnPropertyDescriptor(item, String(i));
         output.push(!property ? visit(undefined, depth + 1) : 'value' in property ? visit(property.value, depth + 1) : (nodes++, mark('accessor')));
       }
@@ -59,7 +60,7 @@ export function serializeEvaluation(value, maxChars) {
     const output = Object.create(null);
     for (const key in item) {
       if (!Object.prototype.hasOwnProperty.call(item, key)) continue;
-      if (nodes >= 1000 || chars + key.length > maxChars || depth >= 8) { truncated = true; break; }
+      if (nodes >= maxNodes || chars + key.length > maxChars || depth >= 8) { truncated = true; break; }
       chars += key.length;
       const property = Object.getOwnPropertyDescriptor(item, key);
       const result = property && 'value' in property ? visit(property.value, depth + 1) : (nodes++, mark('accessor'));
@@ -70,6 +71,56 @@ export function serializeEvaluation(value, maxChars) {
   const result = visit(value, 0);
   const json = JSON.stringify(result);
   // Escaped strings and property names also count toward the transfer budget.
-  if (json.length > maxChars) return { serialized_preview: json.slice(0, maxChars), truncated: true };
+  // Never emit half a serialized JSON document. Keep the payload structured,
+  // and state explicitly when the capture budget lost information.
+  if (json.length > maxChars) return { value: { $type: 'truncated', reason: 'serialized_size', required_chars: json.length }, truncated: true };
   return { value: result, truncated };
+}
+
+// One bounded immutable result per claimed tab. Continuations never execute JS.
+export function createEvaluations(cdp) {
+  const results = new Map();
+  async function read(tabId, args) {
+    const max = args.max_chars ?? 20000;
+    if (!Number.isInteger(max) || max < 1 || max > 100000) throw new Error('max_chars must be 1..100000');
+    let state;
+    if (args.cursor != null) {
+      state = results.get(tabId);
+      if (!state || state.cursor !== args.cursor) throw new Error('Evaluation cursor is stale or unknown; results expire on navigation, release or a new evaluation.');
+      if (args.expression != null) throw new Error('Provide cursor or expression, never both');
+    } else {
+      // Navigation/detach may arrive while the CDP promise is pending. A late
+      // reply must not resurrect cached page data after cleanup.
+      const pending = {};
+      results.set(tabId, pending);
+      let result;
+      try { result = await evaluatePage(cdp, tabId, args); }
+      catch (error) { if (results.get(tabId) === pending) results.delete(tabId); throw error; }
+      if (results.get(tabId) !== pending) throw new Error('Document or claim changed during evaluation; effects may already have occurred. Result was discarded. Observe before continuing; do not replay automatically.');
+      const kind = Array.isArray(result.value) ? 'array' : typeof result.value === 'string' ? 'string' :
+        result.value && typeof result.value === 'object' ? 'object' : 'scalar';
+      state = Object.assign(pending, { result, kind, offset: 0, token: crypto.randomUUID(), cursor: null,
+        items: kind === 'object' ? Object.entries(result.value) : result.value });
+    }
+    const { kind, items, offset, result } = state;
+    const length = kind === 'scalar' ? 1 : items.length;
+    const make = end => kind === 'string' ? items.slice(offset, end) : kind === 'array' ? items.slice(offset, end) :
+      kind === 'object' ? Object.fromEntries(items.slice(offset, end)) : items;
+    let low = offset, high = length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (JSON.stringify(make(mid)).length <= max) low = mid; else high = mid - 1;
+    }
+    if ((length > offset && low === offset) || JSON.stringify(make(low)).length > max) {
+      state.cursor ??= `${state.token}@${offset}`;
+      return { scope: 'main_frame', result_kind: kind, budget_too_small: true, next_cursor: state.cursor,
+        required_chars: JSON.stringify(make(Math.min(length, offset + 1))).length,
+        note: 'Increase max_chars (allowed 1..100000) and continue with this cursor. Select smaller fields if an individual item exceeds 100000 characters.' };
+    }
+    state.offset = low;
+    state.cursor = low < length ? `${state.token}@${low}` : null;
+    return { ...result, value: make(low), result_kind: kind, has_more: low < length,
+      next_cursor: state.cursor, capture_truncated: result.truncated, truncated: result.truncated || low < length };
+  }
+  return { read, forget: tabId => results.delete(tabId) };
 }
