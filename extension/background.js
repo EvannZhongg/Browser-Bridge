@@ -95,5 +95,4 @@ chrome.runtime.onInstalled.addListener(async () => {
   connect();
 });
 chrome.alarms.create('connect', { periodInMinutes: 0.5 });
-setInterval(() => controller.refreshVisuals(), 3000);
 connect();

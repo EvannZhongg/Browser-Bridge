@@ -151,7 +151,7 @@ try {
   await call('handle_dialog', { ...handle, accept: false }); checks.push('existing dialog handling');
   const final = await state(); assert.deepEqual(final.errors, []); checks.push('no page JavaScript errors');
   await call('release_tab', handle);
-  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.3.0', checks, calls: calls.length, results: calls };
+  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.3.2', checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });
   await writeFile(join(out, `npm-live-${values.family}.json`), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, results: undefined }, null, 2));

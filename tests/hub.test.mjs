@@ -28,7 +28,7 @@ async function fixture(t, options) {
     const ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
     sockets.push(ws); await once(ws, 'open');
     const response = once(ws, 'message');
-    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.3.0' } }));
+    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.3.2' } }));
     const connected = JSON.parse((await response)[0].toString());
     ws.on('message', raw => {
       const data = JSON.parse(raw.toString()); requests.push(data);
@@ -136,6 +136,10 @@ test('real stdio MCP exposes 17 tools, single JSON content, PNG image, and valid
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
   assert.equal(tools.length, 17);
+  for (const name of ['click', 'fill']) {
+    const mode = tools.find(tool => tool.name === `browser_${name}`).inputSchema.properties.mode;
+    assert.deepEqual(mode.enum, ['native', 'dom']); assert.equal(mode.default, 'native');
+  }
   for (const name of ['upload_file', 'open_tab', 'activate_tab', 'close_tab']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
   const call = (name, args = {}) => mcp.callTool({ name: `browser_${name}`, arguments: args });
   const browsers = await call('list_browsers');
@@ -144,6 +148,11 @@ test('real stdio MCP exposes 17 tools, single JSON content, PNG image, and valid
   await call('list_tabs', { browser_id: browser.id });
   const result = await call('claim_tab', { browser_id: browser.id, tab_id: 9, expected_title: 'Demo', expected_url: f.tabs[0].url });
   const handle = JSON.parse(result.content[0].text).tab_handle;
+  assert.ok(!(await call('click', { tab_handle: handle, ref: 'current-ref', mode: 'dom' })).isError);
+  assert.equal(f.requests.find(item => item.command === 'click').arguments.mode, 'dom');
+  const clickCount = f.requests.filter(item => item.command === 'click').length;
+  assert.equal((await call('click', { tab_handle: handle, x: 1, y: 1, mode: 'dom' })).isError, true);
+  assert.equal(f.requests.filter(item => item.command === 'click').length, clickCount);
   const image = await call('screenshot', { tab_handle: handle });
   assert.equal(image.content[1].mimeType, 'image/png');
   assert.equal(JSON.parse(image.content[0].text).capture.image_to_viewport_css.scale_x, 1);
@@ -183,7 +192,7 @@ test('setup installs stable extension data outside package, and preserves curren
   assert.equal(a.config.extension_id.length, 32);
   assert.equal(a.extensionDir, join(temp, 'extension'));
   assert.ok((await readFile(join(a.extensionDir, 'config.generated.js'), 'utf8')).includes(a.config.token));
-  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.3.0');
+  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.3.2');
 });
 
 test('Nosis configuration uses the current server schema and preserves unrelated servers', async t => {

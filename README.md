@@ -24,45 +24,45 @@ Windows 也可运行 `./scripts/install.ps1 -ConfigureNosis`：安装 npm 命令
 
 **可移植 MCP 配置**
 
-安装全局命令后，复制仓库的 [mcp-config.json](mcp-config.json) 到客户端：
-
-```json
-{
-  "mcpServers": {
-    "browser_bridge": {
-      "command": "browser-bridge",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-没有 Python、仓库或用户目录的绝对路径，也不依赖客户端工作目录。客户端需能从 PATH 找到 npm 的全局 bin 目录；Windows 客户端若只接受可执行文件名，可以使用 `browser-bridge.cmd`。安装后重启 MCP 客户端以重新发现工具。
-
-包名为 `@evannzhongg/browser-bridge`，bin 为 `browser-bridge`。当前代码已支持 npm 打包和安装，**尚未发布 npm registry**；本机 `npm whoami` 返回 401，需要先登录具有该 scope 发布权限的账号。已占用的 `local-browser-bridge` 属于其他项目，所以没有使用该名称。
-
-现在可分享本地安装包：
-
-```powershell
-npm pack
-npm install --global ./evannzhongg-browser-bridge-0.3.0.tgz
-browser-bridge setup
-```
-
-完成 registry 发布后，才可使用下面的免全局安装配置；固定版本使客户端和扩展版本一致：
+复制仓库的 [mcp-config.json](mcp-config.json) 到客户端，使用固定版本 npx 启动：
 
 ```json
 {
   "mcpServers": {
     "browser_bridge": {
       "command": "npx",
-      "args": ["--yes", "--package=@evannzhongg/browser-bridge@0.3.0", "browser-bridge", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-bridge@0.3.2", "browser-bridge", "mcp"]
     }
   }
 }
 ```
 
-对应首次配对：`npx --yes --package=@evannzhongg/browser-bridge@0.3.0 browser-bridge setup`。未发布前不要将该 registry 配置当作已经可用。
+没有 Python、仓库或用户目录的绝对路径，也不依赖客户端工作目录。客户端需能从 PATH 找到 Node/npm；Windows 客户端需要完整命令扩展名时可使用 `npx.cmd`。全局安装方式也可使用 `browser-bridge mcp`。配置后重启 MCP 客户端以重新发现工具。
+
+包名为 `@evan_zhong/browser-bridge`，bin 为 `browser-bridge`。支持全局安装、本地 tgz 安装及固定版本的 npx 启动。
+
+现在可分享本地安装包：
+
+```powershell
+npm pack
+npm install --global ./evan_zhong-browser-bridge-0.3.2.tgz
+browser-bridge setup
+```
+
+使用以下免全局安装配置；固定版本使客户端和扩展版本一致：
+
+```json
+{
+  "mcpServers": {
+    "browser_bridge": {
+      "command": "npx",
+      "args": ["--yes", "--package=@evan_zhong/browser-bridge@0.3.2", "browser-bridge", "mcp"]
+    }
+  }
+}
+```
+
+对应首次配对：`npx --yes --package=@evan_zhong/browser-bridge@0.3.2 browser-bridge setup`。
 
 **本机数据与升级**
 
@@ -153,11 +153,38 @@ Hub 按需后台启动，多客户端共用；只监听 loopback，扩展验证�
 
 每个 MCP 连接有独立 owner，tab_handle 不跨连接共享；同一 tab 只允许一个 owner。断连、浏览器重启、用户停止调试均会使句柄失效。动作超时会释放该连接的控制权，结果可能未知，不自动重放。任务结束仍应显式 release，不能假设 MCP 客户端每轮都会关闭连接。
 
-claim 和常规输入不主动激活标签页或浏览器窗口，也不移动系统鼠标；DOM / AX 和常规输入可在后台执行。显式 activate_tab 可以切换标签并聚焦窗口；open_tab 的 active 参数可以选中新标签。网站自己弹出的新窗口及浏览器权限 UI 仍可能改变焦点。页面带“Agent 已接管”标记及短暂点击指示；截图默认隐藏标记。
+claim 和常规输入不主动激活标签页或浏览器窗口，也不移动系统鼠标；DOM / AX 和常规输入可在后台执行。显式 activate_tab 可以切换标签并聚焦窗口；open_tab 的 active 参数可以选中新标签。网站自己弹出的新窗口及浏览器权限 UI 仍可能改变焦点。控制状态显示在标签栏的绿色「🤖 被控」原生分组标记中，页面不再显示常驻“已接管”徽标。原生点击仍保留约 1.2 秒的箭头和光圈，随后移除节点；截图默认隐藏点击提示，`include_indicators: true` 可包含它。
+
+**标签栏控制标识（0.3.2）**
+
+每个被控标签临时进入单独的绿色「🤖 被控」原生分组，需要新增 `tabGroups` 扩展权限。分组标记由 [Chrome Tabs / TabGroups API](https://developer.chrome.com/docs/extensions/reference/api/tabGroups) 管理，不更改网页标题、favicon 或正文，也不设置页面常驻徽标。
+
+正常释放、MCP 断连或浏览器停止调试时，会移除标记并恢复原分组；原分组已因空组消失时按记录重建。用户期间自行改名、改颜色或移动到其他分组，则保留用户的调整。分组恢复信息保存在浏览器会话存储，扩展重载后会清理上次遗留的标记。临时分组可能调整标签排列，恢复分组不保证精确恢复原标签顺序。
+
+固定标签不能加入原生分组；不会自动取消固定，claim 会返回 `visual_warning`，扩展按钮仍有 `RUN` 状态。需要标签栏分组标记时先取消固定，再接管。浏览器自己的调试提示由浏览器管理。
 
 截图有 5 秒超时：被遮挡或非活动的 Chromium 页面可能停止渲染，可显式调用 activate_tab 后再次观察，或使用 AX / 文本；截图本身不自动切前台。PNG 像素要按返回的 `image_to_viewport_css` 映射到视口 CSS 坐标；整页截图的视口外位置需先滚动。
 
 点击保持原生输入，连续派发 move/down/up 后统一等待确认；ref 会检查可见、启用和遮挡。短暂等待稳定后，即使持续动画仍会使用最新几何位置尝试点击；快速移动造成偏离目标时仍会被命中检查或事件校验拒绝。命中查询换算为文档 CSS 坐标，鼠标输入仍为视口 CSS 坐标。隔离世界中的事件校验会阻止偏离目标的点击；只有收到匹配目标的可信 click 才返回 `target_verified: true`。这证明事件送达，不证明提交、付款等业务已完成。无确认时 5 秒内明确报错，不自动重试。
+
+**拖动标签、原生菜单与并行操作（0.3.1 起）**
+
+拖动浏览器标签、打开浏览器原生菜单时，Chromium 可能捕获或抑制页面输入。CDP 命令返回不等于页面收到了事件，扩展不能保证此时原生输入始终可用；结束拖动或关闭菜单后才能可靠继续依赖真实按键、指针事件和用户激活的操作。不要用 `Input.setIgnoreInputEvents(false)` 试图解除用户的菜单/拖动状态；它只释放该 CDP 会话自己持有的抑制状态，见 [Chromium InputHandler 源码](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/content/browser/devtools/protocol/input_handler.cc)。
+
+普通 HTML 控件可在操作前显式选择 `mode: "dom"`，减少与用户的原生输入竞争：
+
+```json
+{"tab_handle":"...","ref":"<最新快照的按钮 ref>","mode":"dom"}
+```
+
+以上参数用于 `browser_click`；`browser_fill` 另外传入 `text`。两者默认仍为 `mode: "native"`。
+
+- DOM 点击要求 ref，只对 HTML 元素调用一次 `HTMLElement.click()`；不发送 mouse/pointer 序列，不提供可信事件或用户激活。返回 `method: "dom"`、`events_trusted: false`，不返回 `target_verified: true`。自绘控件、拖拽、依赖 pointerdown 或用户激活的功能仍需要原生输入。
+- DOM 填写使用原生 value setter（contenteditable 使用 textContent），发送非可信 input/change 事件，不主动 focus/select。两种填写模式均核验字段最终文本，成功返回 `value_verified: true`；被吞、失焦或页面同步格式化导致文本不匹配时明确报错，不返回字段内容。复杂编辑器仍可能需要原生事件，异步回写不在即时校验范围内。
+- 原生按键在隔离世界监听可信 keydown，以确认页面收到对应 key/code/modifiers，成功返回 `delivery_verified: true`。连续派发 down/char/up 后统一等待，输入派发阶段无回执或确认超时在 5 秒内报错，释放工具队列；确认送达不等于应用完成预期操作。无 DOM 快捷键替代模式。
+- 失败后先观察页面；原生命令可能已经生效或稍后送达，不能自动重放，也不能在结果未知时自动切 DOM 模式补点一次。DOM 模式同样需要页面渲染进程能执行 JavaScript；浏览器/页面冻结、系统模态窗口等仍可能阻塞。
+
+升级时先停止旧 Hub，再安装新版并运行 `browser-bridge setup` 更新已配对的扩展副本，在浏览器中重新加载扩展并重连 MCP。使用自定义配置/扩展目录时保留原参数。Hub 与扩展版本必须一致，0.3.2 不会将新增参数发送给旧版扩展。
 
 AX 合并重复文本、移除 InlineTextBox，保留语义节点和交互子元素。`max_nodes` 为每页 10–3000，默认 600；`max_chars` 为每页序列化文本预算 1000–2000000，默认 24000。`truncated: true` 时传回 `next_cursor` 继续调用同一个 `browser_snapshot`，可以调整预算，refs 在续读过程中保持有效；输入、新快照和主文档导航会使 cursor/ref 一起失效。iframe 导航、同文档导航或移除仅使其子树 refs 失效，主页面 refs 与 cursor 保留；读取期间变化的子 frame 或续读中失效的 frame 会跳过并列入 `omitted_frames`。单个超长节点无法放入一页时会明确提示需要的预算，不丢弃尾部。`omitted_frames` 也报告未覆盖的跨进程 iframe；分页不表示已补齐 OOPIF。
 
@@ -182,8 +209,10 @@ npm pack --dry-run
 npm run test:live -- --executable "path/to/chromium-or-edge.exe" --family chromium
 npm run test:interaction -- --executable "path/to/chromium-or-edge.exe" --family chromium
 npm run test:interaction -- --regressions --executable "path/to/chromium-or-edge.exe" --family chromium
+node scripts/interaction-smoke.mjs --input-capture --executable "path/to/chromium-or-edge.exe" --family chromium
+node scripts/interaction-smoke.mjs --tab-indicators --executable "path/to/chromium-or-edge.exe" --family chromium
 ```
 
 浏览器需允许命令行加载扩展；常规新版 Chrome 不保证支持此参数。也可对已经连接的 Chrome / Edge 运行 `--connected --executable <浏览器路径> --family chrome` / `edge`。该模式在用户浏览器中新建本地测试页，结束后释放控制，测试页保留。
 
-2026-10-20：44 项自动测试、17 工具打包检查通过；Chromium 156 和 Edge 155 的专项测试验证后台点击、iframe 持续刷新下读取快照、无限 CSS 动画点击和标签打开/激活/关闭。Chromium 完整交互回归复跑通过；首次运行曾出现后台按键断言失败，记录见 [测试报告](TEST-REPORT.md)。此前交互分析见 [交互修复复核](INTERACTION-REVIEW.md)。
+2026-10-20：0.3.2 增加原生标签栏分组标记和分组恢复，保留临时点击反馈；Chromium 156 / Edge 155 专项验证标记、导航、干净截图、释放和断连恢复。0.3.1 的原生输入抑制、多行字段及子 frame 按键测试，以及历史完整交互结果见 [测试报告](TEST-REPORT.md)，交互分析见 [交互修复复核](INTERACTION-REVIEW.md)。

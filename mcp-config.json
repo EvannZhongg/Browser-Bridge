@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "browser_bridge": {
-      "command": "browser-bridge",
-      "args": ["mcp"]
+      "command": "npx",
+      "args": ["--yes", "--package=@evan_zhong/browser-bridge@0.3.2", "browser-bridge", "mcp"]
     }
   }
 }

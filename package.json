@@ -1,6 +1,6 @@
 {
-  "name": "@evannzhongg/browser-bridge",
-  "version": "0.3.0",
+  "name": "@evan_zhong/browser-bridge",
+  "version": "0.3.2",
   "description": "MCP for existing signed-in Chrome and Edge tabs through a locally paired extension",
   "type": "module",
   "bin": {

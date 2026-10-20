@@ -1,8 +1,10 @@
 // Browser operations live here so the WebSocket transport cannot execute arbitrary CDP/JavaScript.
 import { createVisuals } from './visuals.js';
+import { createClickVisuals } from './click-visuals.js';
 import { renderAX, snapshotPage } from './snapshot.js';
 import { createNavigation } from './navigation.js';
 import { createClick } from './click.js';
+import { createInput, inputMode } from './input.js';
 
 export function createController(api, notify = () => {}) {
   const claims = new Map();
@@ -14,8 +16,10 @@ export function createController(api, notify = () => {}) {
   const fileChoosers = new Map();
   const dialogWaiters = new Map();
   const visuals = createVisuals(api);
+  const clickVisuals = createClickVisuals(api);
   const navigation = createNavigation(cdp);
   const mouse = createClick(cdp, value, viewport, position);
+  const input = createInput(cdp, value);
 
   function queued(tabId, operation) {
     const result = (queues.get(tabId) || Promise.resolve()).catch(() => {}).then(operation);
@@ -81,7 +85,7 @@ export function createController(api, notify = () => {}) {
   async function release(tabId) {
     if (!claims.has(tabId)) return;
     // Forget only after detach; a failed detach must not silently grant another owner.
-    try { await visuals.remove(tabId, dialogs.has(tabId)); }
+    try { await clickVisuals.remove(tabId, dialogs.has(tabId)); await visuals.remove(tabId); }
     finally { await api.debugger.detach({ tabId }); }
     claims.delete(tabId);
     snapshots.delete(tabId);
@@ -100,7 +104,9 @@ export function createController(api, notify = () => {}) {
   function forget(tabId) {
     navigation.cancel(tabId);
     mouse.cancel(tabId);
+    input.cancel(tabId);
     visuals.forget(tabId);
+    clickVisuals.forget(tabId);
     claims.delete(tabId);
     snapshots.delete(tabId);
     documents.delete(tabId);
@@ -113,6 +119,7 @@ export function createController(api, notify = () => {}) {
   api.debugger.onEvent.addListener((source, method, params = {}) => {
     navigation.event(source.tabId, method, params);
     mouse.event(source.tabId, method, params);
+    input.event(source.tabId, method, params);
     const frames = frameStates.get(source.tabId);
     if (method === 'Page.frameAttached') frames?.parents.set(params.frameId, params.parentFrameId);
     const mainNavigation = method === 'Page.frameNavigated' && params.frame && !params.frame.parentId;
@@ -131,7 +138,7 @@ export function createController(api, notify = () => {}) {
         backendNodeId: params.backendNodeId, mode: params.mode, frame_id: params.frameId,
       });
     }
-    if (mainNavigation) visuals.navigated(source.tabId);
+    if (mainNavigation) clickVisuals.navigated(source.tabId);
     if (method === 'Page.javascriptDialogOpening') {
       dialogs.set(source.tabId, { type: params.type, message: params.message, default_prompt: params.defaultPrompt });
       snapshots.delete(source.tabId);
@@ -234,44 +241,6 @@ export function createController(api, notify = () => {}) {
     return page;
   }
 
-  const modifiers = { Alt: 1, Control: 2, Ctrl: 2, Meta: 4, Shift: 8 };
-  const namedKeys = {
-    Enter: [13, 'Enter'], Tab: [9, 'Tab'], Escape: [27, 'Escape'], Backspace: [8, 'Backspace'],
-    Delete: [46, 'Delete'], ArrowLeft: [37, 'ArrowLeft'], ArrowRight: [39, 'ArrowRight'],
-    ArrowUp: [38, 'ArrowUp'], ArrowDown: [40, 'ArrowDown'], Home: [36, 'Home'], End: [35, 'End'],
-    PageUp: [33, 'PageUp'], PageDown: [34, 'PageDown'], Space: [32, 'Space'],
-  };
-  async function pressKey(tabId, chord) {
-    if (typeof chord !== 'string') throw new Error('key must be a string');
-    const parts = chord.split('+');
-    const last = parts.pop();
-    let mask = 0;
-    for (const part of parts) {
-      if (!modifiers[part]) throw new Error(`Unknown modifier: ${part}`);
-      mask |= modifiers[part];
-    }
-    let key = last;
-    let entry = namedKeys[key];
-    if (!entry && /^[a-zA-Z0-9]$/.test(key)) {
-      entry = [key.toUpperCase().charCodeAt(0), /^[0-9]$/.test(key) ? `Digit${key}` : `Key${key.toUpperCase()}`];
-      key = mask & 8 ? key.toUpperCase() : key.toLowerCase();
-    }
-    if (!entry) throw new Error('Unsupported key. Use a named navigation key or an ASCII letter/digit chord.');
-    const params = { key: last === 'Space' ? ' ' : key, code: entry[1], windowsVirtualKeyCode: entry[0],
-      nativeVirtualKeyCode: entry[0], modifiers: mask };
-    await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params });
-    try {
-      if (mask === 0 && ['Enter', 'Tab', 'Space'].includes(last)) {
-        const text = { Enter: '\r', Tab: '\t', Space: ' ' }[last];
-        await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'char', text, unmodifiedText: text, ...params });
-      } else if ((mask & ~8) === 0 && /^[a-zA-Z0-9]$/.test(last)) {
-        await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'char', text: key, unmodifiedText: key, ...params });
-      }
-    } finally {
-      await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params });
-    }
-  }
-
   async function action(tabId, command, args) {
     if (command === 'handle_dialog') {
       if (typeof args.accept !== 'boolean') throw new Error('accept must be a boolean');
@@ -296,8 +265,8 @@ export function createController(api, notify = () => {}) {
       const view = await viewport(tabId);
       const clip = args.full_page ? await fullPageClip(tabId) : null;
       const includeIndicators = args.include_indicators === true;
-      const hiddenError = includeIndicators ? null : await visuals.visible(tabId, false);
-      if (hiddenError) throw new Error(`Could not hide the agent indicator for a clean screenshot: ${hiddenError}`);
+      const hiddenError = includeIndicators ? null : await clickVisuals.visible(tabId, false);
+      if (hiddenError) throw new Error(`Could not hide click feedback for a clean screenshot: ${hiddenError}`);
       try {
         // Render an explicit target surface without activating its tab or window.
         const captureClip = clip || { x: view.scroll_x, y: view.scroll_y, width: view.width, height: view.height, scale: 1 };
@@ -316,7 +285,7 @@ export function createController(api, notify = () => {}) {
           css_width: clip?.width ?? view.width, css_height: clip?.height ?? view.height,
           image_origin_css: { x: clip ? 0 : view.scroll_x, y: clip ? 0 : view.scroll_y },
           click_coordinate_space: 'viewport_css_pixels', agent_indicators_included: includeIndicators } };
-      } finally { await visuals.visible(tabId, true); }
+      } finally { await clickVisuals.visible(tabId, true); }
     }
     if (command === 'release_tab') { await release(tabId); return { released: true }; }
     if (command === 'navigate') {
@@ -333,6 +302,7 @@ export function createController(api, notify = () => {}) {
       return { ...result, ...await snapshot(tabId) };
     }
     // Resolve the ref before consuming it; every input invalidates the whole observation.
+    if (command === 'click' || command === 'fill') inputMode(args);
     const node = args.ref ? await getObject(tabId, args.ref) : null;
     snapshots.delete(tabId);
     if (command === 'upload_file') {
@@ -380,30 +350,14 @@ export function createController(api, notify = () => {}) {
       return { files_set: args.files.length, cleared: args.files.length === 0, observe_again: true };
     }
     if (command === 'click') {
+      if (inputMode(args) === 'dom') return await input.domClick(tabId, node, args);
       const result = await mouse.click(tabId, node, args);
-      // Visuals must not separate mouse move/down/up or delay input delivery.
-      void visuals.click(tabId, result.clicked.x, result.clicked.y).catch(() => {});
+      // Keep click feedback out of the input dispatch/verification path.
+      void clickVisuals.click(tabId, result.clicked.x, result.clicked.y).catch(() => {});
       return result;
     }
-    if (command === 'fill') {
-      if (!node || typeof args.text !== 'string') throw new Error('fill requires a fresh ref and text');
-      value(await cdp(tabId, 'Runtime.callFunctionOn', { objectId: node.objectId, returnByValue: true,
-        functionDeclaration: `function() {
-          const tag = this.tagName?.toLowerCase();
-          if (this.disabled || this.readOnly) throw new Error('Field is disabled or read-only');
-          if (!['input', 'textarea'].includes(tag) && !this.isContentEditable) throw new Error('Ref is not an editable field');
-          if (tag === 'input' && !['text','search','email','password','tel','url',''].includes(this.type)) throw new Error('Input type cannot be filled with text');
-          this.focus();
-          const active = this.getRootNode().activeElement;
-          if (active !== this && !this.contains(active)) throw new Error('Field did not receive focus');
-          if (this.isContentEditable) { const range = this.ownerDocument.createRange(); range.selectNodeContents(this); const selection = this.ownerDocument.getSelection(); selection.removeAllRanges(); selection.addRange(range); }
-          else this.select();
-          return true;
-        }` }));
-      await cdp(tabId, 'Input.insertText', { text: args.text });
-      return { filled: true, observe_again: true };
-    }
-    if (command === 'press_key') { await pressKey(tabId, args.key); return { sent: args.key, observe_again: true }; }
+    if (command === 'fill') return await input.fill(tabId, node, args);
+    if (command === 'press_key') return await input.pressKey(tabId, args.key);
     if (command === 'scroll') {
       const view = await viewport(tabId);
       const point = position(view, args.x ?? view.width / 2, args.y ?? view.height / 2);
@@ -498,10 +452,7 @@ export function createController(api, notify = () => {}) {
     });
   }
 
-  return { execute, releaseAll: () => releaseMatching(() => true), claimedCount: () => claims.size,
-    async refreshVisuals() {
-      await Promise.all([...claims.keys()].filter(tabId => !dialogs.has(tabId)).map(tabId => visuals.renew(tabId)));
-    } };
+  return { execute, releaseAll: () => releaseMatching(() => true), claimedCount: () => claims.size };
 }
 
 function scrollAtPoint(x, y, dx, dy) {

@@ -72,7 +72,7 @@ export function createClick(cdp, value, viewport, position) {
       if (installed.exceptionDetails) value(installed);
       guard = installed.result?.objectId;
       if (!guard) throw new Error('Could not install click target verification; no input was dispatched.');
-      const deadline = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Click did not finish with verified delivery within 5 seconds. Outcome is unknown; observe before retrying.')), 5000); });
+      const deadline = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Click did not finish with verified delivery within 5 seconds. Outcome is unknown; browser UI may be capturing input during a tab drag or native menu. Finish that interaction and observe before retrying. Never automatically replay or fall back to DOM click.')), 5000); });
       const sent = Promise.all([
         cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'none', buttons: 0, ...point }),
         cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...point }),

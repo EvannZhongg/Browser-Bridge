@@ -1,4 +1,28 @@
-# BrowserBridge 0.3.0 验证报告
+# BrowserBridge 验证报告
+
+**2026-10-20：0.3.2 原生标签栏标记与点击反馈**
+
+控制状态改为绿色「🤖 被控」原生标签分组，需要 `tabGroups` 权限。移除页面常驻徽标及原先的 3 秒刷新任务；保留原生点击后约 1.2 秒的箭头、光圈，节点随后移除。点击反馈依然在隔离世界中生成，未注册 document-start 脚本，默认截图隐藏反馈，`include_indicators: true` 可保留它。
+
+新增分组测试覆盖逐标签标记、原分组恢复、空组重建、多标签恢复同组、用户改组/改名、窗口变化、扩展重载恢复、固定标签提示及设置失败回滚。Controller 验证默认截图隐藏点击反馈、调试停止后恢复分组、反馈初始化挂起时仍可释放且不会延后绘制。
+
+Chromium 156 与 Edge 155 均通过 `node scripts/interaction-smoke.mjs --tab-indicators --executable <path> --family <family>`：原生分组标题/颜色正确，接管时没有页面常驻徽标，点击后存在临时反馈节点，默认截图不含反馈，主页面导航保留分组，释放后移除标记并恢复原有用户分组，MCP 断连同样恢复。测试只操作临时 profile 和本地 fixture，原始结果为 `test-results/tab-indicators-chromium.json`、`tab-indicators-edge.json`。
+
+固定标签按浏览器限制保持固定，仅返回 `visual_warning` 和扩展按钮 RUN 状态；不自动取消固定。恢复分组不保证原始标签排列。用户手动修改过的标记组不会被强行还原。
+
+`npm test`：61 项全部通过。Chromium 156 完整交互回归通过，后台填写/按键/上传、前后台及遮挡点击、缩放、动态目标拦截、闭合 Shadow DOM、分页和导航保持可用。`npm run test:package` 验证 0.3.2 安装包与仓库外安装，工具集合仍为 17 个。
+
+**2026-10-20：0.3.1 输入捕获优化**
+
+新增显式 click/fill `mode: "dom"`；默认保持原生输入。原生按键用隔离世界 binding 核验可信 keydown，输入发送阶段最多等待 5 秒；原生/DOM 填写核验字段实际文本。失败不自动重放，也不自动降级。
+
+`npm test`：51 项全部通过。新增 DOM 激活/禁用校验、DOM 填写与事件通知、吞输入后的文本不匹配、伪造键盘回执拒绝、键盘超时后队列可用、down 失败仍发送 up、键盘弹窗及不可访问子 frame 的回归；stdio MCP 检查新增模式 schema 和 DOM 坐标拒绝。
+
+新增 `node scripts/interaction-smoke.mjs --input-capture --executable <path> --family <family>`。测试在临时浏览器、独立配对扩展和本地 fixture 上执行，通过测试用 CDP `Input.setIgnoreInputEvents(true)` 主动抑制输入；被测操作仍通过真实 Hub/扩展。验证原生点击/按键明确失败、DOM 点击产生一次非可信 click 且没有 pointerdown、DOM 填写成功，以及解除抑制后原生填写/组合键/点击恢复，受控标签保持非活动。原始结果位于忽略目录 `test-results/input-capture-*.json`。
+
+这是一项可重复的输入抑制测试，不是 Windows 原生菜单或真实标签拖动的逐场景 UI 复现。DOM 模式需要渲染进程仍能响应，不能据此承诺所有原生菜单或系统模态状态都可绕过。Chromium 的 `SetIgnoreInputEvents(false)` 只释放该 handler 自己的 `ScopedIgnoreInputEvents`，不能用于强行撤销其他浏览器 UI 的捕获状态，见 [源码](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/content/browser/devtools/protocol/input_handler.cc)。
+
+Chromium 156 与 Edge 155 均通过上述输入抑制测试，并验证 textarea/contenteditable 的原生与 DOM 多行填写、子 frame 的可信键盘回执。Chromium 156 完整交互回归通过，包括后台输入/上传、前后台和遮挡点击、缩放、hover 位移拦截、闭合 Shadow DOM、21 页续读和导航。`npm run test:package` 通过，生成 0.3.1 安装包，仓库外安装后仍暴露 17 工具。
 
 **2026-10-20 三项问题核验与修复后的最新结果**
 

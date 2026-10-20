@@ -9,7 +9,7 @@ export const DATA_DIR = process.env.BROWSER_BRIDGE_HOME
   : process.platform === 'win32' ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'BrowserBridge')
     : join(homedir(), '.local', 'share', 'browser-bridge');
 export const DEFAULT_CONFIG = join(DATA_DIR, 'config.json');
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.2';
 
 export async function loadConfig(path = DEFAULT_CONFIG) {
   let config;

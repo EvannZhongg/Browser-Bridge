@@ -78,7 +78,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     try:
         client.start()
         definitions = client.wait_ready()
-        assert len(definitions) == 14, statuses
+        assert len(definitions) == 17, statuses
         tools = ToolCatalog(definitions).select(client.tool_names, context)
 
         def call(method, arguments=None, allow_error=False):
@@ -118,13 +118,35 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         h = {'tab_handle': claimed['tab_handle']}
         handles.append(h)
 
+        _, extra = call('open_tab', {'browser_id': browser_id, 'url': url + '/extra', 'active': False})
+        for _ in range(100):
+            _, listed = call('list_tabs', {'browser_id': browser_id})
+            extra_tab = next((item for item in listed['tabs'] if item['tab_id'] == extra['tab_id']
+                and item['title'] == 'Nosis Bridge contract fixture'), None)
+            if extra_tab:
+                break
+            time.sleep(.1)
+        assert extra_tab, 'Extra fixture tab did not load'
+        _, extra_claim = call('claim_tab', {'browser_id': browser_id, 'tab_id': extra_tab['tab_id'],
+            'expected_url': extra_tab['url'], 'expected_title': extra_tab['title']})
+        extra_h = {'tab_handle': extra_claim['tab_handle']}
+        handles.append(extra_h)
+        call('activate_tab', {**extra_h, 'focus_window': False})
+        call('close_tab', extra_h)
+        handles.remove(extra_h)
+        call('snapshot', extra_h, allow_error=True)
+        call('activate_tab', {**h, 'focus_window': False})
+
         def ref(name, role):
             _, snapshot = call('snapshot', h)
             match = re.search(r'\[([^\]]+)\] ' + role + ' ' + re.escape(json.dumps(name)), snapshot['snapshot'])
             assert match, snapshot['snapshot']
             return match[1]
 
-        call('fill', {**h, 'ref': ref('Name', 'textbox'), 'text': 'Nosis 测试'})
+        _, filled = call('fill', {**h, 'ref': ref('Name', 'textbox'), 'text': 'Nosis 测试'})
+        assert filled['value_verified'] is True
+        _, dom_filled = call('fill', {**h, 'ref': ref('Name', 'textbox'), 'text': 'Nosis DOM 测试', 'mode': 'dom'})
+        assert dom_filled['value_verified'] is True and dom_filled['events_trusted'] is False
         call('press_key', {**h, 'key': 'Tab'})
         call('click', {**h, 'ref': ref('Choose file', 'button')})
         _, chooser = call('snapshot', h)
@@ -184,9 +206,10 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         call('release_tab', h)
         handles.clear()
         assert set(sample['method'] for sample in samples) == {
-            'list_browsers','list_tabs','claim_tab','release_tab','snapshot','read_text','click','fill','press_key',
+            'list_browsers','list_tabs','open_tab','activate_tab','close_tab','claim_tab','release_tab','snapshot','read_text','click','fill','press_key',
             'scroll','navigate','handle_dialog','upload_file','screenshot'}
         report = {'family': args.family, 'tools': len(definitions), 'statuses': statuses, 'samples': samples,
+            'command': settings['command'], 'args': settings.get('args', []),
             'errors': errors, 'media_origin': 'tool_media', 'text_only_image_notice': True, 'image_limit_bytes': MAX_IMAGE_BYTES,
             'oversized_text_artifact': True, 'artifact_pages': len(pages), 'artifact_paging_limitation': paging_limitation}
         out = ROOT / 'test-results'

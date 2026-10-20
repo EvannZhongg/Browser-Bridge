@@ -51,7 +51,7 @@ Bridge 因为 Hub、MCP 和浏览器都在本机，只传文件路径，不增�
 
 - Hub、客户端、MCP、setup 全部改成 Node ESM，依赖标准 MCP SDK、ws、zod；未引入 Playwright 运行依赖。
 - 删除原 Python 包、pyproject/uv.lock 和旧测试/脚本；没有 Python 启动包装或读取旧配对数据的兼容层。
-- npm 包 @evannzhongg/browser-bridge 提供 browser-bridge bin；通用配置只使用命令和 mcp 参数。
+- npm 包 @evan_zhong/browser-bridge 提供 browser-bridge bin；通用配置通过固定版本的 npx 启动 `browser-bridge mcp`。
 - setup 将可重用扩展复制到用户数据目录，避免 npx 缓存目录变化造成失效；开发者也可显式选择仓库扩展目录。
 - Windows 使用当前用户 SID 配置私有目录 ACL，避免中文账户名的控制台编码问题。
 - 发布白名单、extension/.npmignore 和 prepack 检查共同防止把 config.generated.js 与配对密钥打进包。

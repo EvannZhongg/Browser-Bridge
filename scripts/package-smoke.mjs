@@ -19,7 +19,7 @@ let hub, ws, client;
 try {
   const prefix = join(temp, 'global install');
   npm(['install', '--global', '--prefix', prefix, archive, '--ignore-scripts']);
-  const installed = process.platform === 'win32' ? join(prefix, 'node_modules/@evannzhongg/browser-bridge') : join(prefix, 'lib/node_modules/@evannzhongg/browser-bridge');
+  const installed = process.platform === 'win32' ? join(prefix, 'node_modules/@evan_zhong/browser-bridge') : join(prefix, 'lib/node_modules/@evan_zhong/browser-bridge');
   const home = join(temp, 'user data'), env = { ...process.env, BROWSER_BRIDGE_HOME: home };
   // This setup must use the INSTALLED package, never the source checkout.
   const config = { port: 47831, token: 'package-smoke-secret-'.repeat(4), extension_id: 'a'.repeat(32) };
@@ -33,7 +33,7 @@ try {
   assert.equal(paired.extensionDir, join(home, 'extension'));
   ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
   await once(ws, 'open'); const hello = once(ws, 'message');
-  ws.send(JSON.stringify({ type: 'hello', token: config.token, browser: { family: 'chrome', instance_id: 'package', run_id: 'one', profile_name: 'test', extension_version: '0.3.0' } }));
+  ws.send(JSON.stringify({ type: 'hello', token: config.token, browser: { family: 'chrome', instance_id: 'package', run_id: 'one', profile_name: 'test', extension_version: '0.3.2' } }));
   await hello;
   ws.on('message', raw => { const data = JSON.parse(raw.toString()); if (data.id) ws.send(JSON.stringify({ id: data.id, result: { released: true } })); });
   client = new Client({ name: 'package-test', version: '1' });

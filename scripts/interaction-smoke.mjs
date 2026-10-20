@@ -13,7 +13,7 @@ import { setup } from '../src/setup.mjs';
 import { startHub } from '../src/hub.mjs';
 import { BridgeClient } from '../src/client.mjs';
 
-const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, regressions: { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');
 const dir = await mkdtemp(join(tmpdir(), 'bridge-interaction-'));
 const rows = Array.from({ length: 200 }, (_, i) => `<li>Row ${i+1}: alpha beta gamma delta epsilon</li>`).join('');
@@ -70,7 +70,110 @@ try {
  const focus = () => evaluate(`chrome.windows.getAll({populate:true}).then(w=>w.map(x=>({id:x.id,focused:x.focused,state:x.state,active:x.tabs.filter(t=>t.active).map(t=>t.id)})).sort((a,b)=>a.id-b.id))`);
  await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);await pause(250);
  const operationsFocus=await focus();
- if (values.regressions) {
+ if (values['tab-indicators']) {
+  const nativeTab=await evaluate(`chrome.tabs.get(${tab.id})`);
+  const marker=await evaluate(`chrome.tabGroups.get(${nativeTab.groupId})`);
+  assert.equal(marker.title,'🤖 被控');assert.equal(marker.color,'green');assert.equal(marker.collapsed,false);
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge]").length'),0);
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge-click]").length'),0);
+  const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
+  assert.equal((await client.call('click',{...h,ref})).target_verified,true);
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge]").length'),0);
+  await until(()=>page('document.querySelectorAll("[data-local-browser-bridge-click]").length===1'),'transient click visual');
+  await client.call('activate_tab',{...h,focus_window:false});
+  const shot=await client.call('screenshot',h);
+  assert.equal(shot.capture.agent_indicators_included,false);
+  await client.call('navigate',{...h,url:base+'/slow'});
+  assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,marker.id);
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge]").length'),0);
+  await client.call('release_tab',h);claim=null;
+  assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,-1);
+  results.cases.push({scenario:'native_marker_without_page_overlay',marker,screenshot_clean:true,navigation_preserved:true,release_removed:true});
+
+  const original=await evaluate(`chrome.tabs.group({tabIds:[${tab.id},${cover.id}]})`);
+  await evaluate(`chrome.tabGroups.update(${original},{title:'User research',color:'blue',collapsed:false})`);
+  await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);
+  const claimAgain=async()=>{
+   const current=(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs.find(t=>t.tab_id===tab.id);
+   claim=await client.call('claim_tab',{browser_id:browserInfo.browser_id,tab_id:tab.id,expected_url:current.url,expected_title:current.title});
+   assert.equal(claim.visual_warning,undefined);return {tab_handle:claim.tab_handle};
+  };
+  const groupedHandle=await claimAgain();
+  assert.notEqual((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,original);
+  await client.call('release_tab',groupedHandle);claim=null;
+  assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,original);
+  assert.equal((await evaluate(`chrome.tabGroups.get(${original})`)).title,'User research');
+  assert.equal((await evaluate(`chrome.tabs.get(${cover.id})`)).active,true);
+  results.cases.push({scenario:'original_group_restored',group_id:original,background_preserved:true});
+
+  const disconnectedHandle=await claimAgain();
+  await client.close();client=new BridgeClient(paired.config);
+  await until(async()=>(await evaluate(`chrome.tabs.get(${tab.id})`)).groupId===original,'session disconnect group restoration');
+  await assert.rejects(client.call('snapshot',disconnectedHandle),/expired/);claim=null;
+  results.cases.push({scenario:'session_disconnect_restores_group',restored:true});
+ } else if (values['input-capture']) {
+  const refFor = (snapshot, role, label) => snapshot.snapshot.match(new RegExp(`\\[([^\\]]+)\\] ${role} "${label}"`))[1];
+  const inputRef = async () => refFor(await client.call('snapshot',h),'textbox','Name');
+  const buttonRef = async () => refFor(await client.call('snapshot',h),'button','Go');
+  // Deterministically suppress browser-native input in a disposable tab. This
+  // exercises ignored-input recovery, not an OS menu/tab-drag UI reproduction.
+  const suppress = ignore => evaluate(`chrome.debugger.sendCommand({tabId:${tab.id}},'Input.setIgnoreInputEvents',{ignore:${ignore}})`);
+  const fill = await client.call('fill',{...h,ref:await inputRef(),text:'native baseline'});
+  assert.equal(fill.value_verified,true);
+  const key = await client.call('press_key',{...h,key:'Control+A'});
+  assert.equal(key.delivery_verified,true);
+  results.cases.push({scenario:'native_baseline',fill,key});
+  await page('window.__count=0;window.__events=[];true');
+  await suppress(true);
+  try {
+   let clickError;
+   try { await client.call('click',{...h,ref:await buttonRef()}); } catch(error) { clickError=error.message; }
+   assert.ok(clickError,'suppressed native click must fail');
+   assert.equal((await state()).count,0);
+   let keyError;
+   try { await client.call('press_key',{...h,key:'Z'}); } catch(error) { keyError=error.message; }
+   assert.ok(keyError,'suppressed keyboard input must fail');
+   assert.equal(await page('document.querySelector("#edit").value'),'native baseline');
+   results.cases.push({scenario:'native_input_suppressed',click_error:clickError,key_error:keyError,no_replay:true});
+   const focusBefore=await page('document.activeElement.id');
+   const domFill=await client.call('fill',{...h,ref:await inputRef(),text:'中文 DOM works',mode:'dom'});
+   assert.equal(domFill.value_verified,true);assert.equal(domFill.events_trusted,false);
+   assert.equal(await page('document.querySelector("#edit").value'),'中文 DOM works');
+   assert.equal(await page('document.activeElement.id'),focusBefore);
+   const domClick=await client.call('click',{...h,ref:await buttonRef(),mode:'dom'});
+   assert.equal(domClick.events_trusted,false);assert.equal(domClick.method,'dom');
+   const observed=await state();assert.equal(observed.count,1);
+   assert.equal(observed.events.filter(e=>e.type==='click').at(-1).trusted,false);
+   assert.equal(observed.events.filter(e=>e.type==='pointerdown').length,0);
+   results.cases.push({scenario:'dom_during_suppression',fill:domFill,click:domClick,observed});
+  } finally { await suppress(false); }
+  await client.call('fill',{...h,ref:await inputRef(),text:'recovered'});
+  await client.call('press_key',{...h,key:'Control+A'});
+  assert.equal((await client.call('press_key',{...h,key:'Z'})).delivery_verified,true);
+  assert.equal(await page('document.querySelector("#edit").value'),'z');
+  assert.equal((await client.call('click',{...h,ref:await buttonRef()})).target_verified,true);
+  assert.equal((await state()).count,2);
+  assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
+  results.cases.push({scenario:'native_recovered',value:'z',count:2,background:true});
+  await page(`document.body.insertAdjacentHTML('beforeend','<textarea aria-label="Extra area" style="position:fixed;left:20px;top:60px"></textarea><div contenteditable="true" role="textbox" aria-label="Rich editor" style="position:fixed;left:20px;top:120px;width:120px;height:50px;white-space:pre-wrap"></div>');true`);
+  for (const label of ['Extra area','Rich editor']) {
+   for (const mode of ['native','dom']) {
+    const snap=await client.call('snapshot',h), text=`${mode} first\n第二行`;
+    const result=await client.call('fill',{...h,ref:refFor(snap,'textbox',label),text,mode});
+    assert.equal(result.value_verified,true);
+    assert.equal(await page(`(()=>{const e=document.querySelector('[aria-label="${label}"]');return ${mode==='dom'?'e.isContentEditable?e.textContent:e.value':'e.isContentEditable?e.innerText:e.value'}})()`),text);
+   }
+  }
+  results.cases.push({scenario:'textarea_and_contenteditable_multiline',modes:['native','dom'],verified:true});
+  await page(`window.__frameReady=false;const f=document.createElement('iframe');f.style='position:fixed;left:600px;top:50px';f.onload=()=>{f.contentDocument.body.innerHTML='<input id="child" aria-label="Child input">';window.__frameReady=true};f.src='/ad';document.body.append(f);true`);
+  await until(()=>page('window.__frameReady'),'child fixture');
+  const childSnap=await client.call('snapshot',h);
+  await client.call('fill',{...h,ref:refFor(childSnap,'textbox','Child input'),text:'child text'});
+  await client.call('press_key',{...h,key:'Control+A'});
+  assert.equal((await client.call('press_key',{...h,key:'Z'})).delivery_verified,true);
+  assert.equal(await page('document.querySelector("iframe").contentDocument.querySelector("#child").value'),'z');
+  results.cases.push({scenario:'keyboard_delivery_in_child_frame',verified:true});
+ } else if (values.regressions) {
   // These actions use only the disposable fixture and the public Bridge API.
   const refFor = snapshot => snapshot.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
   for (const coordinates of [false, true]) {
@@ -214,13 +317,13 @@ try {
  assert.equal(fragment.same_document,true);assert.equal(fragment.snapshot,undefined);assert.equal(fragment.url,base+'/slow#fragment');
  }
  results.browser=browserInfo.user_agent;results.extension_version=browserInfo.extension_version;
- console.log(JSON.stringify({snapshots:results.snapshots,background_operations:results.background_operations,
+ console.log(JSON.stringify({tab_indicators:values['tab-indicators']?results.cases:undefined,input_capture:values['input-capture']?results.cases:undefined,snapshots:results.snapshots,background_operations:results.background_operations,
   hover:results.cases.find(c=>c.scenario==='hover_shift_30px'),navigation:results.navigation}));
- await client.call('release_tab',h);claim=null;
+ if(claim)await client.call('release_tab',{tab_handle:claim.tab_handle});claim=null;
 } finally {
  if(claim)await client?.call('release_tab',{tab_handle:claim.tab_handle}).catch(()=>{});
  await client?.close();ws?.close();browser.kill();await hub.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  await mkdir(join(ROOT,'test-results'),{recursive:true});
-  await writeFile(join(ROOT,'test-results',`${values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));
+  await writeFile(join(ROOT,'test-results',`${values['tab-indicators']?'tab-indicators':values['input-capture']?'input-capture':values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));
  await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{});
 }

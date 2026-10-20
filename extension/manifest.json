@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Local Browser Bridge",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "Connect existing Chrome and Edge tabs to a locally paired MCP client.",
   "minimum_chrome_version": "120",
   "permissions": [
     "debugger",
     "tabs",
+    "tabGroups",
     "storage",
     "alarms"
   ],
