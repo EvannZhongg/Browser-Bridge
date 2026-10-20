@@ -95,7 +95,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
   const server = http.createServer((request, response) => {
     if (request.headers.origin || !bearer(request)) { response.writeHead(403).end(); return; }
     response.setHeader('Content-Type', 'application/json');
-    if (request.url === '/health' && request.method === 'GET') response.end(JSON.stringify({ service: 'browser-bridge', version: VERSION, browsers: browsers.size }));
+    if (request.url === '/health' && request.method === 'GET') response.end(JSON.stringify({ service: 'browser-attach', version: VERSION, browsers: browsers.size }));
     else if (request.url === '/shutdown' && request.method === 'POST') {
       response.end('{"stopping":true}'); setImmediate(() => close());
     } else response.writeHead(404).end();

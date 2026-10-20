@@ -30,7 +30,7 @@ export function createInput(cdp, value) {
 
   async function pressKey(tabId, chord) {
     const { params, text } = keyParameters(chord);
-    const name = `__bridgeKey_${crypto.randomUUID().replaceAll('-', '')}`;
+    const name = `__attachKey_${crypto.randomUUID().replaceAll('-', '')}`;
     const contexts = new Set(), guards = [], omittedFrames = [];
     const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, contexts, resolve, reject }));
     receipt.catch(() => {});
@@ -44,14 +44,14 @@ export function createInput(cdp, value) {
       for (const frameId of frames) {
         let contextId;
         try {
-          const { executionContextId } = await cdp(tabId, 'Page.createIsolatedWorld', { frameId, worldName: 'browser-bridge-input' });
+          const { executionContextId } = await cdp(tabId, 'Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-input' });
           if (!executionContextId) throw new Error('Could not create keyboard verification context; no input was dispatched.');
           contextId = executionContextId;
           contexts.add(executionContextId);
           await cdp(tabId, 'Runtime.addBinding', { name, executionContextId });
           const installed = await cdp(tabId, 'Runtime.evaluate', {
             contextId: executionContextId, expression: `(${installKeyReceipt.toString()})(${JSON.stringify(name)},${JSON.stringify(params)})`,
-            objectGroup: 'browser-bridge',
+            objectGroup: 'browser-attach',
           });
           if (installed.exceptionDetails) value(installed);
           if (!installed.result?.objectId) throw new Error('Could not install keyboard verification; no input was dispatched.');

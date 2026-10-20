@@ -8,7 +8,7 @@ import WebSocket from 'ws';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { startHub } from '../src/hub.mjs';
-import { BridgeClient } from '../src/client.mjs';
+import { AttachClient } from '../src/client.mjs';
 import { ROOT, writeJson } from '../src/config.mjs';
 import { setup, configureNosis } from '../src/setup.mjs';
 import { validateFiles } from '../src/upload.mjs';
@@ -28,7 +28,7 @@ async function fixture(t, options) {
     const ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
     sockets.push(ws); await once(ws, 'open');
     const response = once(ws, 'message');
-    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.3.2' } }));
+    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.3.3' } }));
     const connected = JSON.parse((await response)[0].toString());
     ws.on('message', raw => {
       const data = JSON.parse(raw.toString()); requests.push(data);
@@ -45,7 +45,7 @@ async function fixture(t, options) {
     });
     return { id: connected.browser_id, ws };
   }
-  function client() { const client = new BridgeClient(config); clients.push(client); return client; }
+  function client() { const client = new AttachClient(config); clients.push(client); return client; }
   async function claim(client, browser, tabId = 9) {
     const result = await client.call('list_tabs', { browser_id: browser.id });
     const tab = result.tabs.find(tab => tab.tab_id === tabId);
@@ -127,11 +127,11 @@ test('unknown outcome disconnects the client and releases its claims without rep
 
 test('real stdio MCP exposes 17 tools, single JSON content, PNG image, and validated upload', async t => {
   const f = await fixture(t), browser = await f.extension();
-  const temp = await mkdtemp(join(tmpdir(), 'bridge-mcp-'));
+  const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const path = join(temp, 'config.json'), file = join(temp, '中文 empty.txt');
   await writeJson(path, f.config); await writeFile(file, '');
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-bridge.mjs'), 'mcp', '--config', path], cwd: temp });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', path], cwd: temp });
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
@@ -174,7 +174,7 @@ test('real stdio MCP exposes 17 tools, single JSON content, PNG image, and valid
 });
 
 test('upload rejects directories, relative and missing files; handles empty files and Unicode paths', async t => {
-  const temp = await mkdtemp(join(tmpdir(), 'bridge-files-'));
+  const temp = await mkdtemp(join(tmpdir(), 'attach-files-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const file = join(temp, '中文 empty.txt'); await writeFile(file, '');
   assert.deepEqual(await validateFiles([file]), [file]); assert.deepEqual(await validateFiles([]), []);
@@ -184,7 +184,7 @@ test('upload rejects directories, relative and missing files; handles empty file
 });
 
 test('setup installs stable extension data outside package, and preserves current pairing on repeated setup', async t => {
-  const temp = await mkdtemp(join(tmpdir(), 'bridge-setup-'));
+  const temp = await mkdtemp(join(tmpdir(), 'attach-setup-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const configPath = join(temp, 'config.json');
   const a = await setup({ configPath }), b = await setup({ configPath });
@@ -192,17 +192,17 @@ test('setup installs stable extension data outside package, and preserves curren
   assert.equal(a.config.extension_id.length, 32);
   assert.equal(a.extensionDir, join(temp, 'extension'));
   assert.ok((await readFile(join(a.extensionDir, 'config.generated.js'), 'utf8')).includes(a.config.token));
-  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.3.2');
+  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.3.3');
 });
 
 test('Nosis configuration uses the current server schema and preserves unrelated servers', async t => {
-  const temp = await mkdtemp(join(tmpdir(), 'bridge-nosis-'));
+  const temp = await mkdtemp(join(tmpdir(), 'attach-nosis-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const path = join(temp, 'agent_config.json');
   await writeFile(path, JSON.stringify({ mcp: { servers: { other: { command: 'other-server' } } } }));
   await configureNosis(temp);
   const config = JSON.parse(await readFile(path, 'utf8'));
   assert.deepEqual(config.mcp.servers.other, { command: 'other-server' });
-  assert.equal(config.mcp.servers.browser_bridge.command, 'browser-bridge');
-  assert.ok(!('scope' in config.mcp.servers.browser_bridge));
+  assert.equal(config.mcp.servers.browser_attach.command, 'browser-attach');
+  assert.ok(!('scope' in config.mcp.servers.browser_attach));
 });

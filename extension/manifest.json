@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Local Browser Bridge",
-  "version": "0.3.2",
+  "name": "BrowserAttach",
+  "version": "0.3.3",
   "description": "Connect existing Chrome and Edge tabs to a locally paired MCP client.",
   "minimum_chrome_version": "120",
   "permissions": [
@@ -17,11 +17,18 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Local Browser Bridge"
+    "default_title": "BrowserAttach",
+    "default_icon": {
+      "16": "icons/BrowserAttach.png",
+      "32": "icons/BrowserAttach.png"
+    }
   },
   "options_page": "options.html",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs+qDiHd5PWudXHWlZavUGxYrk/oVDs8NXbgzdjGKQvJr0QUhM9OiurLQvAkNWfabdvWAT0iCl0TwZqeoe86cypci5H+mgBuSsW7LbEH5Le7eLRlgxOGIERZO+4e6ztyvsVe4QgYfNgS+uPZtovEVfbDh+VCr0EyUzXeqDR0DRdzz+3lkYtLutgBzna7XUYmKXH9tkPBL32A7Diu1RT2E3I40ydurreLTJ71TH9D8LJF4zGbG1/7VUqkxMGcIZEEvJod2achB12TQvo8tCCNeMijt4UdRudl2G1+axjjRJwyWDjes9tH4AjHyhmX3Ynn42Kf5LmkvyAsKx6yEApRF6wIDAQAB",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src ws://127.0.0.1:47831"
+  },
+  "icons": {
+    "128": "icons/BrowserAttach.png"
   }
 }

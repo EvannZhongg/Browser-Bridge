@@ -44,7 +44,7 @@ export function createClick(cdp, value, viewport, position) {
     const { backendNodeId, frameId } = await cdp(tabId, 'DOM.getNodeForLocation', {
       x: Math.floor(point.x + view.scroll_x), y: Math.floor(point.y + view.scroll_y), includeUserAgentShadowDOM: true,
     });
-    const hit = await cdp(tabId, 'DOM.resolveNode', { backendNodeId, objectGroup: 'browser-bridge' });
+    const hit = await cdp(tabId, 'DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
     if (node) {
       const unblocked = value(await cdp(tabId, 'Runtime.callFunctionOn', {
         objectId: node.objectId, functionDeclaration: 'function(hit) { for (let e = hit; e; e = e.parentNode || e.host) if (e === this) return true; return false; }',
@@ -52,22 +52,22 @@ export function createClick(cdp, value, viewport, position) {
       }));
       if (!unblocked) throw new Error('Another element covers this ref. Inspect a new snapshot or screenshot.');
     }
-    const name = `__bridgeClick_${crypto.randomUUID().replaceAll('-', '')}`;
+    const name = `__attachClick_${crypto.randomUUID().replaceAll('-', '')}`;
     let timer, guard;
     const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, resolve, reject }));
     // Mark handled before any setup can fail.
     receipt.catch(() => {});
     try {
       const frame = node?.frameId || frameId;
-      const { executionContextId } = await cdp(tabId, 'Page.createIsolatedWorld', { frameId: frame, worldName: 'browser-bridge-input' });
+      const { executionContextId } = await cdp(tabId, 'Page.createIsolatedWorld', { frameId: frame, worldName: 'browser-attach-input' });
       if (!executionContextId) throw new Error('Could not create an isolated click verification context; no input was dispatched.');
       pending.get(tabId).contextId = executionContextId;
       await cdp(tabId, 'Runtime.addBinding', { name, executionContextId });
       const isolated = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: node?.backendNodeId || backendNodeId,
-        executionContextId, objectGroup: 'browser-bridge' });
+        executionContextId, objectGroup: 'browser-attach' });
       const installed = await cdp(tabId, 'Runtime.callFunctionOn', {
         objectId: isolated.object.objectId, functionDeclaration: installGuard.toString(),
-        arguments: [{ value: name }], objectGroup: 'browser-bridge',
+        arguments: [{ value: name }], objectGroup: 'browser-attach',
       });
       if (installed.exceptionDetails) value(installed);
       guard = installed.result?.objectId;

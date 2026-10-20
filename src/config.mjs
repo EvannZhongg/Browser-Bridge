@@ -4,20 +4,20 @@ import { readFile, mkdir, writeFile, rename, chmod } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = fileURLToPath(new URL('../', import.meta.url));
-export const DATA_DIR = process.env.BROWSER_BRIDGE_HOME
-  ? resolve(process.env.BROWSER_BRIDGE_HOME)
-  : process.platform === 'win32' ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'BrowserBridge')
-    : join(homedir(), '.local', 'share', 'browser-bridge');
+export const DATA_DIR = process.env.BROWSER_ATTACH_HOME
+  ? resolve(process.env.BROWSER_ATTACH_HOME)
+  : process.platform === 'win32' ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'BrowserAttach')
+    : join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'browser-attach');
 export const DEFAULT_CONFIG = join(DATA_DIR, 'config.json');
-export const VERSION = '0.3.2';
+export const VERSION = '0.3.3';
 
 export async function loadConfig(path = DEFAULT_CONFIG) {
   let config;
   try { config = JSON.parse(await readFile(path, 'utf8')); }
-  catch (error) { throw new Error(`Cannot read pairing config ${path}${error.code ? ` (${error.code})` : ''}. Run browser-bridge setup.`, { cause: error }); }
+  catch (error) { throw new Error(`Cannot read pairing config ${path}${error.code ? ` (${error.code})` : ''}. Run browser-attach setup.`, { cause: error }); }
   if (typeof config.token !== 'string' || config.token.length < 32 ||
       !Number.isInteger(config.port) || config.port < 1024 || config.port > 65535 ||
-      !/^[a-p]{32}$/.test(config.extension_id)) throw new Error('Invalid pairing config. Run browser-bridge setup.');
+      !/^[a-p]{32}$/.test(config.extension_id)) throw new Error('Invalid pairing config. Run browser-attach setup.');
   return config;
 }
 

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { VERSION } from '../src/config.mjs';
+import { ROOT, VERSION } from '../src/config.mjs';
 
 for (const path of ['package.json', 'extension/manifest.json']) {
   if (JSON.parse(await readFile(new URL(`../${path}`, import.meta.url), 'utf8')).version !== VERSION) throw new Error(`Version mismatch: ${path}`);
@@ -8,13 +8,13 @@ for (const path of ['package.json', 'extension/manifest.json']) {
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const result = JSON.parse(execFileSync(npm, ['pack', '--dry-run', '--ignore-scripts', '--json'], {
-  encoding: 'utf8', shell: process.platform === 'win32', stdio: ['ignore', 'pipe', 'pipe'],
+  cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', stdio: ['ignore', 'pipe', 'pipe'],
 }))[0];
 const names = result.files.map(file => file.path);
 for (const path of names) {
   if (/config\.generated\.js|(^|\/)(\.local|\.venv|test-results|node_modules)\//.test(path)) throw new Error(`Private file included in package: ${path}`);
 }
-for (const path of ['bin/browser-bridge.mjs', 'src/mcp.mjs', 'src/hub.mjs', 'extension/manifest.json']) {
+for (const path of ['bin/browser-attach.mjs', 'src/mcp.mjs', 'src/hub.mjs', 'extension/manifest.json', 'extension/icons/BrowserAttach.png']) {
   if (!names.includes(path)) throw new Error(`Package is missing ${path}`);
 }
 console.log(`Package boundary verified (${names.length} files, no generated pairing secret).`);

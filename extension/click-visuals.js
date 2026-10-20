@@ -1,7 +1,7 @@
 // Only transient click feedback is drawn in the page. Control status stays in
 // the native tab strip; no badge or document-start script is installed.
 function installClickVisual() {
-  if (globalThis.__localBrowserBridgeClickVisual) return;
+  if (globalThis.__localBrowserAttachClickVisual) return;
   let host, ring, pointer, expiry;
   let hidden = false;
   const style = (node, css) => { node.style.cssText = css; return node; };
@@ -9,7 +9,7 @@ function installClickVisual() {
   function click(x, y) {
     remove();
     host = style(document.createElement('div'), 'position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;contain:layout style!important;');
-    host.setAttribute('data-local-browser-bridge-click', '');
+    host.setAttribute('data-local-browser-attach-click', '');
     host.setAttribute('aria-hidden', 'true'); host.inert = true;
     const shadow = host.attachShadow({ mode: 'closed' });
     ring = style(document.createElement('div'), 'position:absolute;width:26px;height:26px;border:2px solid #e95c3b;border-radius:50%;background:#e95c3b22;box-sizing:border-box;transform:translate(-50%,-50%);pointer-events:none;');
@@ -26,7 +26,7 @@ function installClickVisual() {
     expiry = setTimeout(remove, 1200);
   }
   function visible(show) { hidden = !show; if (host) host.style.visibility = show ? 'visible' : 'hidden'; }
-  globalThis.__localBrowserBridgeClickVisual = { click, visible, remove };
+  globalThis.__localBrowserAttachClickVisual = { click, visible, remove };
 }
 
 export function createClickVisuals(api) {
@@ -40,7 +40,7 @@ export function createClickVisuals(api) {
     if (!contextId) {
       const { frameTree } = await send(tabId, 'Page.getFrameTree');
       ({ executionContextId: contextId } = await send(tabId, 'Page.createIsolatedWorld', {
-        frameId: frameTree.frame.id, worldName: 'local-browser-bridge-click-visual',
+        frameId: frameTree.frame.id, worldName: 'local-browser-attach-click-visual',
       }));
       if (version !== versions.get(tabId)) throw new Error('Click visual was cancelled');
       contexts.set(tabId, contextId);
@@ -51,7 +51,7 @@ export function createClickVisuals(api) {
   async function visible(tabId, show) {
     await pending.get(tabId)?.catch(() => {});
     if (!contexts.has(tabId)) return null;
-    try { await evaluate(tabId, `globalThis.__localBrowserBridgeClickVisual?.visible(${!!show})`); return null; }
+    try { await evaluate(tabId, `globalThis.__localBrowserAttachClickVisual?.visible(${!!show})`); return null; }
     catch (error) { return error.message; }
   }
   function forget(tabId) { versions.set(tabId, (versions.get(tabId) || 0) + 1); contexts.delete(tabId); pending.delete(tabId); }
@@ -63,14 +63,14 @@ export function createClickVisuals(api) {
       await Promise.race([
         (async () => {
           await pending.get(tabId)?.catch(() => {});
-          if (contexts.has(tabId)) await evaluate(tabId, 'globalThis.__localBrowserBridgeClickVisual?.remove()');
+          if (contexts.has(tabId)) await evaluate(tabId, 'globalThis.__localBrowserAttachClickVisual?.remove()');
         })().catch(() => {}),
         new Promise(resolve => { timer = setTimeout(resolve, 250); }),
       ]);
     } finally { clearTimeout(timer); forget(tabId); }
   }
   function click(tabId, x, y) {
-    const operation = evaluate(tabId, `(${installClickVisual.toString()})();globalThis.__localBrowserBridgeClickVisual.click(${JSON.stringify(x)},${JSON.stringify(y)})`);
+    const operation = evaluate(tabId, `(${installClickVisual.toString()})();globalThis.__localBrowserAttachClickVisual.click(${JSON.stringify(x)},${JSON.stringify(y)})`);
     pending.set(tabId, operation);
     const done = () => { if (pending.get(tabId) === operation) pending.delete(tabId); };
     operation.then(done, done);

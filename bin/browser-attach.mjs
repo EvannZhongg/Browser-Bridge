@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { DEFAULT_CONFIG, loadConfig } from '../src/config.mjs';
-import { ensureHub, hubIsRunning, BridgeClient } from '../src/client.mjs';
+import { ensureHub, hubIsRunning, AttachClient } from '../src/client.mjs';
 
 try {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -11,7 +11,7 @@ try {
   } });
   const action = positionals[0] || 'mcp', configPath = values.config;
   if (values.help) {
-    console.log('browser-bridge [mcp|setup|start|status|stop]\n  setup [--extension-dir PATH] [--port 47831] [--nosis]\n  --config PATH (default: per-user BrowserBridge data directory)');
+    console.log('browser-attach [mcp|setup|start|status|stop]\n  setup [--extension-dir PATH] [--port 47831] [--nosis]\n  --config PATH (default: per-user BrowserAttach data directory)');
   } else if (action === 'mcp') {
     const { runMcp } = await import('../src/mcp.mjs'); await runMcp(configPath);
   } else if (action === 'hub') {
@@ -30,7 +30,7 @@ try {
     const config = await loadConfig(configPath);
     if (!await hubIsRunning(config)) console.log('Local hub is stopped.');
     else {
-      const client = new BridgeClient(config);
+      const client = new AttachClient(config);
       try { console.log(JSON.stringify(await client.call('list_browsers'), null, 2)); } finally { await client.close(); }
     }
   } else if (action === 'stop') {

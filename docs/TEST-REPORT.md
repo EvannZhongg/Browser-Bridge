@@ -1,14 +1,21 @@
-# BrowserBridge 验证报告
+# BrowserAttach 验证报告
 
-**2026-10-20：正式 npm 发布与 Nosis npx 验证**
+## 0.3.3（2026-10-20）
 
-`@evan_zhong/browser-bridge@0.3.2` 由已推送提交 `8883425` 发布，公开 registry 已提供该版本；tarball SHA-512 与发布产物一致。本机 Nosis 配置备份后改为 `npx.cmd --yes --package=@evan_zhong/browser-bridge@0.3.2 browser-bridge mcp`，保留配对目录和 `approval: always`。
+- 重命名 npm 包、CLI、MCP 服务名、运行数据目录和环境变量，新增品牌素材与 MIT 许可证。
+- `npm test`：61 项通过。
+- `npm run test:package`：在仓库外的含空格目录安装 tgz、运行已安装 CLI、创建稳定扩展副本并通过 stdio 发现全部 17 个工具。
+- Chromium 156 真实扩展专项：红色分组和新标题、导航保持、释放恢复用户分组、MCP 断连恢复通过；页面无常驻徽标，默认截图隐藏临时点击反馈。
+- Chromium 156 上传 fixture：54 次工具调用，单/多文件、Unicode 路径、空文件、隐藏 input、showPicker、清空、禁用/目录/缺失文件校验、导航后清理和对话框处理通过。
+- Windows 安装脚本改用稳定用户目录，包校验从任意工作目录执行；通用配置无作者本机路径。
 
-从 Nosis 工作树运行真实 `McpClientManager`，避免 npx 使用 BrowserBridge 当前源码。Chrome / Edge 均发现并调用全部 17 个工具，成功调用分别为 31 / 32 次；截图、上传、原生/DOM 填写、标签管理与错误恢复通过。原始报告记录 npx 启动参数，详见 [Nosis 接入记录](NOSIS-INTEGRATION.md)。这不包含真实模型请求或前端审批交互。
+本轮使用临时 profile 和本地 fixture。以下保留的旧版本验证记录只说明当时覆盖，不等同于本轮重新执行了所有宿主或所有浏览器场景。
+
+## 历史验证
 
 **2026-10-20：0.3.2 原生标签栏标记与点击反馈**
 
-控制状态改为绿色「🤖 被控」原生标签分组，需要 `tabGroups` 权限。移除页面常驻徽标及原先的 3 秒刷新任务；保留原生点击后约 1.2 秒的箭头、光圈，节点随后移除。点击反馈依然在隔离世界中生成，未注册 document-start 脚本，默认截图隐藏反馈，`include_indicators: true` 可保留它。
+控制状态改为绿色「🔴」原生标签分组，需要 `tabGroups` 权限。移除页面常驻徽标及原先的 3 秒刷新任务；保留原生点击后约 1.2 秒的箭头、光圈，节点随后移除。点击反馈依然在隔离世界中生成，未注册 document-start 脚本，默认截图隐藏反馈，`include_indicators: true` 可保留它。
 
 新增分组测试覆盖逐标签标记、原分组恢复、空组重建、多标签恢复同组、用户改组/改名、窗口变化、扩展重载恢复、固定标签提示及设置失败回滚。Controller 验证默认截图隐藏点击反馈、调试停止后恢复分组、反馈初始化挂起时仍可释放且不会延后绘制。
 
@@ -62,7 +69,7 @@ Chromium 156 与 Edge 155 均通过上述输入抑制测试，并验证 textarea
 
 **真实交互**
 
-`scripts/interaction-smoke.mjs` 通过独立临时 profile 中真实扩展 → Hub 执行操作。私有 CDP 仅用于测试建立页面、切换测试标签/窗口和核验页面状态；没有代替 Bridge 执行被测动作。
+`scripts/interaction-smoke.mjs` 通过独立临时 profile 中真实扩展 → Hub 执行操作。私有 CDP 仅用于测试建立页面、切换测试标签/窗口和核验页面状态；没有代替 Attach 执行被测动作。
 
 | 场景 | Chromium 156 | Edge 155 |
 |---|---|---|
@@ -79,7 +86,7 @@ Chromium 156 与 Edge 155 均通过上述输入抑制测试，并验证 textarea
 | 同文档 fragment 导航、不附快照 | 正常返回 | 正常返回 |
 | 闭合 Shadow DOM 内按钮、点击链接切换文档 | 命中验证成功，目的页就绪 | 命中验证成功，目的页就绪 |
 
-计时为本机本地 fixture 的完整 Hub 调用，不是任意网站的性能保证。原始结果在忽略的 test-results/interaction-chromium.json、interaction-edge.json。早期只测点击的独立样本也验证过页面 visibility=hidden；完整输入后 Chromium 可能将受控页面呈现为 visible，因此测试还直接核验 chrome.tabs.active=false、活动标签未切换、失焦窗口未被前置，不能仅依赖 visibility 推断是否在后台。测试允许用户/系统让已聚焦窗口失焦，但不允许 Bridge 激活原先失焦的窗口。
+计时为本机本地 fixture 的完整 Hub 调用，不是任意网站的性能保证。原始结果在忽略的 test-results/interaction-chromium.json、interaction-edge.json。早期只测点击的独立样本也验证过页面 visibility=hidden；完整输入后 Chromium 可能将受控页面呈现为 visible，因此测试还直接核验 chrome.tabs.active=false、活动标签未切换、失焦窗口未被前置，不能仅依赖 visibility 推断是否在后台。测试允许用户/系统让已聚焦窗口失焦，但不允许 Attach 激活原先失焦的窗口。
 
 **当前 Chrome / Edge 与上传回归**
 
@@ -89,11 +96,11 @@ Chromium 156 与 Edge 155 均通过上述输入抑制测试，并验证 textarea
 
 **当前 Nosis 数据契约**
 
-Nosis 工作区正在从共享 Broker 改为 Core McpClientManager。本轮只更新 Bridge 的配置生成器和可选 scripts/verify-nosis.py，不修改 Nosis 源码或其未提交重构；生成配置已删除新架构禁止的 scope 字段。
+Nosis 工作区正在从共享 Broker 改为 Core McpClientManager。本轮只更新 Attach 的配置生成器和可选 scripts/verify-nosis.py，不修改 Nosis 源码或其未提交重构；生成配置已删除新架构禁止的 scope 字段。
 
 Chrome / Edge 均经当前 McpClientManager → stdio MCP 调用全部 14 工具，验证 ToolSet、ToolResultNormalizer、截图附件、tool_media、Provider image_url、文本模型降级及 isError 后连接可继续使用。未向真实模型 API 发请求，也未覆盖 Nosis 前端审批交互。原始报告为 test-results/nosis-contract-*.json。
 
-Nosis 大正文仍会生成完整 Artifact，但嵌套 JSON 长行被 read_file 截断后无法读到 TAILMARK；验证记录 artifact_paging_limitation=true。该 Nosis 通用读取缺陷未修复。本轮 Bridge 的快照游标能在服务端预算内分多次读取，不等于修复宿主所有超大 JSON 产物。
+Nosis 大正文仍会生成完整 Artifact，但嵌套 JSON 长行被 read_file 截断后无法读到 TAILMARK；验证记录 artifact_paging_limitation=true。该 Nosis 通用读取缺陷未修复。本轮 Attach 的快照游标能在服务端预算内分多次读取，不等于修复宿主所有超大 JSON 产物。
 
 **边界**
 

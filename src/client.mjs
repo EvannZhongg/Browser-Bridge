@@ -15,9 +15,9 @@ export async function hubIsRunning(config) {
     if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError') return false;
     throw error;
   }
-  if (!response.ok) throw new Error('Browser Bridge port is occupied by an unpaired service');
+  if (!response.ok) throw new Error('BrowserAttach port is occupied by an unpaired service');
   const health = await response.json();
-  if (health.service !== 'browser-bridge' || health.version !== VERSION)
+  if (health.service !== 'browser-attach' || health.version !== VERSION)
     throw new Error('Hub version differs from this package; stop the hub and start again.');
   return true;
 }
@@ -28,7 +28,7 @@ export async function ensureHub(configPath) {
   if (await hubIsRunning(config)) return config;
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   const log = await open(join(dirname(configPath), 'hub.log'), 'a', 0o600);
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/browser-bridge.mjs', import.meta.url)), 'hub', '--config', configPath], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/browser-attach.mjs', import.meta.url)), 'hub', '--config', configPath], {
     detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
   });
   let spawnError;
@@ -42,7 +42,7 @@ export async function ensureHub(configPath) {
   throw new Error(`Hub did not start. See ${join(dirname(configPath), 'hub.log')}`);
 }
 
-export class BridgeClient {
+export class AttachClient {
   constructor(config) { this.config = config; this.pending = new Map(); this.counter = 0; }
   async connect() {
     if (this.socket?.readyState === WebSocket.OPEN) return;

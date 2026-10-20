@@ -1,7 +1,7 @@
 // Native tab-strip indicators only. No page scripts, DOM nodes or click overlays.
-const STORAGE_KEY = 'browserBridgeTabIndicators';
-const TITLE = '🤖 被控';
-const COLOR = 'green';
+const STORAGE_KEY = 'browserAttachTabIndicators';
+const TITLE = '🔴';
+const COLOR = 'red';
 
 export function createVisuals(api) {
   const records = new Map();
@@ -13,7 +13,7 @@ export function createVisuals(api) {
   };
   async function badge(tabId, controlled) {
     await api.action.setBadgeText({ tabId, text: controlled ? 'RUN' : '' });
-    await api.action.setTitle({ tabId, title: controlled ? 'Agent 正在接管此标签页' : 'Local Browser Bridge' });
+    await api.action.setTitle({ tabId, title: controlled ? 'Agent 正在接管此标签页' : 'BrowserAttach' });
     if (controlled) await api.action.setBadgeBackgroundColor({ tabId, color: '#12634f' });
   }
   async function restore(tabId) {
@@ -62,7 +62,7 @@ export function createVisuals(api) {
     await ready;
     await badge(tabId, true);
     const tab = await api.tabs.get(tabId);
-    if (tab.pinned) throw new Error('Pinned tabs cannot display a native tab-group marker. Unpin the tab before claiming to show 🤖 被控; the extension RUN badge remains available.');
+    if (tab.pinned) throw new Error('Pinned tabs cannot display a native tab-group marker. Unpin the tab before claiming to show 🔴; the extension RUN badge remains available.');
     let previousGroup = null;
     if (tab.groupId >= 0) {
       const group = await api.tabGroups.get(tab.groupId);

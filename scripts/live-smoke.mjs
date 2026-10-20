@@ -16,10 +16,10 @@ import { startHub } from '../src/hub.mjs';
 
 const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, connected: { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a Chromium/Edge browser that permits --load-extension');
-const temp = await mkdtemp(join(tmpdir(), 'bridge-live-'));
+const temp = await mkdtemp(join(tmpdir(), 'attach-live-'));
 const checks = [], calls = [];
 let browser, hub, cdp, mcp;
-const html = `<!doctype html><meta charset="utf-8"><title>Bridge upload fixture</title>
+const html = `<!doctype html><meta charset="utf-8"><title>Attach upload fixture</title>
 <label>Single<input id="single" type="file"></label>
 <label>Multiple<input id="multiple" type="file" multiple></label>
 <input id="hidden" type="file" multiple hidden>
@@ -82,9 +82,9 @@ try {
   await command('Target.createTarget', { url });
   }
   mcp = new Client({ name: 'live-test', version: '1' });
-  await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-bridge.mjs'), 'mcp', '--config', configPath], cwd: temp }));
+  await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp }));
   const rawCall = async (method, args = {}) => {
-    if (process.env.BRIDGE_TEST_VERBOSE) console.error(method, args.ref || '');
+    if (process.env.ATTACH_TEST_VERBOSE) console.error(method, args.ref || '');
     const result = await mcp.callTool({ name: `browser_${method}`, arguments: args });
     calls.push({ method, isError: !!result.isError }); return result;
   };
@@ -95,7 +95,7 @@ try {
   }, 'extension connection');
   assert.ok(browsers[0].capabilities.includes('upload_file'));
   const browserId = browsers[0].browser_id;
-  const tab = await until(async () => (await call('list_tabs', { browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Bridge upload fixture'), 'fixture tab');
+  const tab = await until(async () => (await call('list_tabs', { browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Attach upload fixture'), 'fixture tab');
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };
   const snapshot = () => call('snapshot', handle);
@@ -109,15 +109,15 @@ try {
     return JSON.parse(text.slice(text.indexOf('STATE:') + 6));
   };
   const file = join(temp, '中文 space.txt'), empty = join(temp, 'empty.txt');
-  await writeFile(file, 'Bridge 上传内容\n'); await writeFile(empty, '');
-  await call('fill', { ...handle, ref: await ref('Name'), text: 'bridge works' });
-  assert.equal((await state()).name, 'bridge works'); checks.push('existing fill');
+  await writeFile(file, 'Attach 上传内容\n'); await writeFile(empty, '');
+  await call('fill', { ...handle, ref: await ref('Name'), text: 'attach works' });
+  assert.equal((await state()).name, 'attach works'); checks.push('existing fill');
   await call('click', { ...handle, ref: await ref('Increment') });
   assert.equal((await state()).count, 1); checks.push('existing click');
   const single = await ref('Single');
   await call('upload_file', { ...handle, ref: single, files: [file] });
   await until(async () => (await state()).files.single?.length, 'single file content');
-  assert.equal((await state()).files.single[0].text, 'Bridge 上传内容\n'); checks.push('single file content + Unicode path');
+  assert.equal((await state()).files.single[0].text, 'Attach 上传内容\n'); checks.push('single file content + Unicode path');
   assert.ok((await state()).events.includes('single:input'));
   assert.ok((await state()).events.includes('single:change'));
   assert.equal((await rawCall('upload_file', { ...handle, ref: single, files: [file] })).isError, true); checks.push('stale ref rejected');
@@ -151,7 +151,7 @@ try {
   await call('handle_dialog', { ...handle, accept: false }); checks.push('existing dialog handling');
   const final = await state(); assert.deepEqual(final.errors, []); checks.push('no page JavaScript errors');
   await call('release_tab', handle);
-  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.3.2', checks, calls: calls.length, results: calls };
+  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.3.3', checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });
   await writeFile(join(out, `npm-live-${values.family}.json`), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, results: undefined }, null, 2));

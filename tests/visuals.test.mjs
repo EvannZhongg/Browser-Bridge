@@ -32,13 +32,13 @@ test('unclaimed tabs keep their layout; claimed tabs get individual native marke
   const f = fixture();
   await f.visuals.install(1); await f.visuals.install(2);
   assert.notEqual(f.tabs.get(1).groupId, f.tabs.get(2).groupId);
-  assert.equal(f.groups.get(f.tabs.get(1).groupId).title, '🤖 被控');
-  assert.equal(f.groups.get(f.tabs.get(2).groupId).color, 'green');
+  assert.equal(f.groups.get(f.tabs.get(1).groupId).title, '🔴');
+  assert.equal(f.groups.get(f.tabs.get(2).groupId).color, 'red');
   assert.equal(f.tabs.get(3).groupId, -1); assert.equal(f.tabs.get(3).active, true);
   await f.visuals.remove(1);
   assert.equal(f.tabs.get(1).groupId, -1); assert.equal(f.groups.size, 1);
   await f.visuals.remove(2); assert.equal(f.groups.size, 0);
-  assert.deepEqual(f.saved().browserBridgeTabIndicators, []);
+  assert.deepEqual(f.saved().browserAttachTabIndicators, []);
 });
 
 test('release restores an existing original group and preserves user edits to that group', async () => {
@@ -88,7 +88,7 @@ test('extension restart cleans surviving markers and recovers previous groups fr
   await restarted.remove(1);
   assert.equal(f.tabs.get(1).groupId, f.tabs.get(2).groupId);
   assert.equal(f.groups.get(f.tabs.get(1).groupId).title, 'Before reload');
-  assert.deepEqual(f.saved().browserBridgeTabIndicators, []);
+  assert.deepEqual(f.saved().browserAttachTabIndicators, []);
 });
 
 test('pinned tabs report the native grouping limitation without unpinning or moving the tab', async () => {
@@ -105,8 +105,8 @@ test('partial group setup failure rolls back to the original group even when it 
   const original = await f.api.tabs.group({ tabIds: [1] });
   await f.api.tabGroups.update(original, { title: 'Original', color: 'yellow', collapsed: false });
   const update = f.api.tabGroups.update;
-  f.api.tabGroups.update = (id, args) => args.title === '🤖 被控' ? Promise.reject(new Error('Marker failed')) : update(id, args);
+  f.api.tabGroups.update = (id, args) => args.title === '🔴' ? Promise.reject(new Error('Marker failed')) : update(id, args);
   await assert.rejects(f.visuals.install(1), /Marker failed/);
   assert.equal(f.groups.get(f.tabs.get(1).groupId).title, 'Original');
-  assert.deepEqual(f.saved().browserBridgeTabIndicators, []);
+  assert.deepEqual(f.saved().browserAttachTabIndicators, []);
 });

@@ -5,8 +5,8 @@ import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { ROOT, DEFAULT_CONFIG, loadConfig, writeJson } from './config.mjs';
 
-export const mcpSettings = () => ({ command: 'browser-bridge', args: ['mcp'],
-  ...(process.env.BROWSER_BRIDGE_HOME ? { env: { BROWSER_BRIDGE_HOME: resolve(process.env.BROWSER_BRIDGE_HOME) } } : {}) });
+export const mcpSettings = () => ({ command: 'browser-attach', args: ['mcp'],
+  ...(process.env.BROWSER_ATTACH_HOME ? { env: { BROWSER_ATTACH_HOME: resolve(process.env.BROWSER_ATTACH_HOME) } } : {}) });
 
 async function privateDirectory(path) {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -48,10 +48,10 @@ export async function setup({ configPath = DEFAULT_CONFIG, extensionDir, port = 
 export async function configureNosis(directory = join(homedir(), '.nosis')) {
   const path = join(directory, 'agent_config.json');
   const data = JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, ''));
-  const backup = `${path}.browser-bridge-${Date.now()}.bak`;
+  const backup = `${path}.browser-attach-${Date.now()}.bak`;
   await cp(path, backup);
   data.mcp ||= {}; data.mcp.enabled = true; data.mcp.servers ||= {};
-  data.mcp.servers.browser_bridge = { ...mcpSettings(), startup_timeout_seconds: 20,
+  data.mcp.servers.browser_attach = { ...mcpSettings(), startup_timeout_seconds: 20,
     call_timeout_seconds: 60, tools: { approval: 'always' } };
   await writeJson(path, data);
   return { path, backup };

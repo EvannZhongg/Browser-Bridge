@@ -1,17 +1,18 @@
 {
-  "name": "@evan_zhong/browser-bridge",
-  "version": "0.3.2",
+  "name": "@evan_zhong/browser-attach",
+  "version": "0.3.3",
   "description": "MCP for existing signed-in Chrome and Edge tabs through a locally paired extension",
   "type": "module",
+  "license": "MIT",
   "bin": {
-    "browser-bridge": "bin/browser-bridge.mjs"
+    "browser-attach": "bin/browser-attach.mjs"
   },
   "engines": {
     "node": ">=22"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EvannZhongg/Browser-Bridge.git"
+    "url": "git+https://github.com/EvannZhongg/BrowserAttach.git"
   },
   "publishConfig": {
     "access": "public"
@@ -22,10 +23,8 @@
     "extension/",
     "scripts/check-package.mjs",
     "README.md",
-    "PLAYWRIGHT-ANALYSIS.md",
-    "TEST-REPORT.md",
-    "NOSIS-INTEGRATION.md",
-    "INTERACTION-REVIEW.md",
+    "CONTRIBUTING.md",
+    "docs/",
     "mcp-config.json"
   ],
   "scripts": {
@@ -39,5 +38,17 @@
     "@modelcontextprotocol/sdk": "1.32.1",
     "ws": "8.22.0",
     "zod": "4.6.7"
-  }
+  },
+  "homepage": "https://github.com/EvannZhongg/BrowserAttach#readme",
+  "bugs": {
+    "url": "https://github.com/EvannZhongg/BrowserAttach/issues"
+  },
+  "keywords": [
+    "mcp",
+    "chrome",
+    "edge",
+    "browser",
+    "automation",
+    "browser-attach"
+  ]
 }

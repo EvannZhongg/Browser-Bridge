@@ -1,4 +1,4 @@
-"""Optional integration test. Run with Nosis's Python, not a Bridge runtime dependency."""
+"""Optional integration test. Run with Nosis's Python, not a Attach runtime dependency."""
 import argparse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,15 +34,15 @@ def main():
     from agent_core.media import MAX_IMAGE_BYTES
 
     run_id = uuid.uuid4().hex[:10]
-    # Run outside the BrowserBridge package tree so npm exec cannot satisfy a
+    # Run outside the BrowserAttach package tree so npm exec cannot satisfy a
     # registry package spec using the current source checkout.
-    work = args.nosis_root.resolve() / '.nosis' / 'browser-bridge-validation' / run_id
+    work = args.nosis_root.resolve() / '.nosis' / 'browser-attach-validation' / run_id
     work.mkdir(parents=True)
-    fixture_text = 'Bridge Nosis local upload 测试\n'
+    fixture_text = 'Attach Nosis local upload 测试\n'
     file = work / '中文 upload.txt'
     file.write_text(fixture_text, encoding='utf-8')
     long_text = '\n'.join(f'LINE-{n:04d} ' + 'readable content ' * 8 for n in range(350)) + '\nTAILMARK'
-    html = '''<!doctype html><meta charset="utf-8"><title>Nosis Bridge contract fixture</title>
+    html = '''<!doctype html><meta charset="utf-8"><title>Nosis Attach contract fixture</title>
 <label>Name<input id="name"></label><input type="file" id="file" hidden>
 <button onclick="document.querySelector('#file').click()">Choose file</button>
 <button onclick="confirm('Nosis fixture confirm')">Confirm</button><pre id="state"></pre>
@@ -54,7 +54,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = ('<!doctype html><meta charset="utf-8"><title>Nosis Bridge large text</title><pre>' + long_text + '</pre>') if self.path.endswith('/large') else html
+            body = ('<!doctype html><meta charset="utf-8"><title>Nosis Attach large text</title><pre>' + long_text + '</pre>') if self.path.endswith('/large') else html
             payload = body.encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -68,12 +68,12 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     threading.Thread(target=http.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{http.server_port}/{run_id}'
-    settings = json.loads((args.config_dir / 'agent_config.json').read_text(encoding='utf-8-sig'))['mcp']['servers']['browser_bridge']
-    config = load_mcp_config({'enabled': True, 'servers': {'browser_bridge': settings}})
+    settings = json.loads((args.config_dir / 'agent_config.json').read_text(encoding='utf-8-sig'))['mcp']['servers']['browser_attach']
+    config = load_mcp_config({'enabled': True, 'servers': {'browser_attach': settings}})
     statuses = []
     client = McpClientManager(config, work, on_status=lambda event: statuses.append(vars(event)))
     samples, errors, handles = [], [], []
-    session = Session('bridge-' + run_id)
+    session = Session('attach-' + run_id)
     context = ToolExecutionContext(workspace=Workspace(work), session=session, mcp=client, vision_input=True,
         sessions_directory=work / '.nosis/sessions')
     normalizer = ToolResultNormalizer(context.workspace, session.session_id, sessions_directory=context.sessions_directory)
@@ -84,7 +84,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         tools = ToolCatalog(definitions).select(client.tool_names, context)
 
         def call(method, arguments=None, allow_error=False):
-            result = tools.execute(ToolCall(uuid.uuid4().hex, 'mcp__browser_bridge__browser_' + method, arguments or {}))
+            result = tools.execute(ToolCall(uuid.uuid4().hex, 'mcp__browser_attach__browser_' + method, arguments or {}))
             model_text = normalizer.normalize(result)
             assert 'iVBORw0' not in model_text
             if result.error:
@@ -110,7 +110,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         tab = None
         while time.monotonic() < deadline:
             _, tabs = call('list_tabs', {'browser_id': browser_id})
-            tab = next((tab for tab in tabs['tabs'] if tab['url'] == url and tab['title'] == 'Nosis Bridge contract fixture'), None)
+            tab = next((tab for tab in tabs['tabs'] if tab['url'] == url and tab['title'] == 'Nosis Attach contract fixture'), None)
             if tab:
                 break
             time.sleep(.1)
@@ -124,7 +124,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         for _ in range(100):
             _, listed = call('list_tabs', {'browser_id': browser_id})
             extra_tab = next((item for item in listed['tabs'] if item['tab_id'] == extra['tab_id']
-                and item['title'] == 'Nosis Bridge contract fixture'), None)
+                and item['title'] == 'Nosis Attach contract fixture'), None)
             if extra_tab:
                 break
             time.sleep(.1)
@@ -156,15 +156,15 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         call('upload_file', {**h, 'files': [str(file)]})
         for _ in range(40):
             _, state = call('read_text', h)
-            if 'Bridge Nosis local upload' in state['text']:
+            if 'Attach Nosis local upload' in state['text']:
                 break
             time.sleep(.05)
-        assert 'Bridge Nosis local upload' in state['text']
+        assert 'Attach Nosis local upload' in state['text']
         screenshot_ref = uuid.uuid4().hex
         turn_id = session.begin_turn('screenshot-turn')
         executor = ToolBatchExecutor(tools, session, normalizer, now=lambda: datetime.now(timezone.utc))
         image_results = []
-        executor.execute((ToolCall(screenshot_ref, 'mcp__browser_bridge__browser_screenshot', h),), turn_id=turn_id,
+        executor.execute((ToolCall(screenshot_ref, 'mcp__browser_attach__browser_screenshot', h),), turn_id=turn_id,
             on_result=lambda result, *_: image_results.append(result))
         image_result = image_results[0]
         assert image_result.error is None, image_result.error
@@ -223,7 +223,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     finally:
         for h in handles:
             try:
-                client.call_tool('browser_bridge', 'browser_release_tab', h)
+                client.call_tool('browser_attach', 'browser_release_tab', h)
             except Exception:
                 pass
         client.close()

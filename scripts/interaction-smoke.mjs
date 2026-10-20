@@ -11,13 +11,13 @@ import WebSocket from 'ws';
 import { ROOT } from '../src/config.mjs';
 import { setup } from '../src/setup.mjs';
 import { startHub } from '../src/hub.mjs';
-import { BridgeClient } from '../src/client.mjs';
+import { AttachClient } from '../src/client.mjs';
 
 const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');
-const dir = await mkdtemp(join(tmpdir(), 'bridge-interaction-'));
+const dir = await mkdtemp(join(tmpdir(), 'attach-interaction-'));
 const rows = Array.from({ length: 200 }, (_, i) => `<li>Row ${i+1}: alpha beta gamma delta epsilon</li>`).join('');
-const fixture = `<!doctype html><meta charset="utf-8"><title>Bridge issue probe</title>
+const fixture = `<!doctype html><meta charset="utf-8"><title>Attach issue probe</title>
 <style>#go{position:fixed;left:200px;top:200px;width:120px;height:40px}#state{white-space:pre-wrap}</style>
 <button id="go" onclick="window.__count++">Go</button>
 <input id="edit" aria-label="Name" style="position:fixed;left:20px;top:20px">
@@ -53,8 +53,8 @@ try {
  const pending=new Map();let serial=0;
  ws.on('message',raw=>{const data=JSON.parse(raw);const p=pending.get(data.id);if(p){pending.delete(data.id);data.error?p.reject(new Error(data.error.message)):p.resolve(data.result)}});
  const cdp=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id=++serial;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}))});
- client=new BridgeClient(paired.config);
- if(process.env.BRIDGE_TEST_VERBOSE){const call=client.call.bind(client);client.call=(method,args)=>{console.error(method,args);return call(method,args)};}
+ client=new AttachClient(paired.config);
+ if(process.env.ATTACH_TEST_VERBOSE){const call=client.call.bind(client);client.call=(method,args)=>{console.error(method,args);return call(method,args)};}
  const browserInfo=await until(async()=>{const r=await client.call('list_browsers');return r.browsers[0]},'Extension not connected');
  const worker=await until(async()=>{const r=await cdp('Target.getTargets');return r.targetInfos.find(t=>t.type==='service_worker'&&t.url.includes(paired.config.extension_id))},'Worker missing');
  const {sessionId}=await cdp('Target.attachToTarget',{targetId:worker.targetId,flatten:true});
@@ -73,19 +73,19 @@ try {
  if (values['tab-indicators']) {
   const nativeTab=await evaluate(`chrome.tabs.get(${tab.id})`);
   const marker=await evaluate(`chrome.tabGroups.get(${nativeTab.groupId})`);
-  assert.equal(marker.title,'🤖 被控');assert.equal(marker.color,'green');assert.equal(marker.collapsed,false);
-  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge]").length'),0);
-  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge-click]").length'),0);
+  assert.equal(marker.title,'🔴');assert.equal(marker.color,'red');assert.equal(marker.collapsed,false);
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-attach-click]").length'),0);
   const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
   assert.equal((await client.call('click',{...h,ref})).target_verified,true);
-  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge]").length'),0);
-  await until(()=>page('document.querySelectorAll("[data-local-browser-bridge-click]").length===1'),'transient click visual');
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
+  await until(()=>page('document.querySelectorAll("[data-local-browser-attach-click]").length===1'),'transient click visual');
   await client.call('activate_tab',{...h,focus_window:false});
   const shot=await client.call('screenshot',h);
   assert.equal(shot.capture.agent_indicators_included,false);
   await client.call('navigate',{...h,url:base+'/slow'});
   assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,marker.id);
-  assert.equal(await page('document.querySelectorAll("[data-local-browser-bridge]").length'),0);
+  assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
   await client.call('release_tab',h);claim=null;
   assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,-1);
   results.cases.push({scenario:'native_marker_without_page_overlay',marker,screenshot_clean:true,navigation_preserved:true,release_removed:true});
@@ -107,7 +107,7 @@ try {
   results.cases.push({scenario:'original_group_restored',group_id:original,background_preserved:true});
 
   const disconnectedHandle=await claimAgain();
-  await client.close();client=new BridgeClient(paired.config);
+  await client.close();client=new AttachClient(paired.config);
   await until(async()=>(await evaluate(`chrome.tabs.get(${tab.id})`)).groupId===original,'session disconnect group restoration');
   await assert.rejects(client.call('snapshot',disconnectedHandle),/expired/);claim=null;
   results.cases.push({scenario:'session_disconnect_restores_group',restored:true});
@@ -174,7 +174,7 @@ try {
   assert.equal(await page('document.querySelector("iframe").contentDocument.querySelector("#child").value'),'z');
   results.cases.push({scenario:'keyboard_delivery_in_child_frame',verified:true});
  } else if (values.regressions) {
-  // These actions use only the disposable fixture and the public Bridge API.
+  // These actions use only the disposable fixture and the public Attach API.
   const refFor = snapshot => snapshot.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
   for (const coordinates of [false, true]) {
    await page('window.__count=0;window.__events=[];true');
@@ -264,8 +264,8 @@ try {
    const ms=Math.round(performance.now()-start),observed=await state();
    assert.equal(result.target_verified,true);assert.equal(observed.count,1);assert.ok(observed.events.some(e=>e.type==='click'&&e.trusted&&e.target==='go'));
    const after=await focus();
-   assert.deepEqual(after.map(({focused,...w})=>w),before.map(({focused,...w})=>w),'Bridge must not activate tabs or change window state');
-   for(const window of before)if(!window.focused)assert.equal(after.find(w=>w.id===window.id).focused,false,'Bridge must not bring an unfocused window forward');
+   assert.deepEqual(after.map(({focused,...w})=>w),before.map(({focused,...w})=>w),'Attach must not activate tabs or change window state');
+   for(const window of before)if(!window.focused)assert.equal(after.find(w=>w.id===window.id).focused,false,'Attach must not bring an unfocused window forward');
    if(scenario.startsWith('background'))assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
    if(coverWindow)assert.equal(after.find(w=>w.id===tab.windowId).focused,false);
    results.cases.push({scenario,run,ms,visibility:observed.visibility,count:observed.count,focus_not_stolen:true});
@@ -293,7 +293,7 @@ try {
  const shadowRef=shadowSnapshot.snapshot.match(/\[([^\]]+)\] button "Closed control"/)[1];
  assert.equal((await client.call('click',{...h,ref:shadowRef})).target_verified,true);
  assert.equal(await page('window.__shadowCount'),1);
- assert.equal(await page('Object.getOwnPropertyNames(window).filter(n=>n.startsWith("__bridgeClick_")).length'),0);
+ assert.equal(await page('Object.getOwnPropertyNames(window).filter(n=>n.startsWith("__attachClick_")).length'),0);
  results.cases.push({scenario:'closed_shadow_target',target_verified:true,count:1,page_binding_exposed:false});
  // A verified click may destroy its own execution context through normal link navigation.
  await page(`(()=>{const a=document.createElement('a');a.href='/slow';a.textContent='Open slow';a.style='position:fixed;left:500px;top:100px';document.body.append(a);return true})()`);

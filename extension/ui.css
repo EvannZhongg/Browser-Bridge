@@ -7,3 +7,6 @@ button, input { box-sizing: border-box; display: block; width: 100%; margin: 10p
 button { cursor: pointer; }
 button:hover { background: #13755b; color: white; }
 .hint { color: #888; font-size: 12px; }
+
+.brand { display:flex; align-items:center; gap:10px; margin-bottom:18px; font-size:20px; font-weight:650; }
+.brand img { object-fit:contain; background:#153129; border-radius:8px; padding:4px; }

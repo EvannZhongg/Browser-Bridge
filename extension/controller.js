@@ -64,7 +64,7 @@ export function createController(api, notify = () => {}) {
   async function getObject(tabId, ref) {
     const node = snapshots.get(tabId)?.refs.get(ref);
     if (!node) throw new Error('Element ref is stale or unknown. Take a new browser_snapshot.');
-    const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: node.backendNodeId, objectGroup: 'browser-bridge' });
+    const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: node.backendNodeId, objectGroup: 'browser-attach' });
     if (!resolved.object?.objectId) throw new Error('Element no longer exists. Take a new browser_snapshot.');
     return { ...node, objectId: resolved.object.objectId };
   }
@@ -193,7 +193,7 @@ export function createController(api, notify = () => {}) {
     snapshots.delete(tabId);
     const documentVersion = documents.get(tabId);
     const versions = new Map(frameStates.get(tabId)?.versions);
-    await cdp(tabId, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-bridge' });
+    await cdp(tabId, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach' });
     const { frameTree } = await cdp(tabId, 'Page.getFrameTree');
     const frames = [];
     const flatten = tree => {
@@ -313,7 +313,7 @@ export function createController(api, notify = () => {}) {
       let target = node;
       if (!target) {
         if (!chooser) throw new Error('No pending file chooser. Supply a fresh file-input/label ref, or click the upload button first.');
-        const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: chooser.backendNodeId, objectGroup: 'browser-bridge' });
+        const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: chooser.backendNodeId, objectGroup: 'browser-attach' });
         if (!resolved.object?.objectId) throw new Error('File chooser input no longer exists. Observe again.');
         target = { objectId: resolved.object.objectId };
       }
@@ -327,7 +327,7 @@ export function createController(api, notify = () => {}) {
           if (input.webkitdirectory) throw new Error('Directory upload is unsupported; use a regular file input');
           if (count > 1 && !input.multiple) throw new Error('Single-file input cannot accept multiple files');
           return input;
-        }`, objectGroup: 'browser-bridge',
+        }`, objectGroup: 'browser-attach',
       });
       if (resolved.exceptionDetails) value(resolved);
       if (!resolved.result?.objectId) throw new Error('Could not resolve the file input');

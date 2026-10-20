@@ -1,4 +1,4 @@
-# BrowserBridge 点击、快照与导航复核
+# BrowserAttach 点击、快照与导航复核
 
 日期：2026-10-20。当前正式实现为 0.3.0；以下先记录已完成的修复，再保留 0.2.0 的基线分析。工具集合仍为 14 个，无旧版兼容层。
 
@@ -25,7 +25,7 @@ scripts/interaction-smoke.mjs 在独立 Chromium 156 / Edge 155 窗口中验证�
 | 反馈 | 判断 | 证据与边界 |
 |---|---|---|
 | 点击依赖前台，后台约 5 秒并静默失败 | 后台约 5 秒已复现；“必须前台”不能泛化；返回成功却未命中的缺陷另有明确复现 | 当前 Chrome 的静态按钮在后台仍 3/3 生效，但每次约 5 秒。独立 CDP 计时显示等待集中在 mouseMoved。动态目标可在可见页面失效，后台不是唯一条件 |
-| ref 点击偏约 30 CSS px | 存在真实的坐标失效窗口；没有证据表明统一多乘/少乘了一个缩放系数 | 构造鼠标移入后移动 30 px 的按钮，Bridge 对旧点返回 clicked，实际 pointerdown / click 落在空白处。80% / 125% 页面缩放的静态按钮没有固定偏移 |
+| ref 点击偏约 30 CSS px | 存在真实的坐标失效窗口；没有证据表明统一多乘/少乘了一个缩放系数 | 构造鼠标移入后移动 30 px 的按钮，Attach 对旧点返回 clicked，实际 pointerdown / click 落在空白处。80% / 125% 页面缩放的静态按钮没有固定偏移 |
 | max_nodes 调大也无法读取完整列表 | 属实 | 200 行测试中，max_nodes=600 和 3000 都只返回 262 个输出节点、约 64 行，truncation_reason=text_budget，包含 65 行 InlineTextBox |
 | navigate 异步，需要额外观察 | 属实 | 慢脚本测试中导航约 28 ms 返回；文档仍 loading，目标按钮尚未出现；立即 snapshot 同样没有目标。稍后才 complete。返回的 title/url 甚至可能仍是旧页面元数据 |
 
@@ -52,13 +52,13 @@ scripts/interaction-smoke.mjs 在独立 Chromium 156 / Edge 155 窗口中验证�
 
 其中一次逐命令计时为 mouseMoved 5015.4 ms、mousePressed 12.2 ms、mouseReleased 5.5 ms。该对照测量输入派发阶段，不能把 9–22 ms 直接当成完整 MCP click 的承诺。没有通过切换前台或更换网页取得这个差异，也没有用 DOM click() 替代原生输入。
 
-Playwright 的普通无 delay 点击同样采用按顺序发出 move/down/up、最后 Promise.all 等待的方式。Bridge 应优先借鉴这一点，并把标记绘制移出输入序列的关键路径。这是已通过对照的优化方向，仍需结合模态、导航、文件选择器和实际命中回归后再正式落地。
+Playwright 的普通无 delay 点击同样采用按顺序发出 move/down/up、最后 Promise.all 等待的方式。Attach 应优先借鉴这一点，并把标记绘制移出输入序列的关键路径。这是已通过对照的优化方向，仍需结合模态、导航、文件选择器和实际命中回归后再正式落地。
 
 另一个已经复现的失败与坐标计算后的竞态有关：
 
-1. 按钮最初位于 x=200..240，其中心是 (220,220)。Bridge 在这个点做命中检查。
+1. 按钮最初位于 x=200..240，其中心是 (220,220)。Attach 在这个点做命中检查。
 2. mouseMoved 触发 mouseenter，按钮右移 30 px，变为 x=230..270，新中心是 (250,220)。
-3. Bridge 仍在 (220,220) 按下并释放。页面记录 pointerdown、pointerup、click 的 target 均为空白元素，按钮计数保持 0。
+3. Attach 仍在 (220,220) 按下并释放。页面记录 pointerdown、pointerup、click 的 target 均为空白元素，按钮计数保持 0。
 4. 工具返回 clicked=(220,220)，没有说明目标未命中。
 
 这准确证明缺少事件时刻的目标检查。单纯修改 DPI 或加 30 px 补偿既没有依据，也会破坏正常页面。ref 点击使用 DOM quad 的 CSS 坐标，不经过 PNG 像素到视口的换算；本轮静态缩放测试的事件点与按钮中心吻合。
@@ -71,11 +71,11 @@ Playwright 的普通无 delay 点击同样采用按顺序发出 move/down/up、�
 - 结果明确区分已派发、目标命中与业务完成。不能用“没有 DOM 变化”自动判失败，也不能把 CDP 响应等同于业务成功。
 - 超时或输入结果未知时明确报错并重新观察；不要自动重放可能已经提交的动作。
 
-源码：[Bridge 点击](/F:/BrowserBridge/extension/controller.js:348)、[Playwright Mouse.click](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/server/input.ts#L262)、[动作前检查](https://playwright.dev/docs/actionability)、[事件命中拦截](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/injected/src/injectedScript.ts#L1154)。Playwright 的命中检查也不等于验证任意网站的业务结果。
+源码：[Attach 点击](../extension/controller.js)、[Playwright Mouse.click](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/server/input.ts#L262)、[动作前检查](https://playwright.dev/docs/actionability)、[事件命中拦截](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/injected/src/injectedScript.ts#L1154)。Playwright 的命中检查也不等于验证任意网站的业务结果。
 
 **快照：需要改善有效信息量与完整性**
 
-Bridge 的 14,000 字符限制作用于每行 JSON 序列化后的累积大小，独立于 max_nodes。实际 snapshot 文本约 13,200 字符就可能触发它，因为引号、反斜杠等占用转义预算。它不是“固定最多 50 行”；本轮为第 64 行，具体取决于文本长度和原生 AX 树结构。
+Attach 的 14,000 字符限制作用于每行 JSON 序列化后的累积大小，独立于 max_nodes。实际 snapshot 文本约 13,200 字符就可能触发它，因为引号、反斜杠等占用转义预算。它不是“固定最多 50 行”；本轮为第 64 行，具体取决于文本长度和原生 AX 树结构。
 
 当前代码将未被 ignored 的原生 AX 节点几乎逐个输出，其中包括 ListMarker、StaticText 和 InlineTextBox；同一段文字可能出现多次。Playwright 的 ARIA snapshot 是面向语义元素的 DOM 遍历与归并，移除等同于父名称的重复子文本，因此更紧凑。“207 个 ref”与原生 AX 输出节点数不属于同一个统计口径，但可以比较是否完整覆盖这 200 行。
 
@@ -88,7 +88,7 @@ Bridge 的 14,000 字符限制作用于每行 JSON 序列化后的累积大小�
 
 这些都不需要新增“查询列表”“读取下一屏”等一批工具。先对 200 行普通列表建立完整覆盖回归，再测试长文本、大 DOM、iframe、表格和重复标签。
 
-源码：[Bridge 预算](/F:/BrowserBridge/extension/controller.js:147)、[Bridge 原生 AX 渲染](/F:/BrowserBridge/extension/controller.js:181)、[Playwright ARIA snapshot](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/injected/src/ariaSnapshot.ts#L98)。
+源码：[Attach 预算](../extension/controller.js)、[Attach 原生 AX 渲染](../extension/controller.js)、[Playwright ARIA snapshot](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/injected/src/ariaSnapshot.ts#L98)。
 
 **导航：等待与观察可以合并在现有工具中**
 
@@ -100,12 +100,12 @@ Bridge 的 14,000 字符限制作用于每行 JSON 序列化后的累积大小�
 
 DOMContentLoaded 只表示文档解析完成，不能证明 SPA 数据全部就绪。业务就绪应使用明确条件，不应为所有网页固定 sleep，或默认等待所有网络永久空闲。
 
-源码：[Bridge navigate](/F:/BrowserBridge/extension/controller.js:293)、[Playwright MCP 导航等待](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/tools/backend/tab.ts#L348)、[导航响应含快照](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/tools/backend/navigate.ts#L20)、[page.goto 文档](https://playwright.dev/docs/api/class-page#page-goto)。
+源码：[Attach navigate](../extension/controller.js)、[Playwright MCP 导航等待](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/tools/backend/tab.ts#L348)、[导航响应含快照](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/tools/backend/navigate.ts#L20)、[page.goto 文档](https://playwright.dev/docs/api/class-page#page-goto)。
 
 **优先级与测试结论的使用方式**
 
 优先级建议为：P0 点击延迟及错误成功反馈、目标稳定性与实际命中；P1 快照语义压缩与尾部可达；P1 导航等待并附快照。优先修正现有操作的可靠性与观察质量，不增加 MCP 工具数量。
 
-原始 benchmark 的 Playwright 是独立 headless 浏览器，Bridge 接入的是当前用户浏览器；Playwright 默认启动参数还会调整部分后台节流行为，两边运行环境并不完全一致。当前 Playwright MCP 的动作包装默认还有约 500 ms settle 等待和快照输出。因此 604 ms 与 Bridge 的事件派发耗时不是同一层级的度量。应分别比较传输、页面操作、就绪等待、快照生成，以及最后的实际页面状态。
+原始 benchmark 的 Playwright 是独立 headless 浏览器，Attach 接入的是当前用户浏览器；Playwright 默认启动参数还会调整部分后台节流行为，两边运行环境并不完全一致。当前 Playwright MCP 的动作包装默认还有约 500 ms settle 等待和快照输出。因此 604 ms 与 Attach 的事件派发耗时不是同一层级的度量。应分别比较传输、页面操作、就绪等待、快照生成，以及最后的实际页面状态。
 
 本轮数据位于 test-results/connected-issue-probe.json 和 test-results/issue-probe-raw.json；复现脚本保存在私有 .local/connected-issue-probe.mjs 与 .local/issue-probe.mjs。临时 Chromium 扩展副本只增加计时记录，生产扩展未修改；Chrome 测试只操作新建本地页，结束后已释放控制，测试标签页保留。

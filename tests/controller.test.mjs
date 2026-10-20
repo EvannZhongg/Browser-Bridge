@@ -297,7 +297,7 @@ test('PNG capture supports viewport and bounded full-page screenshots', async ()
   assert.equal(full.capture.agent_indicators_included, true);
   const calls = f.calls.filter(call => call.method === 'Page.captureScreenshot');
   assert.equal(calls[1].args.clip.height, 1800);
-  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserBridgeVisual')));
+  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserAttachVisual')));
 });
 
 test('a hidden-page screenshot timeout leaves the native group marker and tab queue usable', async () => {
@@ -332,12 +332,12 @@ test('a modal that blocks an input response does not block the next tool', async
 test('claim shows a native tab-group marker; clicks retain only transient feedback without activation', async () => {
   const f = fixture(); await f.claim();
   assert.ok(f.calls.some(call => call.method === 'badge' && call.args.text === 'RUN' && call.args.tabId === 9));
-  assert.ok(f.calls.some(call => call.method === 'tabGroups.update' && call.args.title === '🤖 被控' && call.args.color === 'green'));
-  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserBridgeClickVisual')));
+  assert.ok(f.calls.some(call => call.method === 'tabGroups.update' && call.args.title === '🔴' && call.args.color === 'red'));
+  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserAttachClickVisual')));
   await f.exec('click', { x: 20, y: 30 });
   assert.ok(!f.calls.some(call => call.method === 'Page.addScriptToEvaluateOnNewDocument'));
-  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserBridgeVisual')));
-  assert.ok(f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserBridgeClickVisual.click(20,30)')));
+  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserAttachVisual')));
+  assert.ok(f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserAttachClickVisual.click(20,30)')));
   assert.ok(!f.calls.some(call => call.method === 'Page.bringToFront'));
   await f.exec('release_tab');
   assert.ok(f.calls.some(call => call.method === 'tabs.ungroup'));
@@ -369,7 +369,7 @@ test('stalled click feedback cannot block release or draw a late marker after de
   const send = f.api.debugger.sendCommand;
   let finishSetup;
   f.api.debugger.sendCommand = (target, method, args) => {
-    if (method === 'Page.createIsolatedWorld' && args.worldName === 'local-browser-bridge-click-visual') {
+    if (method === 'Page.createIsolatedWorld' && args.worldName === 'local-browser-attach-click-visual') {
       return new Promise(resolve => { finishSetup = resolve; });
     }
     return send(target, method, args);
@@ -379,7 +379,7 @@ test('stalled click feedback cannot block release or draw a late marker after de
   assert.equal(f.controller.claimedCount(), 0);
   finishSetup({ executionContextId: 43 });
   await new Promise(resolve => setImmediate(resolve));
-  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserBridgeClickVisual.click(')));
+  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserAttachClickVisual.click(')));
 });
 
 test('AX iframe owners expose remote frame coverage when the frame tree omits them', async () => {
