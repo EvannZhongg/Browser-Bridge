@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { createController } from '../extension/controller.js';
+import { serializeEvaluation } from '../extension/evaluate.js';
 
 function event() { const callbacks = []; return { addListener(fn) { callbacks.push(fn); }, emit(...args) { for (const fn of callbacks) fn(...args); } }; }
 function fixture() {
@@ -137,13 +138,13 @@ test('scrolled-page hit testing uses document coordinates while native input kee
   assert.equal(f.calls.find(call => call.method === 'Input.dispatchMouseEvent').args.y, 30);
 });
 
-test('fill uses a resolved node and text input; no arbitrary script operation exists', async () => {
+test('fill uses a resolved node and text input; raw CDP remains unavailable', async () => {
   const f = fixture(); await f.claim();
   const snapshot = await f.exec('snapshot');
   const ref = snapshot.snapshot.match(/\[([^\]]+)\] textbox/)[1];
   await f.exec('fill', { ref, text: '中文 hello' });
   assert.deepEqual(f.calls.find(call => call.method === 'Input.insertText').args, { text: '中文 hello' });
-  await assert.rejects(f.exec('evaluate', { expression: 'fetch("https://evil.test")' }), /Unknown operation/);
+  await assert.rejects(f.exec('send_cdp', { method: 'Runtime.evaluate' }), /Unknown operation/);
 });
 
 test('DOM fill bypasses native input and focus, notifies the page and verifies the retained value', async () => {
@@ -332,7 +333,7 @@ test('a modal that blocks an input response does not block the next tool', async
 test('claim shows a native tab-group marker; clicks retain only transient feedback without activation', async () => {
   const f = fixture(); await f.claim();
   assert.ok(f.calls.some(call => call.method === 'badge' && call.args.text === 'RUN' && call.args.tabId === 9));
-  assert.ok(f.calls.some(call => call.method === 'tabGroups.update' && call.args.title === '🔴' && call.args.color === 'red'));
+  assert.ok(f.calls.some(call => call.method === 'tabGroups.update' && call.args.title === '' && call.args.color === 'red'));
   assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('__localBrowserAttachClickVisual')));
   await f.exec('click', { x: 20, y: 30 });
   assert.ok(!f.calls.some(call => call.method === 'Page.addScriptToEvaluateOnNewDocument'));
@@ -617,6 +618,87 @@ test('continuously moving refs still dispatch a verified native click with curre
   assert.ok(sample > 1);
   assert.equal(result.target_verified, true);
   assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 3);
+});
+
+test('evaluation runs once, awaits promises, bounds values, invalidates refs and enforces ownership', async () => {
+  const f = fixture(); await f.claim();
+  const ref = f.ref(await f.exec('snapshot'));
+  const send = f.api.debugger.sendCommand;
+  const page = vm.createContext({ runs: 0 });
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method !== 'Runtime.evaluate' || !args.awaitPromise) return send(target, method, args);
+    f.calls.push({ method, args, target });
+    try { return { result: { value: await vm.runInContext(args.expression, page) } }; }
+    catch (error) { return { exceptionDetails: { text: error.message } }; }
+  };
+  assert.equal((await f.exec('evaluate', { expression: 'Promise.resolve(++runs)' })).value, 1);
+  assert.equal(page.runs, 1);
+  await assert.rejects(f.exec('click', { ref }), /stale/);
+  await assert.rejects(f.exec('evaluate', { expression: '++runs' }, 'two'), /not claimed/);
+  assert.equal(page.runs, 1);
+  await assert.rejects(f.exec('evaluate', { expression: '(()=>{runs++; throw new Error("fixture failure")})()' }), /effects may already.*fixture failure/);
+  assert.equal(page.runs, 2);
+  const special = await f.exec('evaluate', { expression: '({big: 42n, nan: NaN, negativeZero: -0, empty: undefined})' });
+  assert.equal(special.value.big.$type, 'bigint');
+  assert.equal(special.value.nan.value, 'NaN');
+  assert.equal(special.value.negativeZero.value, '-0');
+  assert.equal(special.value.empty.$type, 'undefined');
+  assert.equal(f.calls.find(call => call.args?.awaitPromise).args.userGesture, false);
+});
+
+test('evaluation timeout and modal release the queue, leaving diagnostics available without replay', async () => {
+  const f = fixture(); await f.claim();
+  const send = f.api.debugger.sendCommand;
+  let executions = 0;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method !== 'Runtime.evaluate' || !args.awaitPromise) return send(target, method, args);
+    executions++;
+    if (args.expression.includes('alert(')) f.api.debugger.onEvent.emit(target, 'Page.javascriptDialogOpening', { type: 'alert', message: 'eval modal' });
+    return new Promise(() => {});
+  };
+  await assert.rejects(f.exec('evaluate', { expression: 'new Promise(()=>{})', timeout_ms: 100 }), /timed out.*Do not replay/);
+  assert.equal(executions, 1);
+  await f.exec('read_text');
+  await assert.rejects(f.exec('evaluate', { expression: 'alert("fixture")' }), /JavaScript dialog/);
+  assert.equal((await f.exec('snapshot')).dialog.message, 'eval modal');
+  const emit = (method, params) => f.api.debugger.onEvent.emit({ tabId: 9 }, method, params);
+  emit('Runtime.consoleAPICalled', { type: 'warn', args: [{ value: 'fixture warning' }], timestamp: Date.now() });
+  assert.equal((await f.exec('console_logs')).entries[0].text, 'fixture warning');
+  await f.exec('network_logs');
+  await f.exec('handle_dialog', { accept: true });
+  assert.equal(executions, 2);
+});
+
+test('diagnostics are enabled on claim, survive navigation, keep refs and clear on release', async () => {
+  const f = fixture(); await f.claim();
+  for (const method of ['Runtime.enable', 'Log.enable', 'Network.enable']) assert.ok(f.calls.some(call => call.method === method));
+  const emit = (method, params) => f.api.debugger.onEvent.emit({ tabId: 9 }, method, params);
+  emit('Runtime.consoleAPICalled', { type: 'log', args: [{ value: 'retained' }] });
+  const ref = f.ref(await f.exec('snapshot'));
+  assert.equal((await f.exec('console_logs')).entries.length, 1);
+  await f.exec('click', { ref });
+  emit('Page.frameNavigated', { frame: { id: 'main' } });
+  assert.equal((await f.exec('console_logs')).entries[0].text, 'retained');
+  await assert.rejects(f.exec('console_logs', {}, 'two'), /not claimed/);
+  await f.exec('release_tab'); await f.claim();
+  assert.equal((await f.exec('console_logs')).entries.length, 0);
+});
+
+test('evaluation serializer handles cycles, avoids getters and bounds traversal and escaped transfer size', () => {
+  const cyclic = { name: 'root', get dangerous() { throw new Error('Getter must not run'); } };
+  cyclic.self = cyclic;
+  assert.equal(serializeEvaluation(cyclic, 2000).value.self.$type, 'circular_or_repeated');
+  assert.equal(serializeEvaluation(cyclic, 2000).value.dangerous.$type, 'accessor');
+  const huge = serializeEvaluation({ value: '\\'.repeat(100000) }, 1000);
+  assert.equal(huge.truncated, true); assert.ok(huge.serialized_preview.length <= 1000);
+  const nodes = serializeEvaluation(Array.from({ length: 10000 }, () => ({})), 100000);
+  assert.equal(nodes.truncated, true); assert.ok(nodes.value.length <= 1000);
+  const deep = {}; let child = deep;
+  for (let i = 0; i < 10000; i++) child = child.next = {};
+  assert.equal(serializeEvaluation(deep, 1000).truncated, true);
+  const sparse = []; sparse[1000000000] = 'end';
+  const bounded = serializeEvaluation(sparse, 100000);
+  assert.equal(bounded.truncated, true); assert.ok(bounded.value.length <= 1000);
 });
 
 test('tab lifecycle is explicit, HTTP(S)-only and requires ownership to activate or close', async () => {

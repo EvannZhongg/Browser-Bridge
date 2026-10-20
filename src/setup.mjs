@@ -5,8 +5,9 @@ import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { ROOT, DEFAULT_CONFIG, loadConfig, writeJson } from './config.mjs';
 
-export const mcpSettings = () => ({ command: 'browser-attach', args: ['mcp'],
-  ...(process.env.BROWSER_ATTACH_HOME ? { env: { BROWSER_ATTACH_HOME: resolve(process.env.BROWSER_ATTACH_HOME) } } : {}) });
+export const mcpSettings = (configPath = DEFAULT_CONFIG) => ({ command: process.execPath,
+  args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', resolve(configPath)],
+  env: { BROWSER_ATTACH_HOME: dirname(resolve(configPath)) } });
 
 async function privateDirectory(path) {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -45,13 +46,13 @@ export async function setup({ configPath = DEFAULT_CONFIG, extensionDir, port = 
   return { config, configPath, extensionDir };
 }
 
-export async function configureNosis(directory = join(homedir(), '.nosis')) {
+export async function configureNosis(directory = join(homedir(), '.nosis'), { configPath = DEFAULT_CONFIG } = {}) {
   const path = join(directory, 'agent_config.json');
   const data = JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, ''));
   const backup = `${path}.browser-attach-${Date.now()}.bak`;
   await cp(path, backup);
   data.mcp ||= {}; data.mcp.enabled = true; data.mcp.servers ||= {};
-  data.mcp.servers.browser_attach = { ...mcpSettings(), startup_timeout_seconds: 20,
+  data.mcp.servers.browser_attach = { ...mcpSettings(configPath), startup_timeout_seconds: 20,
     call_timeout_seconds: 60, tools: { approval: 'always' } };
   await writeJson(path, data);
   return { path, backup };

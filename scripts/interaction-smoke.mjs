@@ -60,8 +60,10 @@ try {
  const {sessionId}=await cdp('Target.attachToTarget',{targetId:worker.targetId,flatten:true});
  const evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},sessionId);if(r.exceptionDetails)throw new Error(r.exceptionDetails.text);return r.result.value;};
  const tab=await evaluate(`chrome.tabs.create({url:${JSON.stringify(base+'/probe')},active:true})`);
+ const info=await until(async()=>(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs
+  .find(t=>t.tab_id===tab.id&&t.url===base+'/probe'&&t.title==='Attach issue probe'),'Fixture tab not loaded');
+ // Leave the existing startup settling interval after readiness, not before it.
  await pause(350);
- const info=(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs.find(t=>t.tab_id===tab.id);
  claim=await client.call('claim_tab',{browser_id:browserInfo.browser_id,tab_id:tab.id,expected_url:info.url,expected_title:info.title});
  const h={tab_handle:claim.tab_handle};
  const page=async expression=>(await evaluate(`chrome.debugger.sendCommand({tabId:${tab.id}},'Runtime.evaluate',{expression:${JSON.stringify(expression)},returnByValue:true,awaitPromise:true})`)).result.value;
@@ -73,7 +75,7 @@ try {
  if (values['tab-indicators']) {
   const nativeTab=await evaluate(`chrome.tabs.get(${tab.id})`);
   const marker=await evaluate(`chrome.tabGroups.get(${nativeTab.groupId})`);
-  assert.equal(marker.title,'🔴');assert.equal(marker.color,'red');assert.equal(marker.collapsed,false);
+  assert.equal(marker.title,'');assert.equal(marker.color,'red');assert.equal(marker.collapsed,false);
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach-click]").length'),0);
   const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];

@@ -3,10 +3,8 @@ import argparse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -20,6 +18,7 @@ def main():
     parser.add_argument('--nosis-root', type=Path, required=True)
     parser.add_argument('--config-dir', type=Path, default=Path.home() / '.nosis')
     parser.add_argument('--family', choices=['chrome', 'edge'], default='chrome')
+    parser.add_argument('--browser-id', help='Exact browser_id when multiple paired profiles use the same family')
     args = parser.parse_args()
     sys.path.insert(0, str(args.nosis_root.resolve()))
     from agent_core.mcp.config import load_mcp_config
@@ -80,7 +79,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     try:
         client.start()
         definitions = client.wait_ready()
-        assert len(definitions) == 17, statuses
+        assert len(definitions) == 20, statuses
         tools = ToolCatalog(definitions).select(client.tool_names, context)
 
         def call(method, arguments=None, allow_error=False):
@@ -99,18 +98,18 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
             return result, data
 
         _, browsers = call('list_browsers')
-        selected = [b for b in browsers['browsers'] if b['family'] == args.family]
+        selected = [b for b in browsers['browsers'] if b['family'] == args.family
+            and (args.browser_id is None or b['browser_id'] == args.browser_id)]
         assert len(selected) == 1, 'Select exactly one paired profile for this test'
         browser_id = selected[0]['browser_id']
-        exe = (Path(os.environ['PROGRAMFILES']) / 'Google/Chrome/Application/chrome.exe') if args.family == 'chrome' else (
-            Path(os.environ['PROGRAMFILES(X86)']) / 'Microsoft/Edge/Application/msedge.exe')
-        subprocess.Popen([str(exe), url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        # Keep the fixture in the selected paired profile, including isolated test
+        # browsers; launching an OS browser executable can select another profile.
+        _, opened = call('open_tab', {'browser_id': browser_id, 'url': url, 'active': False})
         deadline = time.monotonic() + 15
         tab = None
         while time.monotonic() < deadline:
             _, tabs = call('list_tabs', {'browser_id': browser_id})
-            tab = next((tab for tab in tabs['tabs'] if tab['url'] == url and tab['title'] == 'Nosis Attach contract fixture'), None)
+            tab = next((tab for tab in tabs['tabs'] if tab['tab_id'] == opened['tab_id'] and tab['url'] == url and tab['title'] == 'Nosis Attach contract fixture'), None)
             if tab:
                 break
             time.sleep(.1)
@@ -119,6 +118,13 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
             'expected_url': tab['url'], 'expected_title': tab['title']})
         h = {'tab_handle': claimed['tab_handle']}
         handles.append(h)
+
+        _, evaluated = call('evaluate', {**h, 'expression': "(async () => { console.warn('Nosis diagnostic warning'); await (await fetch(location.href)).text(); return {title: document.title, answer: 42}; })()"})
+        assert evaluated['value'] == {'title': 'Nosis Attach contract fixture', 'answer': 42}
+        _, console = call('console_logs', h)
+        assert any(item.get('level') == 'warning' and 'Nosis diagnostic warning' in item.get('text', '') for item in console['entries'])
+        _, network = call('network_logs', h)
+        assert any(item.get('event') == 'response' and item.get('status') == 200 for item in network['entries'])
 
         _, extra = call('open_tab', {'browser_id': browser_id, 'url': url + '/extra', 'active': False})
         for _ in range(100):
@@ -209,7 +215,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         handles.clear()
         assert set(sample['method'] for sample in samples) == {
             'list_browsers','list_tabs','open_tab','activate_tab','close_tab','claim_tab','release_tab','snapshot','read_text','click','fill','press_key',
-            'scroll','navigate','handle_dialog','upload_file','screenshot'}
+            'scroll','navigate','handle_dialog','upload_file','screenshot','evaluate','console_logs','network_logs'}
         report = {'family': args.family, 'tools': len(definitions), 'statuses': statuses, 'samples': samples,
             'command': settings['command'], 'args': settings.get('args', []),
             'errors': errors, 'media_origin': 'tool_media', 'text_only_image_notice': True, 'image_limit_bytes': MAX_IMAGE_BYTES,

@@ -2,7 +2,25 @@
 
 分析日期：2026-10-20。检索的是 [microsoft/playwright](https://github.com/microsoft/playwright)，本地浅克隆并按目录读取源码，固定 commit 为 [58b93301d906b77a3854bc4d8ff4130f00a808ae](https://github.com/microsoft/playwright/tree/58b93301d906b77a3854bc4d8ff4130f00a808ae)。以下比较 Playwright 的库能力与本项目实际实现，不能把库的每个 API 都等同于应该增加的 MCP tool。
 
-结论：Attach 应保留“扩展接入已有登录配置、精确身份接管、跨会话互斥”的定位。最值得补齐的是现有操作的可靠性与常见表单能力。此次把上传与可移植分发落地，只增加一个 browser_upload_file；其余作为明确的后续优先级，没有凭分析扩大接口。
+## 0.4.0：JS evaluate、网络日志与控制台
+
+本轮需求明确需要页面求值与诊断，因此新增三个工具。原有 17 个工具已覆盖发现/独占接管、标签管理、AX/text、鼠标键盘与 DOM 输入、导航等待、上传、对话框和截图；缺少的是用户可调用的 JS 求值和跨操作持续观察的诊断数据。底层已经使用 chrome.debugger，直接补齐 CDP Runtime / Log / Network 即可，无需 Playwright 运行依赖、远程调试端口或额外扩展权限。
+
+| 新工具 | Playwright 参考机制 | BrowserAttach 的实现选择 |
+|---|---|---|
+| browser_evaluate | [crExecutionContext.ts](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/server/chromium/crExecutionContext.ts) 使用 Runtime.evaluate / callFunctionOn、returnByValue、awaitPromise 并处理 exceptionDetails | 主 frame 页面表达式执行一次、等待 Promise、页面内有界序列化；特殊值标记、循环引用/深度/节点/字符上限；同步 CDP 超时与异步等待截止并用。不创建持久 JSHandle，不授予 userGesture |
+| browser_console_logs | [crPage.ts 的 _onConsoleAPI / _handleException / _onLogEntryAdded](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/server/chromium/crPage.ts#L808) 订阅 Runtime.consoleAPICalled、exceptionThrown、Log.entryAdded | 自动开启 Runtime / Log，保存 console 浅层预览、未捕获异常/rejection、来源和位置；启用时过滤过期上下文和 claim 前消息；不读取 live object 属性 |
+| browser_network_logs | [crNetworkManager.ts](https://github.com/microsoft/playwright/blob/58b93301d906b77a3854bc4d8ff4130f00a808ae/packages/playwright-core/src/server/chromium/crNetworkManager.ts#L60) 维护 requestId 关联，处理请求/重定向/响应/结束/失败与缓存事件 | Network.enable 被动观察，append-only 事件序列和有界 requestId 关联表；同 requestId 重定向用 hop 区分。游标续读能得到先前请求后续发生的完成/失败，不依赖可变请求行 |
+
+所有入口继续验证现有 owner / tab_handle，并经标签队列串行执行；evaluate 消费 refs，日志读取保留 refs。evaluate 打开弹窗时沿用既有 dialogWaiters 释放队列，控制台和网络缓存可以在弹窗期间读取。超时后不会自动重新执行或调用 Runtime.terminateExecution，因为异步请求可能已产生网站作用，也不能保证终止不会影响页面其他任务。
+
+两类日志分别保留 500 条、1048576 个 JSON 字符，支持 after_seq / limit / max_chars 和类型/URL 过滤；溢出明确报告 data_loss。每次接管重新建缓存，导航保留，release/detach/关闭/断连清理；不持久化、不获取 headers 或正文、不修改缓存和 service worker 设置。不订阅独立子 target，因此不宣称完整 OOPIF / worker / WebSocket 消息支持。完整参数与序列化限制见 [USAGE.md](USAGE.md#javascript-求值与诊断日志040)。以上为本项目独立实现，参考协议与生命周期设计，没有复制 Playwright 源码。
+
+## 历史分析：上传与可移植分发阶段
+
+以下表格与结论记录此前阶段的范围；诊断相关建议由上面的 0.4.0 实现取代。
+
+当时的结论：Attach 应保留“扩展接入已有登录配置、精确身份接管、跨会话互斥”的定位，先把上传与可移植分发落地，其他能力列为后续优先级。
 
 **差异、价值与接口选择**
 

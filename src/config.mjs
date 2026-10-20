@@ -1,15 +1,21 @@
 import { homedir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, isAbsolute } from 'node:path';
 import { readFile, mkdir, writeFile, rename, chmod } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = fileURLToPath(new URL('../', import.meta.url));
-export const DATA_DIR = process.env.BROWSER_ATTACH_HOME
-  ? resolve(process.env.BROWSER_ATTACH_HOME)
-  : process.platform === 'win32' ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'BrowserAttach')
+const configuredHome = process.env.BROWSER_ATTACH_HOME;
+if (configuredHome && (!isAbsolute(configuredHome) ||
+    (process.platform === 'win32' && !/^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i.test(configuredHome)))) {
+  throw new Error('BROWSER_ATTACH_HOME must be an absolute directory shared by setup, MCP and Hub.');
+}
+export const DATA_DIR = configuredHome
+  ? resolve(configuredHome)
+  // Packaged Windows hosts can redirect AppData into different private views.
+  : process.platform === 'win32' ? join(homedir(), '.browser-attach')
     : join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'browser-attach');
 export const DEFAULT_CONFIG = join(DATA_DIR, 'config.json');
-export const VERSION = '0.3.3';
+export const VERSION = '0.4.0';
 
 export async function loadConfig(path = DEFAULT_CONFIG) {
   let config;

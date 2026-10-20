@@ -31,6 +31,7 @@ const html = `<!doctype html><meta charset="utf-8"><title>Attach upload fixture<
 <label>Name<input id="name"></label><button onclick="window.count++; sync()">Increment</button>
 <button onclick="confirm('Fixture dialog');sync()">Confirm</button>
 <pre id="state"></pre><script>
+console.log('attach-before-claim');
 window.count=0;const data={files:{},events:[],errors:[]};
 function sync(){document.querySelector('#state').textContent='STATE:'+JSON.stringify({...data,count:window.count,name:document.querySelector('#name').value});}
 window.onerror=message=>{data.errors.push(String(message));sync()};
@@ -41,7 +42,13 @@ for(const input of document.querySelectorAll('input[type=file]')){
  data.files[input.id]=await Promise.all([...input.files].map(async file=>({name:file.name,size:file.size,text:await file.text()})));sync()});
 }
 document.querySelector('#name').oninput=sync;sync();</script>`;
-const fixture = http.createServer((request, response) => { response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end(html); });
+const fixture = http.createServer((request, response) => {
+  if (request.url === '/api/redirect') { response.writeHead(302, { Location: '/api/ok' }); response.end(); return; }
+  if (request.url === '/api/failed') { request.socket.destroy(); return; }
+  if (request.url === '/api/ok') { response.setHeader('Content-Type', 'application/json'); response.end('{"ok":true}'); return; }
+  if (request.url === '/api/missing') { response.writeHead(404); response.end('missing'); return; }
+  response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end(html);
+});
 const fixtureSockets = new Set();
 fixture.on('connection', socket => { fixtureSockets.add(socket); socket.on('close', () => fixtureSockets.delete(socket)); });
 await new Promise(resolve => fixture.listen(0, '127.0.0.1', resolve));
@@ -98,6 +105,50 @@ try {
   const tab = await until(async () => (await call('list_tabs', { browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Attach upload fixture'), 'fixture tab');
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };
+  const evaluate = (expression, args = {}) => call('evaluate', { ...handle, expression, ...args });
+  assert.ok(!(await call('console_logs', handle)).entries.some(entry => entry.text === 'attach-before-claim'));
+  assert.deepEqual((await evaluate('Promise.resolve({title: document.title, answer: 6 * 7})')).value,
+    { title: 'Attach upload fixture', answer: 42 });
+  const special = await evaluate('(()=>{const result={big:12n};result.self=result;return result})()');
+  assert.equal(special.value.big.value, '12'); assert.equal(special.value.self.$type, 'circular_or_repeated');
+  assert.equal((await evaluate('"x".repeat(100000)', { max_chars: 1000 })).truncated, true);
+  assert.equal((await rawCall('evaluate', { ...handle, expression: '(()=>{throw new Error("evaluation fixture")})()' })).isError, true);
+  assert.equal((await rawCall('evaluate', { ...handle, expression: 'new Promise(()=>{})', timeout_ms: 100 })).isError, true);
+  assert.equal((await rawCall('evaluate', { ...handle, expression: '(()=>{while(true){}})()', timeout_ms: 200 })).isError, true);
+  assert.equal((await evaluate('42')).value, 42); checks.push('evaluate promise/special values/truncation/errors/async and synchronous timeouts');
+  await evaluate(`(async()=>{
+    console.warn('attach diagnostic warning', {answer:42});
+    setTimeout(()=>{throw new Error('attach uncaught fixture')},0);
+    Promise.reject(new Error('attach rejection fixture'));
+    await (await fetch('/api/redirect')).text(); await (await fetch('/api/missing')).text();
+    try { await fetch('/api/failed') } catch {}
+    return true;
+  })()`);
+  const consoleLogs = await until(async () => {
+    const result = await call('console_logs', handle);
+    return result.entries.some(entry => entry.text.includes('attach rejection fixture')) && result;
+  }, 'console and rejection events');
+  assert.ok(consoleLogs.entries.some(entry => entry.level === 'warning' && entry.text.includes('attach diagnostic warning')));
+  assert.ok(consoleLogs.entries.some(entry => entry.source === 'exception' && entry.text.includes('attach uncaught fixture')));
+  const networkLogs = await until(async () => {
+    const result = await call('network_logs', { ...handle, url_contains: '/api/' });
+    return result.entries.some(entry => entry.event === 'failed') &&
+      result.entries.some(entry => entry.event === 'finished' && entry.url?.endsWith('/api/ok')) && result;
+  }, 'network failure');
+  assert.ok(networkLogs.entries.some(entry => entry.event === 'redirect' && entry.status === 302));
+  assert.ok(networkLogs.entries.some(entry => entry.event === 'response' && entry.status === 404));
+  assert.ok(networkLogs.entries.some(entry => entry.event === 'finished' && entry.url.endsWith('/api/ok')));
+  const firstLog = await call('network_logs', { ...handle, limit: 1 });
+  assert.equal(firstLog.entries.length, 1);
+  assert.ok((await call('network_logs', { ...handle, after_seq: firstLog.next_seq })).entries.every(entry => entry.seq > firstLog.next_seq));
+  checks.push('console previews/uncaught error/rejection and network redirect/HTTP error/failure/pagination');
+  assert.equal((await rawCall('evaluate', { ...handle, expression: 'alert("evaluation modal")' })).isError, true);
+  assert.ok((await call('console_logs', handle)).entries.length);
+  await call('handle_dialog', { ...handle, accept: true });
+  await call('navigate', { ...handle, url: `${url}?diagnostics-reset` });
+  assert.ok((await call('console_logs', handle)).entries.some(entry => entry.text.includes('attach diagnostic warning')));
+  assert.ok((await call('network_logs', handle)).entries.some(entry => entry.event === 'redirect'));
+  checks.push('evaluation dialog and diagnostic retention across navigation');
   const snapshot = () => call('snapshot', handle);
   const ref = async label => {
     const tree = (await snapshot()).snapshot;
@@ -151,7 +202,7 @@ try {
   await call('handle_dialog', { ...handle, accept: false }); checks.push('existing dialog handling');
   const final = await state(); assert.deepEqual(final.errors, []); checks.push('no page JavaScript errors');
   await call('release_tab', handle);
-  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.3.3', checks, calls: calls.length, results: calls };
+  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.4.0', checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });
   await writeFile(join(out, `npm-live-${values.family}.json`), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, results: undefined }, null, 2));

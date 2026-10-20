@@ -11,7 +11,7 @@ try {
   } });
   const action = positionals[0] || 'mcp', configPath = values.config;
   if (values.help) {
-    console.log('browser-attach [mcp|setup|start|status|stop]\n  setup [--extension-dir PATH] [--port 47831] [--nosis]\n  --config PATH (default: per-user BrowserAttach data directory)');
+    console.log(`browser-attach [mcp|setup|start|status|stop]\n  setup [--extension-dir PATH] [--port 47831] [--nosis]\n  --config PATH (default: ${DEFAULT_CONFIG})`);
   } else if (action === 'mcp') {
     const { runMcp } = await import('../src/mcp.mjs'); await runMcp(configPath);
   } else if (action === 'hub') {
@@ -19,11 +19,10 @@ try {
     const hub = await startHub(await loadConfig(configPath));
     const stop = () => hub.close(); process.once('SIGINT', stop); process.once('SIGTERM', stop);
   } else if (action === 'setup') {
-    if (values.nosis && configPath !== DEFAULT_CONFIG) throw new Error('--nosis uses the default per-user pairing; configure custom --config paths in your MCP client explicitly.');
     const { setup, configureNosis } = await import('../src/setup.mjs');
     const result = await setup({ configPath, extensionDir: values['extension-dir'], port: Number(values.port) });
     console.log(`Extension folder: ${result.extensionDir}\nExtension ID: ${result.config.extension_id}\nPairing: ${result.configPath}`);
-    if (values.nosis) console.log(JSON.stringify(await configureNosis()));
+    if (values.nosis) console.log(JSON.stringify(await configureNosis(undefined, { configPath: result.configPath })));
     await ensureHub(result.configPath); console.log('Local hub started. Load/reload the extension in Chrome/Edge.');
   } else if (action === 'start') { await ensureHub(configPath); console.log('Local hub started.'); }
   else if (action === 'status') {

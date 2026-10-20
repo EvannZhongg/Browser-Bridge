@@ -1,10 +1,12 @@
-// Browser operations live here so the WebSocket transport cannot execute arbitrary CDP/JavaScript.
+// Browser operations live here; the WebSocket transport never exposes raw CDP.
 import { createVisuals } from './visuals.js';
 import { createClickVisuals } from './click-visuals.js';
 import { renderAX, snapshotPage } from './snapshot.js';
 import { createNavigation } from './navigation.js';
 import { createClick } from './click.js';
 import { createInput, inputMode } from './input.js';
+import { evaluatePage } from './evaluate.js';
+import { createDiagnostics } from './diagnostics.js';
 
 export function createController(api, notify = () => {}) {
   const claims = new Map();
@@ -20,6 +22,7 @@ export function createController(api, notify = () => {}) {
   const navigation = createNavigation(cdp);
   const mouse = createClick(cdp, value, viewport, position);
   const input = createInput(cdp, value);
+  const diagnostics = createDiagnostics();
 
   function queued(tabId, operation) {
     const result = (queues.get(tabId) || Promise.resolve()).catch(() => {}).then(operation);
@@ -38,7 +41,7 @@ export function createController(api, notify = () => {}) {
   }
 
   async function cdp(tabId, method, params = {}) {
-    if (!method.startsWith('Input.') && method !== 'Runtime.callFunctionOn' && method !== 'Page.navigate' && method !== 'DOM.setFileInputFiles') {
+    if (!method.startsWith('Input.') && method !== 'Runtime.callFunctionOn' && method !== 'Runtime.evaluate' && method !== 'Page.navigate' && method !== 'DOM.setFileInputFiles') {
       return await api.debugger.sendCommand({ tabId }, method, params);
     }
     // Input handlers may open a modal and prevent the CDP response from returning.
@@ -91,6 +94,7 @@ export function createController(api, notify = () => {}) {
     snapshots.delete(tabId);
     dialogs.delete(tabId);
     fileChoosers.delete(tabId);
+    diagnostics.forget(tabId);
     notify({ type: 'detached', tab_id: tabId });
   }
 
@@ -113,10 +117,12 @@ export function createController(api, notify = () => {}) {
     frameStates.delete(tabId);
     dialogs.delete(tabId);
     fileChoosers.delete(tabId);
+    diagnostics.forget(tabId);
     notify({ type: 'detached', tab_id: tabId });
   }
   api.debugger.onDetach.addListener(source => forget(source.tabId));
   api.debugger.onEvent.addListener((source, method, params = {}) => {
+    diagnostics.event(source, method, params);
     navigation.event(source.tabId, method, params);
     mouse.event(source.tabId, method, params);
     input.event(source.tabId, method, params);
@@ -242,6 +248,9 @@ export function createController(api, notify = () => {}) {
   }
 
   async function action(tabId, command, args) {
+    // Reading buffered diagnostics does not require a responsive renderer.
+    if (command === 'console_logs') return diagnostics.read(tabId, 'console', args);
+    if (command === 'network_logs') return diagnostics.read(tabId, 'network', args);
     if (command === 'handle_dialog') {
       if (typeof args.accept !== 'boolean') throw new Error('accept must be a boolean');
       await cdp(tabId, 'Page.handleJavaScriptDialog', { accept: args.accept,
@@ -255,6 +264,10 @@ export function createController(api, notify = () => {}) {
       if (command !== 'release_tab') throw new Error('A JavaScript dialog is open. Observe browser_snapshot and use browser_handle_dialog.');
     }
     if (command === 'snapshot') return await snapshot(tabId, args);
+    if (command === 'evaluate') {
+      snapshots.delete(tabId);
+      return await evaluatePage(cdp, tabId, args);
+    }
     if (command === 'read_text') {
       const limit = args.max_chars ?? 20000;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100000) throw new Error('max_chars must be 1..100000');
@@ -405,6 +418,11 @@ export function createController(api, notify = () => {}) {
         }
         await api.debugger.attach({ tabId }, '1.3');
         try {
+          diagnostics.start(tabId);
+          await cdp(tabId, 'Runtime.enable');
+          await cdp(tabId, 'Log.enable');
+          // Observe only. Do not change cache, service workers, or interception.
+          await cdp(tabId, 'Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 });
           await cdp(tabId, 'Page.enable');
           await cdp(tabId, 'Page.setLifecycleEventsEnabled', { enabled: true });
           await cdp(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true });
@@ -424,6 +442,7 @@ export function createController(api, notify = () => {}) {
           return { claimed: true, activation_requested: false,
             ...(visualWarning ? { visual_warning: visualWarning } : {}) };
         } catch (error) {
+          diagnostics.forget(tabId);
           await api.debugger.detach({ tabId });
           throw error;
         }

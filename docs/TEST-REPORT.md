@@ -1,5 +1,32 @@
 # BrowserAttach 验证报告
 
+## 0.4.0（2026-10-20）
+
+**发布前：无标题红色标签组**
+
+- 原生标签组标题设为空字符串，颜色仍为 red；MCP 指令、使用说明、控制器和分组测试同步更新。
+- `npm test`：72 项通过。Chromium 156 原生标签组专项确认 title 为空、color 为 red、导航保持、释放恢复用户分组、断连恢复通过；默认截图继续隐藏瞬时点击反馈。
+
+**补充：稳定数据目录与 Nosis 本机验证**
+
+- Windows 默认改为 `%USERPROFILE%/.browser-attach`，不再从 LOCALAPPDATA 推导；绝对 BROWSER_ATTACH_HOME 保留优先级，拒绝依赖 cwd 的相对目录。setup --nosis 固定 Node/CLI/配对文件绝对路径与目录，MCP 启动 Hub 显式传入同一路径和环境。
+- `npm test`：72 项通过，含 Windows 不同 LOCALAPPDATA/cwd、显式共享目录、相对目录拒绝和自定义配对文件配置/备份测试。
+- 使用 `F:\nosis` 的 Python 与当前用户 `.nosis/agent_config.json`；仅 browser_attach 启动项被备份更新为本地 Node/CLI 和 `F:\.nosis\browser-attach\config.json`。原 pairing token 和扩展路径保留，没有扫描或迁移 Codex 私有 AppData。
+- 运行中的 Nosis GUI（127.0.0.1:8737）经真实 Bridge/Runtime/MCP 启动链报告 browser_attach ready、tool_count 20；诊断 Turn 完成，一次性 Session 删除返回 200。证据在忽略目录 `test-results/nosis-stable-gui.json`。
+- 同一本机配置与实际 Hub，通过隔离 Chromium 和 Nosis ToolCatalog 完成全部 20 工具、34 次成功调用，新增 evaluate / console / network 与图片到模型消息适配通过；失效句柄和 JS 弹窗按预期返回错误。报告 `test-results/nosis-contract-chrome.json`。
+- Win32 GetFinalPathNameByHandleW 再次确认原 AppData 配对被重定向到 Codex LocalCache，而 F 盘配对文件的最终路径仍是 `\\?\F:\.nosis\browser-attach\config.json`。本轮没有修改 Nosis Core 的执行语义。
+
+**页面求值与诊断能力验证**
+
+- `npm test`：69 项全部通过，新增 evaluate 的一次执行、Promise、所有权、refs 失效、超时/弹窗恢复、循环与特殊值、getter 与稀疏超大数组的有界序列化，以及日志生命周期、过滤、分页和容量上限测试。
+- Chromium 156 真实扩展与 stdio MCP fixture：73 次工具调用通过，覆盖表达式/Promise、BigInt/循环值、超长结果、异常、永不结束的 Promise、同步死循环超时后的再次求值；console.warning 对象预览、未捕获异常/rejection、302 重定向、404 响应、断连失败、请求完成与游标分页；弹窗期间读取日志、导航后保留日志。
+- 同一 fixture 回归了输入、点击、单/多文件上传、隐藏 input、showPicker、Unicode/空文件、清空、无效上传校验、导航和对话框；初始页面在 claim 前输出的 console 消息未进入缓存。
+- Chromium 156 完整交互回归通过：后台填写/可信键盘/滚动/上传，21 页 AX 续读及 refs、前台/后台/遮挡点击、缩放、hover 位移拦截、闭合 Shadow DOM、链接导航与导航等待。
+- 交互回归曾在复测中出现 fixture 未加载（空 URL）和后台键盘送达超时；未自动重放输入。脚本改为轮询精确 URL/title 就绪后再执行原有启动稳定等待，随后完整回归通过；后台原生输入仍受浏览器状态影响。
+- `npm run test:package`：0.4.0 安装包在仓库外含空格路径安装、复制稳定扩展并通过 stdio 发现 20 个工具；prepack 检查通过，配对密钥未进入发布包。
+
+页面功能的初次验证使用临时 Chromium 配置与本地 fixture，没有覆盖 OOPIF、独立 worker 或线上账户。随后本机 Nosis 配置与实际 Hub 的验证见本节开头；未发布 npm。
+
 ## 0.3.3（2026-10-20）
 
 - 重命名 npm 包、CLI、MCP 服务名、运行数据目录和环境变量，新增品牌素材与 MIT 许可证。

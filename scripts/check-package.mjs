@@ -14,7 +14,7 @@ const names = result.files.map(file => file.path);
 for (const path of names) {
   if (/config\.generated\.js|(^|\/)(\.local|\.venv|test-results|node_modules)\//.test(path)) throw new Error(`Private file included in package: ${path}`);
 }
-for (const path of ['bin/browser-attach.mjs', 'src/mcp.mjs', 'src/hub.mjs', 'extension/manifest.json', 'extension/icons/BrowserAttach.png']) {
+for (const path of ['bin/browser-attach.mjs', 'src/mcp.mjs', 'src/hub.mjs', 'extension/manifest.json', 'extension/evaluate.js', 'extension/diagnostics.js', 'extension/icons/BrowserAttach.png']) {
   if (!names.includes(path)) throw new Error(`Package is missing ${path}`);
 }
 console.log(`Package boundary verified (${names.length} files, no generated pairing secret).`);

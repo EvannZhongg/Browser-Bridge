@@ -1,6 +1,6 @@
 // Native tab-strip indicators only. No page scripts, DOM nodes or click overlays.
 const STORAGE_KEY = 'browserAttachTabIndicators';
-const TITLE = '🔴';
+const TITLE = '';
 const COLOR = 'red';
 
 export function createVisuals(api) {
@@ -62,7 +62,7 @@ export function createVisuals(api) {
     await ready;
     await badge(tabId, true);
     const tab = await api.tabs.get(tabId);
-    if (tab.pinned) throw new Error('Pinned tabs cannot display a native tab-group marker. Unpin the tab before claiming to show 🔴; the extension RUN badge remains available.');
+    if (tab.pinned) throw new Error('Pinned tabs cannot display a native tab-group marker. Unpin the tab before claiming to show a red group; the extension RUN badge remains available.');
     let previousGroup = null;
     if (tab.groupId >= 0) {
       const group = await api.tabGroups.get(tab.groupId);

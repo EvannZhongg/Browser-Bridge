@@ -13,7 +13,8 @@
 - 发现多个浏览器配置，精确选择并独占接管标签页，完成后释放。
 - 读取可访问性树和页面正文，通过当前快照的元素引用点击、填写、滚动和按键。
 - 导航、打开或关闭标签页，处理 JavaScript 对话框，上传本机文件并截图。
-- 使用标准 stdio MCP，共提供 17 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
+- 在主页面执行 JavaScript 表达式，读取接管后的控制台、页面异常和网络生命周期日志。
+- 使用标准 stdio MCP，共提供 20 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
 
 ## 环境要求
 
@@ -37,7 +38,7 @@ browser-attach setup
 也可以不全局安装：
 
 ```sh
-npx --yes --package=@evan_zhong/browser-attach@0.3.3 browser-attach setup
+npx --yes --package=@evan_zhong/browser-attach@0.4.0 browser-attach setup
 ```
 
 ### 2. 配置 MCP 客户端
@@ -49,7 +50,7 @@ npx --yes --package=@evan_zhong/browser-attach@0.3.3 browser-attach setup
   "mcpServers": {
     "browser_attach": {
       "command": "npx",
-      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.3.3", "browser-attach", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.4.0", "browser-attach", "mcp"]
     }
   }
 }
@@ -81,15 +82,19 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 | `browser_handle_dialog` | alert、confirm、prompt |
 | `browser_upload_file` | 原生文件 input 或拦截的文件选择器 |
 | `browser_screenshot` | 视口或整页 PNG，附坐标映射 |
+| `browser_evaluate` | 主页面 JS 求值、Promise 等待、有界结果 |
+| `browser_console_logs` / `browser_network_logs` | 控制台、异常与请求事件，支持过滤和游标续读 |
 
 ## 本机数据与升级
 
 | 平台 | 默认数据目录 |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%/BrowserAttach` |
+| Windows | `%USERPROFILE%/.browser-attach` |
 | macOS / Linux | `${XDG_DATA_HOME:-~/.local/share}/browser-attach` |
 
-可通过 `BROWSER_ATTACH_HOME` 显式覆盖。目录包含配对配置、Hub 日志及稳定的扩展副本；不依赖 clone 位置、客户端工作目录或 npm 缓存。自定义 `--config` 时，setup 和 MCP 命令必须使用同一配对文件。
+可通过绝对路径 `BROWSER_ATTACH_HOME` 显式覆盖。Windows 默认避开可能被打包宿主虚拟化的 AppData；不会搜索或自动合并其他宿主的私有缓存。目录包含配对配置、Hub 日志及稳定的扩展副本；不依赖 clone 位置、客户端工作目录或 npm 缓存。已有自定义目录请继续使用相同环境变量或 `--config`，不要在新默认目录意外创建另一套配对。
+
+`setup --nosis` 会备份配置并固定当前 Node、CLI 和实际配对文件的绝对路径，同时设置 MCP 的 `BROWSER_ATTACH_HOME`；支持与自定义 `--config` 一起使用。MCP 启动 Hub 时继续传入同一绝对配对路径及目录，避免不同启动环境重新推导出另一份配置。
 
 ```sh
 browser-attach status
@@ -110,7 +115,9 @@ MCP 客户端 → Node.js stdio MCP → 127.0.0.1 Hub
                               现有 HTTP(S) 标签页
 ```
 
-每个 MCP 连接拥有独立控制权，句柄不能跨连接使用。断连或停止调试会释放控制。客户端端点要求 Bearer 密钥并拒绝网页 Origin；扩展验证固定 Origin、密钥和版本。没有暴露任意 JavaScript / CDP 执行工具。
+每个 MCP 连接拥有独立控制权，句柄不能跨连接使用。断连或停止调试会释放控制。客户端端点要求 Bearer 密钥并拒绝网页 Origin；扩展验证固定 Origin、密钥和版本。`browser_evaluate` 可以使用页面现有登录态读写数据，执行后 refs 失效；超时或报错前可能已产生作用，不应自动重放。未暴露通用 CDP 工具。
+
+日志从接管开始采集，跨导航保留，释放时清除；每类最多保留 500 条、1,048,576 个 JSON 字符，超限淘汰会报告 `data_loss`。网络工具仅记录元数据，不读取请求/响应正文或 headers，不改变缓存或拦截流量。完整参数及边界见[使用指南](docs/USAGE.md#javascript-求值与诊断日志040)。
 
 浏览器扩展具有调试权限，客户端操作可使用现有网站登录态；只应将其接入你信任的 MCP 客户端。网页内容不应被视为用户授权。配对密钥和生成的 `config.generated.js` 不应提交或发布，打包检查会拒绝包含该文件的包。
 

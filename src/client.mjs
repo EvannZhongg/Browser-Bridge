@@ -30,6 +30,7 @@ export async function ensureHub(configPath) {
   const log = await open(join(dirname(configPath), 'hub.log'), 'a', 0o600);
   const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/browser-attach.mjs', import.meta.url)), 'hub', '--config', configPath], {
     detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
+    env: { ...process.env, BROWSER_ATTACH_HOME: dirname(configPath) },
   });
   let spawnError;
   child.on('error', error => { spawnError = error; });

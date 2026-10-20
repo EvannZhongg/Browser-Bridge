@@ -32,7 +32,7 @@ test('unclaimed tabs keep their layout; claimed tabs get individual native marke
   const f = fixture();
   await f.visuals.install(1); await f.visuals.install(2);
   assert.notEqual(f.tabs.get(1).groupId, f.tabs.get(2).groupId);
-  assert.equal(f.groups.get(f.tabs.get(1).groupId).title, '🔴');
+  assert.equal(f.groups.get(f.tabs.get(1).groupId).title, '');
   assert.equal(f.groups.get(f.tabs.get(2).groupId).color, 'red');
   assert.equal(f.tabs.get(3).groupId, -1); assert.equal(f.tabs.get(3).active, true);
   await f.visuals.remove(1);
@@ -105,7 +105,7 @@ test('partial group setup failure rolls back to the original group even when it 
   const original = await f.api.tabs.group({ tabIds: [1] });
   await f.api.tabGroups.update(original, { title: 'Original', color: 'yellow', collapsed: false });
   const update = f.api.tabGroups.update;
-  f.api.tabGroups.update = (id, args) => args.title === '🔴' ? Promise.reject(new Error('Marker failed')) : update(id, args);
+  f.api.tabGroups.update = (id, args) => args.title === '' ? Promise.reject(new Error('Marker failed')) : update(id, args);
   await assert.rejects(f.visuals.install(1), /Marker failed/);
   assert.equal(f.groups.get(f.tabs.get(1).groupId).title, 'Original');
   assert.deepEqual(f.saved().browserAttachTabIndicators, []);
