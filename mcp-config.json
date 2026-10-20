@@ -1,15 +1,8 @@
 {
   "mcpServers": {
     "browser_bridge": {
-      "command": "F:\\BrowserBridge\\.venv\\Scripts\\python.exe",
-      "args": [
-        "-u",
-        "-m",
-        "browser_bridge.mcp_server",
-        "--config",
-        "F:\\BrowserBridge\\.local\\config.json"
-      ],
-      "cwd": "F:\\BrowserBridge"
+      "command": "browser-bridge",
+      "args": ["mcp"]
     }
   }
 }

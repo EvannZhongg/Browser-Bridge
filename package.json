@@ -1,6 +1,22 @@
 {
-  "name": "local-browser-bridge-extension",
-  "private": true,
+  "name": "@evannzhongg/browser-bridge",
+  "version": "0.2.0",
+  "description": "MCP for existing signed-in Chrome and Edge tabs through a locally paired extension",
   "type": "module",
-  "scripts": {"test": "node --test tests/*.test.mjs"}
+  "bin": { "browser-bridge": "bin/browser-bridge.mjs" },
+  "engines": { "node": ">=22" },
+  "repository": { "type": "git", "url": "git+https://github.com/EvannZhongg/Browser-Bridge.git" },
+  "publishConfig": { "access": "public" },
+  "files": ["bin/", "src/", "extension/", "scripts/check-package.mjs", "README.md", "PLAYWRIGHT-ANALYSIS.md", "TEST-REPORT.md", "NOSIS-INTEGRATION.md", "mcp-config.json"],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:live": "node scripts/live-smoke.mjs",
+    "test:package": "node scripts/package-smoke.mjs",
+    "prepack": "node scripts/check-package.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  }
 }

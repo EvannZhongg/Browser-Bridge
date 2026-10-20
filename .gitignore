@@ -5,3 +5,6 @@ __pycache__/
 extension/config.generated.js
 .pytest_cache/
 test-results/
+node_modules/
+*.tgz
+pw-*.txt

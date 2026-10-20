@@ -35,6 +35,7 @@ function fixture() {
         if (method === 'DOM.getContentQuads') return { quads: [[10, 10, 100, 10, 100, 50, 10, 50]] };
         if (method === 'DOM.getNodeForLocation') return { backendNodeId: 12 };
         if (method === 'Runtime.evaluate') return { result: { value: { width: 1024, height: 768, scroll_x: 0, scroll_y: 0, device_pixel_ratio: 1 } } };
+        if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes("input.type !== 'file'")) return { result: { objectId: 'file-input' } };
         if (method === 'Runtime.callFunctionOn') return { result: { value: !blocked } };
         if (method === 'Page.getLayoutMetrics') return { cssContentSize: { width: 1024, height: 1800 } };
         if (method === 'Page.captureScreenshot') return { data: 'image-data' };
@@ -199,4 +200,43 @@ test('long AX names stop at an explicit serialized text budget', async () => {
   assert.equal(snapshot.truncated, true);
   assert.equal(snapshot.truncation_reason, 'text_budget');
   assert.ok(JSON.stringify(snapshot).length < 16000);
+});
+
+test('claim intercepts file choosers, click reports one, upload uses the native input and clears pending state', async () => {
+  const f = fixture(); await f.claim();
+  assert.ok(f.calls.some(call => call.method === 'Page.setInterceptFileChooserDialog' && call.args.enabled));
+  f.api.debugger.onEvent.emit({ tabId: 9 }, 'Page.fileChooserOpened', { backendNodeId: 77, mode: 'selectMultiple', frameId: 'main' });
+  assert.equal((await f.exec('snapshot')).file_chooser.mode, 'selectMultiple');
+  const result = await f.exec('upload_file', { files: ['C:\\fixtures\\中文 file.txt', 'C:\\fixtures\\empty.txt'] });
+  assert.equal(result.files_set, 2);
+  assert.equal(result.file_chooser, undefined);
+  assert.deepEqual(f.calls.find(call => call.method === 'DOM.setFileInputFiles').args,
+    { objectId: 'file-input', files: ['C:\\fixtures\\中文 file.txt', 'C:\\fixtures\\empty.txt'] });
+  await assert.rejects(f.exec('upload_file', { files: [] }), /No pending file chooser/);
+});
+
+test('direct upload consumes refs; [] clears and file chooser state expires on navigation and release', async () => {
+  const f = fixture(); await f.claim();
+  const ref = f.ref(await f.exec('snapshot'));
+  assert.equal((await f.exec('upload_file', { ref, files: [] })).cleared, true);
+  await assert.rejects(f.exec('upload_file', { ref, files: [] }), /stale/);
+  f.api.debugger.onEvent.emit({ tabId: 9 }, 'Page.fileChooserOpened', { backendNodeId: 77, mode: 'selectSingle' });
+  f.api.debugger.onEvent.emit({ tabId: 9 }, 'Page.frameNavigated', { frame: { id: 'main' } });
+  await assert.rejects(f.exec('upload_file', { files: [] }), /No pending/);
+  f.api.debugger.onEvent.emit({ tabId: 9 }, 'Page.fileChooserOpened', { backendNodeId: 77 });
+  await f.exec('release_tab'); await f.claim();
+  assert.equal((await f.exec('snapshot')).file_chooser, undefined);
+});
+
+test('upload validation failure never dispatches native file assignment', async () => {
+  const f = fixture(); await f.claim();
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes("input.type !== 'file'"))
+      return { exceptionDetails: { text: 'Single-file input cannot accept multiple files' } };
+    return send(target, method, args);
+  };
+  const ref = f.ref(await f.exec('snapshot'));
+  await assert.rejects(f.exec('upload_file', { ref, files: ['C:\\a', 'C:\\b'] }), /Single-file/);
+  assert.ok(!f.calls.some(call => call.method === 'DOM.setFileInputFiles'));
 });

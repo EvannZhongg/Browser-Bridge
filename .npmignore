@@ -1,0 +1,5 @@
+extension/config.generated.js
+.local/
+test-results/
+.venv/
+node_modules/

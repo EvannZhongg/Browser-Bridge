@@ -2,4 +2,5 @@
 <html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="ui.css">
 <body><main><h1>浏览器配置实例</h1><p>为当前浏览器配置设置一个名称，便于 MCP 在多个 Chrome / Edge 配置中选择。</p>
 <form><label for="profile">实例名称</label><input id="profile" maxlength="80" placeholder="例如：Edge 工作账号" required><button>保存</button></form><p id="saved" role="status"></p>
-<p class="hint">名称只保存在当前浏览器配置中。连接密钥由本机安装程序生成，无需在网页输入。</p></main><script src="options.js"></script></body></html>
+<p class="hint">名称只保存在当前浏览器配置中。连接密钥由本机安装程序生成，无需在网页输入。</p>
+<button id="reload" type="button">重新加载扩展</button><p class="hint">更新本机扩展文件后使用；会释放正在控制的标签页。</p></main><script src="options.js"></script></body></html>

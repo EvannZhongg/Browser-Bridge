@@ -6,6 +6,7 @@ export function createController(api, notify = () => {}) {
   const snapshots = new Map();
   const queues = new Map();
   const dialogs = new Map();
+  const fileChoosers = new Map();
   const dialogWaiters = new Map();
   const visuals = createVisuals(api);
 
@@ -26,7 +27,7 @@ export function createController(api, notify = () => {}) {
   }
 
   async function cdp(tabId, method, params = {}) {
-    if (!method.startsWith('Input.') && method !== 'Runtime.callFunctionOn' && method !== 'Page.navigate') {
+    if (!method.startsWith('Input.') && method !== 'Runtime.callFunctionOn' && method !== 'Page.navigate' && method !== 'DOM.setFileInputFiles') {
       return await api.debugger.sendCommand({ tabId }, method, params);
     }
     // Input handlers may open a modal and prevent the CDP response from returning.
@@ -78,6 +79,7 @@ export function createController(api, notify = () => {}) {
     claims.delete(tabId);
     snapshots.delete(tabId);
     dialogs.delete(tabId);
+    fileChoosers.delete(tabId);
     notify({ type: 'detached', tab_id: tabId });
   }
 
@@ -93,11 +95,20 @@ export function createController(api, notify = () => {}) {
     claims.delete(tabId);
     snapshots.delete(tabId);
     dialogs.delete(tabId);
+    fileChoosers.delete(tabId);
     notify({ type: 'detached', tab_id: tabId });
   }
   api.debugger.onDetach.addListener(source => forget(source.tabId));
   api.debugger.onEvent.addListener((source, method, params = {}) => {
-    if (method === 'DOM.documentUpdated' || method === 'Page.frameNavigated') snapshots.delete(source.tabId);
+    if (method === 'DOM.documentUpdated' || method === 'Page.frameNavigated') {
+      snapshots.delete(source.tabId);
+      fileChoosers.delete(source.tabId);
+    }
+    if (method === 'Page.fileChooserOpened' && claims.has(source.tabId)) {
+      if (params.backendNodeId) fileChoosers.set(source.tabId, {
+        backendNodeId: params.backendNodeId, mode: params.mode, frame_id: params.frameId,
+      });
+    }
     if (method === 'Page.frameNavigated' && !params.frame?.parentId) visuals.navigated(source.tabId);
     if (method === 'Page.javascriptDialogOpening') {
       dialogs.set(source.tabId, { type: params.type, message: params.message, default_prompt: params.defaultPrompt });
@@ -110,7 +121,7 @@ export function createController(api, notify = () => {}) {
   });
   api.tabs.onRemoved.addListener(forget);
   api.tabs.onUpdated.addListener((tabId, change) => {
-    if (change.url || change.status === 'loading') snapshots.delete(tabId);
+    if (change.url || change.status === 'loading') { snapshots.delete(tabId); fileChoosers.delete(tabId); }
   });
 
   async function snapshot(tabId, maxNodes) {
@@ -282,6 +293,7 @@ export function createController(api, notify = () => {}) {
     if (command === 'navigate') {
       const url = httpUrl(args.url);
       snapshots.delete(tabId);
+      fileChoosers.delete(tabId);
       const result = await cdp(tabId, 'Page.navigate', { url });
       if (result.errorText) throw new Error(result.errorText);
       return { navigating_to: url, note: 'Navigation started. Read a fresh snapshot to observe its state.' };
@@ -289,6 +301,50 @@ export function createController(api, notify = () => {}) {
     // Resolve the ref before consuming it; every input invalidates the whole observation.
     const node = args.ref ? await getObject(tabId, args.ref) : null;
     snapshots.delete(tabId);
+    if (command === 'upload_file') {
+      if (!Array.isArray(args.files) || args.files.length > 100 || args.files.some(file => typeof file !== 'string' || !file || file.includes('\0'))) {
+        throw new Error('files must contain at most 100 valid absolute file paths; [] clears selection');
+      }
+      const chooser = fileChoosers.get(tabId);
+      let target = node;
+      if (!target) {
+        if (!chooser) throw new Error('No pending file chooser. Supply a fresh file-input/label ref, or click the upload button first.');
+        const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: chooser.backendNodeId, objectGroup: 'browser-bridge' });
+        if (!resolved.object?.objectId) throw new Error('File chooser input no longer exists. Observe again.');
+        target = { objectId: resolved.object.objectId };
+      }
+      const resolved = await cdp(tabId, 'Runtime.callFunctionOn', {
+        objectId: target.objectId, arguments: [{ value: args.files.length }],
+        functionDeclaration: `function(count) {
+          const input = this.tagName === 'LABEL' ? this.control : this;
+          if (!input || input.tagName !== 'INPUT' || input.type !== 'file') throw new Error('Ref is not a file input or associated label');
+          if (!input.isConnected) throw new Error('File input is detached');
+          if (input.matches(':disabled')) throw new Error('File input is disabled');
+          if (input.webkitdirectory) throw new Error('Directory upload is unsupported; use a regular file input');
+          if (count > 1 && !input.multiple) throw new Error('Single-file input cannot accept multiple files');
+          return input;
+        }`, objectGroup: 'browser-bridge',
+      });
+      if (resolved.exceptionDetails) value(resolved);
+      if (!resolved.result?.objectId) throw new Error('Could not resolve the file input');
+      if (args.files.length === 0) {
+        // Chromium's native empty-path assignment does not emit input/change.
+        // Like Playwright's empty payload path, explicitly clear and notify the app.
+        value(await cdp(tabId, 'Runtime.callFunctionOn', { objectId: resolved.result.objectId, returnByValue: true,
+          functionDeclaration: `function() {
+            this.value = '';
+            const Event = this.ownerDocument.defaultView.Event;
+            this.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            this.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }` }));
+      } else {
+        // Native CDP assignment emits input/change and preserves actual file metadata.
+        await cdp(tabId, 'DOM.setFileInputFiles', { objectId: resolved.result.objectId, files: args.files });
+      }
+      fileChoosers.delete(tabId);
+      return { files_set: args.files.length, cleared: args.files.length === 0, observe_again: true };
+    }
     if (command === 'click') {
       if ((args.ref != null) === (args.x != null || args.y != null)) throw new Error('Provide either ref or x/y');
       let point;
@@ -379,6 +435,7 @@ export function createController(api, notify = () => {}) {
         await api.debugger.attach({ tabId }, '1.3');
         try {
           await cdp(tabId, 'Page.enable');
+          await cdp(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true });
           await cdp(tabId, 'DOM.enable');
           await cdp(tabId, 'Accessibility.enable');
           claims.set(tabId, { owner, handle: args.tab_handle });
@@ -398,7 +455,10 @@ export function createController(api, notify = () => {}) {
       httpUrl((await api.tabs.get(tabId)).url);
       const result = await action(tabId, command, args);
       const tab = await api.tabs.get(tabId);
-      return { ...result, tab_id: tabId, title: result.title ?? tab.title, url: result.url ?? tab.url, active: tab.active };
+      const chooser = fileChoosers.get(tabId);
+      return { ...result, ...(chooser ? { file_chooser: { pending: true, mode: chooser.mode, frame_id: chooser.frame_id,
+        note: 'Use browser_upload_file without ref; files: [] cancels the selection.' } } : {}),
+        tab_id: tabId, title: result.title ?? tab.title, url: result.url ?? tab.url, active: tab.active };
     });
   }
 

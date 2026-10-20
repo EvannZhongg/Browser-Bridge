@@ -1,3 +1,9 @@
+// This non-web-accessible page is also a local maintenance entry for setup.
+if (location.hash === '#reload') {
+  history.replaceState(null, '', location.pathname);
+  chrome.runtime.reload();
+}
+document.querySelector('#reload').onclick = () => chrome.runtime.reload();
 chrome.storage.local.get('profileName').then(result => { document.querySelector('#profile').value = result.profileName || ''; });
 document.querySelector('form').onsubmit = async event => {
   event.preventDefault();

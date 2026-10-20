@@ -21,7 +21,7 @@ async function getIdentity() {
   const family = /Edg\//.test(navigator.userAgent) ? 'edge' : 'chrome';
   return { instance_id: instanceId, run_id: runId, family,
     profile_name: local.profileName || (family === 'edge' ? 'Edge' : 'Chrome'),
-    user_agent: navigator.userAgent, extension_id: chrome.runtime.id };
+    user_agent: navigator.userAgent, extension_id: chrome.runtime.id, extension_version: chrome.runtime.getManifest().version };
 }
 
 async function connect() {
