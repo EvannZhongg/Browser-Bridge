@@ -1,5 +1,24 @@
 # BrowserAttach 验证报告
 
+## 0.5.0（2026-10-20）
+
+**补充：扩展键盘映射与原生 wheel 模式**
+
+- `npm test`：89 项通过。覆盖 F1–F12、Insert/Delete/导航键、全部 ASCII 可打印字符、US 标点的 key/code/Shift 映射、`+`/`Control++`、修饰键不插入文本、无效组合拒绝，以及 DOM 默认模式、wheel 参数/坐标、超时后队列可用且不重放。
+- Chromium 156 与 Edge 155 独立临时 profile 均通过 143 次真实工具调用：F8/Insert/PageUp 的可信 keydown、Shift 标点实际输入、DOM 滚动不调用 wheel 处理器、显式 wheel 收到正确的可信 deltaX/deltaY，以及 OOPIF 内的原生 wheel 事件。原有点击、填充、上传、OOPIF 与日志场景继续通过。
+- `npm run test:package` 通过，工具数量仍为 20。wheel 使用顶层视口 CSS 坐标，CDP 派发确认不等于页面实际滚动；默认 5 秒截止时间，超时不重放、不自动切换 DOM。
+- 证据位于忽略目录 `test-results/unit-key-wheel.txt`、`package-key-wheel.txt`、`live-key-wheel-chromium.txt`、`live-key-wheel-edge.txt`。未修改现有配对或发布 npm。
+
+**本轮：导航预算、输入等待、鼠标参数与 OOPIF**
+
+- `npm test`：84 项通过。新增最大导航预算与传输余量、39 秒导航加 7 秒观察、观察超时后的导航结果与迟到 ref、统一可操作性等待、持续移动时不派发输入、派发后结果未知、session 递归附着/清理，以及重复请求/上下文 ID 隔离测试。
+- `npm run test:package`：仓库外安装、扩展复制和 stdio 20 工具检查通过；新 sessions/actionability/limits 模块均包含在包边界检查中。
+- 独立临时 profile 的 Chromium 156、Edge 155 均通过完整真实扩展 → Hub → stdio MCP 测试，每套 118 次工具调用。`--site-per-process` 强制隔离的嵌套跨站 iframe 覆盖快照、ref 与顶层坐标点击、原生/DOM 填充、焦点键盘、右键/中键/双击/Control+点击（含右键和中键双击）、拦截 chooser 上传、子 session console/network、子 frame 导航及父页面遮挡拒绝。
+- 并行运行两套浏览器的一次 Chromium 测试在首次 OOPIF 点击时未收到可信事件确认，按预期报告结果未知并停止，没有重放输入；随后在全新 profile 中单独运行通过。原生输入仍受 Chromium 渲染/输入状态影响，超时不意味着动作未发生。
+- 最低浏览器版本提高到 125，不添加旧实现兼容分支。iframe 透视变换会在鼠标派发前明确拒绝；独立 worker/service worker、原生文件系统选择器不在本轮覆盖范围。
+- 当前可重跑证据位于忽略目录 `test-results/unit-latest.txt`、`package-latest.txt`、`live-chromium-latest.txt`、`live-edge-latest.txt` 及对应 `npm-live-*.json`。本轮以 0.5.0 发布，未修改用户现有浏览器配对。
+- 0.5.0 发布前复验：`npm test` 89 项、`npm run test:package`（38 文件 / 20 工具 / 仓库外安装）、Chromium 156 与 Edge 155 各 143 次真实扩展调用、标签标记与分组交互专项全部通过。
+
 ## 0.4.0（2026-10-20）
 
 **发布前：无标题红色标签组**

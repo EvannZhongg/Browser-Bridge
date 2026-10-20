@@ -21,7 +21,7 @@
 | browser_click | 当前 ref 或视口 CSS 坐标点击 |
 | browser_fill | 文本 input / textarea / contenteditable |
 | browser_press_key | 按键和组合键 |
-| browser_scroll | 指定位置的容器 DOM 滚动 |
+| browser_scroll | 容器 DOM 滚动或原生 wheel |
 | browser_navigate | HTTP(S) 导航 |
 | browser_handle_dialog | JavaScript alert / confirm / prompt |
 | browser_upload_file | 本机文件选择、多个文件及清空 |
@@ -61,7 +61,7 @@
 - 多文件要求 input 具有 multiple；禁用字段、失效 ref、目录路径和 webkitdirectory 会明确拒绝。
 - `accept` 是网页选择提示，不作文件格式验证；网站仍可自行验证或拒绝。
 - ref 在动作、新快照或导航后失效；待处理 chooser 在导航、文档更新、释放和断连后清除。
-- 仅针对 HTML file input；File System Access API 的 `window.showOpenFilePicker()`、原生权限弹窗和跨进程 iframe 尚不支持。
+- 仅针对 HTML file input；File System Access API 的 `window.showOpenFilePicker()`和原生权限弹窗尚不支持；跨进程 iframe 的 file input 已通过子 session 路由支持。
 - 选择文件可能立即触发网站自动上传，应只传任务指定的文件；选择成功并不证明服务端上传完成，需继续观察页面。
 
 ## JavaScript 求值与诊断日志（0.4.0）
@@ -87,11 +87,11 @@
 后续调用把返回的 `next_seq` 作为 `after_seq`；两类日志各自拥有序列，且只能在同一次 claim 内续读。`limit` 范围 1–200；`max_chars` 范围 1000–100000，约束 entries 数组的 JSON 字符数。`has_more` 表示尚有事件可扫描，`latest_seq` 是当前末尾；过滤器跳过的事件也推进游标。修改过滤器后想重新查看旧事件应从 `after_seq: 0` 开始。
 
 - 控制台可选 `level: log | debug | info | warning | error`，收集 console、未捕获异常/rejection、浏览器 Log 消息；对象参数是浅层预览，没有 live handle 或 getter 求值。位置的 line / column 从 0 开始，timestamp 与 capture_started_at 是 Unix 毫秒。
-- 网络可选 `url_contains`（最多 2000 字符），事件为 request / redirect / response / finished / failed / cache。按 `request_id` 和重定向 `hop` 关联；404 等 HTTP 错误属于 response，连接失败属于 failed。timestamp 使用 CDP 单调时钟秒，request 的 wall_time 是 Unix 秒。后续响应会追加新事件，因此续读不会漏掉同一请求的状态变化。
+- 网络可选 `url_contains`（最多 2000 字符），事件为 request / redirect / response / finished / failed / cache。按 `session_id`、`request_id` 和重定向 `hop` 关联；404 等 HTTP 错误属于 response，连接失败属于 failed。timestamp 使用 CDP 单调时钟秒，request 的 wall_time 是 Unix 秒。后续响应会追加新事件，因此续读不会漏掉同一请求的状态变化。
 - 每次 claim 自动开启 Runtime / Log / Network 观察，过滤启用时重放的历史控制台信息；已经发生的网络请求无法追溯。导航不清空日志，release、detach、关闭或断连会清理；不写入磁盘。
 - 每标签每类日志最多 500 条及 1048576 个 JSON 字符，活跃请求关联表最多 500 项。淘汰时 `data_loss: true`、`dropped_through_seq` 标识缺口；超限关联表可能使完成事件缺少 URL/hop，但仍保留 request_id。单条字段有长度上限，裁剪尾部显示 `…[truncated]`；单条放不入读取预算时返回 `truncated: true` 的 serialized_preview 并推进游标。
 - 网络不保存 headers、请求体或响应体，也不修改缓存、service worker 或请求拦截；URL 与 console 内容仍可能包含网站数据。网页结果与日志是非可信内容。
-- 覆盖当前附着 target 及其同进程 frames，不保证跨进程 iframe、独立 worker/service worker 或 WebSocket 消息覆盖。日志可以在 JS 弹窗打开时读取；读取不会使 refs 失效。
+- 覆盖主 target、同进程 frames 及递归附着的 OOPIF。日志带 `session_id`（主 session 为 null）；console 能解析执行上下文时带 `frame_id`。独立 worker/service worker 与 WebSocket 消息不在覆盖范围。日志可以在 JS 弹窗打开时读取；读取不会使 refs 失效。
 
 **架构与边界**
 
@@ -119,7 +119,19 @@ claim 和常规输入不主动激活标签页或浏览器窗口，也不移动�
 
 截图有 5 秒超时：被遮挡或非活动的 Chromium 页面可能停止渲染，可显式调用 activate_tab 后再次观察，或使用 AX / 文本；截图本身不自动切前台。PNG 像素要按返回的 `image_to_viewport_css` 映射到视口 CSS 坐标；整页截图的视口外位置需先滚动。
 
-点击保持原生输入，连续派发 move/down/up 后统一等待确认；ref 会检查可见、启用和遮挡。短暂等待稳定后，即使持续动画仍会使用最新几何位置尝试点击；快速移动造成偏离目标时仍会被命中检查或事件校验拒绝。命中查询换算为文档 CSS 坐标，鼠标输入仍为视口 CSS 坐标。隔离世界中的事件校验会阻止偏离目标的点击；只有收到匹配目标的可信 click 才返回 `target_verified: true`。这证明事件送达，不证明提交、付款等业务已完成。无确认时 5 秒内明确报错，不自动重试。
+点击保持原生输入，连续派发 move/down/up 后统一等待确认。`click`、`fill`、`press_key` 共用可见、启用、非 inert、几何位置连续稳定的等待逻辑；fill 还要求可编辑且非只读，press_key 检查当前焦点（可进入 OOPIF）。`timeout_ms` 默认 5000，范围 100–30000，覆盖 ref 解析、准备、等待、派发及结果校验。准备阶段只轮询，不派发输入；持续移动会超时。输入派发后不重放、不自动切换 DOM 模式，超时明确报告结果未知。隔离世界的事件校验会阻止偏离目标的点击；`target_verified: true` 证明可信事件送达，不证明提交、付款等业务已完成。
+
+`browser_click` 支持 `button: left | middle | right`（默认 left）、`click_count: 1 | 2`（默认 1）、`modifiers: ["Alt", "Control", "Meta", "Shift"]`（默认空数组）。左键单击/双击分别校验 click/dblclick，中键校验 auxclick，右键校验 contextmenu。原生中键自动滚动、菜单或页面导航可能使确认失败，此时应先观察。DOM 点击仅支持不带修饰键的左键单击，其他组合明确拒绝。
+
+`browser_press_key` 支持 F1–F12、Enter/Tab/Escape/Backspace、Insert/Delete、四个 Arrow 方向键、Home/End/PageUp/PageDown，以及 ASCII 字母、数字和 US 键盘标点。标点既可直接传字符，也可用物理键名：Semicolon、Equal、Minus、Comma、Period、Slash、Backquote、BracketLeft、BracketRight、Backslash、Quote、Space。`Shift+1` 生成 `!`，`Shift+/` 生成 `?`；直接传 `?`、`:`、`+` 等字符会自动加入 Shift。`+` 或 `Plus` 表示加号，组合键可写 `Control++`；普通字母需要大写时显式使用 `Shift+A`。Control/Alt/Meta 组合不额外插入文本；浏览器保留快捷键可能被浏览器截获，此时不能保证页面 keydown 确认。
+
+`browser_scroll` 默认 `mode: "dom"`，对指定位置的容器调用 scrollBy，不触发 wheel。遇到依赖 wheel 的自定义滚动/scroll-jacking 时显式选择 `mode: "wheel"`：
+
+```json
+{"tab_handle":"...","mode":"wheel","x":400,"y":300,"delta_y":500,"delta_x":0,"timeout_ms":5000}
+```
+
+x/y 始终是顶层视口 CSS 坐标，省略时使用视口中心；正 delta_y 向下、正 delta_x 向右，单位为 CSS 像素。wheel 从顶层派发，由浏览器路由到容器或 OOPIF，遵守祖先页面遮挡；DOM 模式不能穿越跨域 iframe。两种模式的 timeout_ms 默认 5000、范围 100–30000，覆盖准备与派发。wheel 返回 `method: "native_wheel"`、`dispatched: true`，只表示 CDP 已确认派发，不返回 scrolled，也不保证处理器执行或页面移动；需要继续观察。超时后结果未知，不自动重放，也不自动切换到 DOM 模式。
 
 **拖动标签、原生菜单与并行操作（0.3.1 起）**
 
@@ -135,16 +147,16 @@ claim 和常规输入不主动激活标签页或浏览器窗口，也不移动�
 
 - DOM 点击要求 ref，只对 HTML 元素调用一次 `HTMLElement.click()`；不发送 mouse/pointer 序列，不提供可信事件或用户激活。返回 `method: "dom"`、`events_trusted: false`，不返回 `target_verified: true`。自绘控件、拖拽、依赖 pointerdown 或用户激活的功能仍需要原生输入。
 - DOM 填写使用原生 value setter（contenteditable 使用 textContent），发送非可信 input/change 事件，不主动 focus/select。两种填写模式均核验字段最终文本，成功返回 `value_verified: true`；被吞、失焦或页面同步格式化导致文本不匹配时明确报错，不返回字段内容。复杂编辑器仍可能需要原生事件，异步回写不在即时校验范围内。
-- 原生按键在隔离世界监听可信 keydown，以确认页面收到对应 key/code/modifiers，成功返回 `delivery_verified: true`。连续派发 down/char/up 后统一等待，输入派发阶段无回执或确认超时在 5 秒内报错，释放工具队列；确认送达不等于应用完成预期操作。无 DOM 快捷键替代模式。
+- 原生按键在隔离世界监听可信 keydown，以确认页面收到对应 key/code/modifiers，成功返回 `delivery_verified: true`。连续派发 down/char/up 后统一等待，准备和派发共用 `timeout_ms` 截止时间，默认 5 秒；无回执或确认超时会报错，释放工具队列；确认送达不等于应用完成预期操作。无 DOM 快捷键替代模式。
 - 失败后先观察页面；原生命令可能已经生效或稍后送达，不能自动重放，也不能在结果未知时自动切 DOM 模式补点一次。DOM 模式同样需要页面渲染进程能执行 JavaScript；浏览器/页面冻结、系统模态窗口等仍可能阻塞。
 
-升级时先停止旧 Hub，再安装新版并运行 `browser-attach setup` 更新已配对的扩展副本，在浏览器中重新加载扩展并重连 MCP。使用自定义配置/扩展目录时保留原参数。Hub 与扩展版本必须一致，0.4.0 不会将新增工具发送给旧版扩展。
+升级时先停止旧 Hub，再安装新版并运行 `browser-attach setup` 更新已配对的扩展副本，在浏览器中重新加载扩展并重连 MCP。使用自定义配置/扩展目录时保留原参数。Hub 与扩展版本必须一致，0.5.0 不会将新增工具发送给旧版扩展。
 
 Windows 默认数据目录现为 `%USERPROFILE%/.browser-attach`，避免不同宿主的 AppData 虚拟化视图。已有配对目录请显式保留绝对 `BROWSER_ATTACH_HOME` 或 `--config`。`setup --nosis --config <实际路径>` 会将绝对配对文件和目录一起写入 Nosis；MCP 启动 Hub 时继续固定同一文件。不会自动查找或迁移 Codex 私有缓存中的配对数据。
 
-AX 合并重复文本、移除 InlineTextBox，保留语义节点和交互子元素。`max_nodes` 为每页 10–3000，默认 600；`max_chars` 为每页序列化文本预算 1000–2000000，默认 24000。`truncated: true` 时传回 `next_cursor` 继续调用同一个 `browser_snapshot`，可以调整预算，refs 在续读过程中保持有效；输入、新快照和主文档导航会使 cursor/ref 一起失效。iframe 导航、同文档导航或移除仅使其子树 refs 失效，主页面 refs 与 cursor 保留；读取期间变化的子 frame 或续读中失效的 frame 会跳过并列入 `omitted_frames`。单个超长节点无法放入一页时会明确提示需要的预算，不丢弃尾部。`omitted_frames` 也报告未覆盖的跨进程 iframe；分页不表示已补齐 OOPIF。
+AX 合并重复文本、移除 InlineTextBox，保留语义节点和交互子元素。`max_nodes` 为每页 10–3000，默认 600；`max_chars` 为每页序列化文本预算 1000–2000000，默认 24000。`truncated: true` 时传回 `next_cursor` 继续调用同一个 `browser_snapshot`，可以调整预算，refs 在续读过程中保持有效；输入、新快照和主文档导航会使 cursor/ref 一起失效。iframe 导航、同文档导航或移除仅使其子树 refs 失效，主页面 refs 与 cursor 保留；读取期间变化的子 frame 或续读中失效的 frame 会跳过并列入 `omitted_frames`。单个超长节点无法放入一页时会明确提示需要的预算，不丢弃尾部。`omitted_frames` 报告未能读取、已变化或附着失败的 frame。OOPIF 通过递归扁平 session 路由，snapshot/ref、click、fill、press_key、upload_file 和诊断日志共用 frame 归属；detach 与 release 会清理子 session 状态，子 frame 导航仅使对应子树失效。跨进程点击逐层检查父页面遮挡并转换坐标，从顶层派发；坐标输入及返回的 clicked 始终为顶层视口 CSS 像素。支持 iframe 平移、缩放、旋转和斜切，透视变换明确拒绝。需要 Chrome/Edge 125+。
 
-`browser_navigate` 默认 `wait_until: "domcontentloaded"`、`timeout_ms: 15000`、`include_snapshot: true`，一次调用返回目标文档的标题、URL 和快照。可选 `commit` / `load`，超时范围 100–40000 ms；`include_snapshot: false` 省去快照。同文档 hash 导航不等待新的加载事件。超时不代表导航已取消，单页应用在 DOMContentLoaded 后仍可能异步更新，需按任务继续观察。
+`browser_navigate` 默认 `wait_until: "domcontentloaded"`、`timeout_ms: 15000`、`include_snapshot: true`，一次调用返回目标文档的标题、URL 和快照。可选 `commit` / `load`，超时范围 100–40000 ms；`include_snapshot: false` 省去快照。导航成功后快照或元数据读取另有 10000 ms 截止时间；失败时返回导航结果、`observation_error` 和 `observe_again`，不将已成功导航报告为失败。Hub 截止时间为 60000 ms，客户端为 65000 ms，覆盖最长导航加观察并保留传输余量。同文档 hash 导航不等待新的加载事件。超时不代表导航已取消，单页应用在 DOMContentLoaded 后仍可能异步更新，需按任务继续观察。
 
 `browser_read_text` 默认 20000 字符，允许 1–100000，仅读取主页面可见正文。宿主的 Artifact 长行读取问题见 [Nosis 接入分析](NOSIS-INTEGRATION.md)，并不等于 Attach 快照的游标分页。
 

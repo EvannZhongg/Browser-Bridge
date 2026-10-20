@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "BrowserAttach",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Connect existing Chrome and Edge tabs to a locally paired MCP client.",
-  "minimum_chrome_version": "120",
+  "minimum_chrome_version": "125",
   "permissions": [
     "debugger",
     "tabs",

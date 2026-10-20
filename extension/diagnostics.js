@@ -52,11 +52,15 @@ function location(frame = {}) {
 
 export function createDiagnostics() {
   const tabs = new Map();
-  function start(tabId) { tabs.set(tabId, { started: Date.now(), console: buffer(), network: buffer(), requests: new Map() }); }
+  function start(tabId) { tabs.set(tabId, { started: Date.now(), console: buffer(), network: buffer(), requests: new Map(), contexts: new Map() }); }
   function event(source, method, params) {
     const state = tabs.get(source.tabId);
-    // Child targets are not enabled/routed by the controller yet.
-    if (!state || source.sessionId) return;
+    if (!state) return;
+    const origin = { session_id: source.sessionId ?? null };
+    const contextKey = JSON.stringify([source.sessionId, params.executionContextId ?? params.context?.id ?? params.exceptionDetails?.executionContextId]);
+    if (method === 'Runtime.executionContextCreated') state.contexts.set(contextKey, params.context.auxData?.frameId);
+    if (method === 'Runtime.executionContextDestroyed') state.contexts.delete(contextKey);
+    if (method === 'Runtime.executionContextsCleared') for (const key of state.contexts.keys()) if (JSON.parse(key)[0] === (source.sessionId ?? null)) state.contexts.delete(key);
     const timestamp = params.timestamp ?? params.entry?.timestamp;
     if ((method.startsWith('Runtime.') || method.startsWith('Log.')) && timestamp != null && timestamp < state.started) return;
     if (method === 'Runtime.consoleAPICalled') {
@@ -64,29 +68,30 @@ export function createDiagnostics() {
       const type = params.type;
       const level = ['warning', 'warn'].includes(type) ? 'warning' : ['error', 'assert'].includes(type) ? 'error'
         : ['debug', 'trace'].includes(type) ? 'debug' : type === 'info' ? 'info' : 'log';
-      state.console.add({ timestamp, source: 'console', type, level,
+      state.console.add({ ...origin, frame_id: state.contexts.get(contextKey), timestamp, source: 'console', type, level,
         text: clip((params.args || []).slice(0, 20).map(remoteText).join(' '), 8000),
         location: location(params.stackTrace?.callFrames?.[0]), execution_context_id: params.executionContextId });
     } else if (method === 'Runtime.exceptionThrown') {
       const details = params.exceptionDetails || {};
-      state.console.add({ timestamp, source: 'exception', type: 'exception', level: 'error',
+      state.console.add({ ...origin, frame_id: state.contexts.get(contextKey), timestamp, source: 'exception', type: 'exception', level: 'error',
         text: clip(details.exception?.description || details.text, 8000), location: location(details),
         stack: (details.stackTrace?.callFrames || []).slice(0, 8).map(frame => ({ function: clip(frame.functionName, 200), ...location(frame) })) });
     } else if (method === 'Log.entryAdded') {
       const entry = params.entry;
-      state.console.add({ timestamp, source: clip(entry.source, 100), type: 'browser', level: clip(entry.level, 100),
+      state.console.add({ ...origin, frame_id: state.contexts.get(contextKey), timestamp, source: clip(entry.source, 100), type: 'browser', level: clip(entry.level, 100),
         text: clip(entry.text, 8000), location: location(entry) });
     } else if (method.startsWith('Network.')) {
       const id = params.requestId;
       if (!id) return;
-      let request = state.requests.get(id);
-      const add = (event, extra = {}) => state.network.add({ event, request_id: id, timestamp, ...request, ...extra });
+      const key = JSON.stringify([source.sessionId, id]);
+      let request = state.requests.get(key);
+      const add = (event, extra = {}) => state.network.add({ ...origin, event, request_id: id, timestamp, ...request, ...extra });
       if (method === 'Network.requestWillBeSent') {
         if (params.redirectResponse) add('redirect', { status: params.redirectResponse.status,
           url: clip(params.redirectResponse.url), redirect_to: clip(params.request.url) });
         request = { url: clip(params.request.url), method: clip(params.request.method, 50), resource_type: clip(params.type, 50),
           frame_id: params.frameId, hop: request ? request.hop + 1 : 0 };
-        state.requests.delete(id); state.requests.set(id, request);
+        state.requests.delete(key); state.requests.set(key, request);
         if (state.requests.size > MAX_ENTRIES) state.requests.delete(state.requests.keys().next().value);
         add('request', { wall_time: params.wallTime });
       } else if (method === 'Network.responseReceived') {
@@ -98,7 +103,7 @@ export function createDiagnostics() {
         const failed = method === 'Network.loadingFailed';
         add(failed ? 'failed' : 'finished', failed ? { error: clip(params.errorText), canceled: !!params.canceled,
           blocked_reason: clip(params.blockedReason) } : { encoded_data_length: params.encodedDataLength });
-        state.requests.delete(id);
+        state.requests.delete(key);
       } else if (method === 'Network.requestServedFromCache') add('cache');
     }
   }
@@ -109,7 +114,11 @@ export function createDiagnostics() {
     if (args.url_contains != null && (typeof args.url_contains !== 'string' || args.url_contains.length > 2000)) throw new Error('url_contains must be at most 2000 characters');
     return { ...state[kind].read(args, record => kind === 'console' ? !args.level || record.level === args.level
       : !args.url_contains || record.url?.includes(args.url_contains)),
-      capture_started_at: state.started, scope: 'attached_target', retained_across_navigation: true };
+      capture_started_at: state.started, scope: 'tab_and_iframes', retained_across_navigation: true };
   }
-  return { start, event, read, forget: tabId => tabs.delete(tabId) };
+  return { start, event, read, detach(tabId, sessionId) {
+    const state = tabs.get(tabId);
+    if (!state) return;
+    for (const map of [state.contexts, state.requests]) for (const key of map.keys()) if (JSON.parse(key)[0] === sessionId) map.delete(key);
+  }, forget: tabId => tabs.delete(tabId) };
 }

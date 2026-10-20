@@ -1,5 +1,5 @@
 // Render semantic AX nodes once; page through the same observation without losing refs.
-export function renderAX(nodes, token, refs, frameId) {
+export function renderAX(nodes, token, refs, frameId, sessionId) {
   const byId = new Map(nodes.map(node => [node.nodeId, node]));
   const visited = new Set();
   const entries = [];
@@ -31,7 +31,7 @@ export function renderAX(nodes, token, refs, frameId) {
     let nextDepth = depth;
     if (!skip) {
       const ref = node.backendDOMNodeId ? `${token}:${refs.size + 1}` : null;
-      if (ref) refs.set(ref, { backendNodeId: node.backendDOMNodeId, frameId });
+      if (ref) refs.set(ref, { backendNodeId: node.backendDOMNodeId, frameId, sessionId });
       entries.push({ node: true, frameId, line: `${'  '.repeat(Math.min(depth, 24))}${ref ? `[${ref}] ` : ''}${role} ${JSON.stringify(name)}${attributes ? ' ' + attributes : ''}` });
       nextDepth++;
     }

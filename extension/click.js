@@ -1,13 +1,15 @@
+import { deadline, waitForTarget } from './actionability.js';
+
 // Native mouse dispatch stays in protocol order without serial compositor acknowledgments.
-export function createClick(cdp, value, viewport, position) {
+export function createClick(cdp, value, viewport, position, sessions) {
   const pending = new Map();
-  function event(tabId, method, params) {
+  function event(tabId, method, params, sessionId) {
     const operation = pending.get(tabId);
     if (operation && method === 'Page.javascriptDialogOpening') {
       operation.reject(new Error('The action opened a JavaScript dialog. It may already have executed; use browser_snapshot and browser_handle_dialog before continuing.'));
       return;
     }
-    if (method !== 'Runtime.bindingCalled' || !operation || params.name !== operation.name || params.executionContextId !== operation.contextId) return;
+    if (method !== 'Runtime.bindingCalled' || !operation || params.name !== operation.name || !operation.contexts.has(JSON.stringify([sessionId, params.executionContextId]))) return;
     try {
       const receipt = JSON.parse(params.payload);
       if (receipt.matched === true) operation.resolve();
@@ -17,78 +19,107 @@ export function createClick(cdp, value, viewport, position) {
   function cancel(tabId) { pending.get(tabId)?.reject(new Error('Tab detached during click; outcome is unknown. Observe before retrying.')); }
   async function click(tabId, node, args) {
     if ((args.ref != null) === (args.x != null || args.y != null)) throw new Error('Provide either ref or x/y');
+    const options = clickOptions(args);
+    const budget = args.budget || deadline(args.timeout_ms);
+    let target = node?.target || { tabId };
+    const send = (method, params) => budget.run(() => cdp(target, method, params));
     let point, view;
     if (node) {
-      await cdp(tabId, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: node.backendNodeId });
-      // Extension timers also run for hidden documents; page requestAnimationFrame does not.
-      let previous;
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const bounds = value(await cdp(tabId, 'Runtime.callFunctionOn', { objectId: node.objectId,
-          functionDeclaration: checkClickable.toString(), returnByValue: true }));
-        if (previous && JSON.stringify(bounds) === JSON.stringify(previous)) break;
-        // Stability is a short settling opportunity, not a prerequisite: infinite
-        // animations still use a fresh quad and the trusted-event target guard below.
-        if (attempt === 9) break;
-        previous = bounds;
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      const { quads } = await cdp(tabId, 'DOM.getContentQuads', { backendNodeId: node.backendNodeId });
-      view = await viewport(tabId);
+      await waitForTarget(cdp, value, target, node, budget);
+      await send('DOM.scrollIntoViewIfNeeded', { backendNodeId: node.backendNodeId });
+      await waitForTarget(cdp, value, target, node, budget);
+      const { quads } = await send('DOM.getContentQuads', { backendNodeId: node.backendNodeId });
+      view = await budget.run(() => viewport(target));
       for (const quad of quads || []) {
         point = clippedPoint(quad, view);
         if (point) break;
       }
       if (!point) throw new Error('Element has no visible click point. Inspect a screenshot.');
-    } else { view = await viewport(tabId); point = position(view, args.x, args.y); }
+    } else { view = await budget.run(() => viewport(target)); point = position(view, args.x, args.y); }
     // DOM hit testing uses document CSS coordinates; Input uses viewport CSS coordinates.
-    const { backendNodeId, frameId } = await cdp(tabId, 'DOM.getNodeForLocation', {
+    let hitNode = await send('DOM.getNodeForLocation', {
       x: Math.floor(point.x + view.scroll_x), y: Math.floor(point.y + view.scroll_y), includeUserAgentShadowDOM: true,
     });
-    const hit = await cdp(tabId, 'DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
+    // Coordinate input starts in the root viewport; descend into a remote frame
+    // before resolving backend ids or installing isolated-world verification.
+    const visited = new Set();
+    while (!node) {
+      const description = await send('DOM.describeNode', { backendNodeId: hitNode.backendNodeId, depth: 0 });
+      const childId = description.node.frameId, child = childId && sessions.target(tabId, childId);
+      if (!child?.sessionId || child.sessionId === target.sessionId) break;
+      if (visited.has(child.sessionId)) throw new Error('Frame hit-test cycle; no input was dispatched.');
+      visited.add(child.sessionId);
+      const { model } = await send('DOM.getBoxModel', { backendNodeId: hitNode.backendNodeId });
+      const childView = await budget.run(() => viewport(child));
+      point = framePoint(point, model.content, childView, true);
+      target = child; view = childView;
+      hitNode = await send('DOM.getNodeForLocation', { x: Math.floor(point.x + view.scroll_x), y: Math.floor(point.y + view.scroll_y), includeUserAgentShadowDOM: true });
+    }
+    const { backendNodeId, frameId } = hitNode;
+    const hit = await send('DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
     if (node) {
-      const unblocked = value(await cdp(tabId, 'Runtime.callFunctionOn', {
+      const unblocked = value(await send('Runtime.callFunctionOn', {
         objectId: node.objectId, functionDeclaration: 'function(hit) { for (let e = hit; e; e = e.parentNode || e.host) if (e === this) return true; return false; }',
         arguments: [{ objectId: hit.object.objectId }], returnByValue: true,
       }));
       if (!unblocked) throw new Error('Another element covers this ref. Inspect a new snapshot or screenshot.');
     }
+    // Dispatch through the root widget so overlays in ancestor documents cannot
+    // be bypassed by sending directly to an OOPIF widget. Guard every boundary.
+    const boundaries = [];
+    let rootPoint = point, current = target, currentView = view;
+    while (current.sessionId) {
+      const parent = sessions.parent(tabId, current.sessionId);
+      const owner = await budget.run(() => cdp(parent.target, 'DOM.getFrameOwner', { frameId: parent.frameId }));
+      const { model } = await budget.run(() => cdp(parent.target, 'DOM.getBoxModel', { backendNodeId: owner.backendNodeId }));
+      rootPoint = framePoint(rootPoint, model.content, currentView);
+      const parentView = await budget.run(() => viewport(parent.target));
+      position(parentView, rootPoint.x, rootPoint.y);
+      const parentHit = await budget.run(() => cdp(parent.target, 'DOM.getNodeForLocation', {
+        x: Math.floor(rootPoint.x + parentView.scroll_x), y: Math.floor(rootPoint.y + parentView.scroll_y), includeUserAgentShadowDOM: true,
+      }));
+      if (parentHit.backendNodeId !== owner.backendNodeId) throw new Error('Another element covers this frame. Inspect a new snapshot or screenshot.');
+      const ownerFrameId = parent.ownerFrameId || (await budget.run(() => cdp(parent.target, 'Page.getFrameTree'))).frameTree.frame.id;
+      boundaries.push({ target: parent.target, backendNodeId: owner.backendNodeId, frameId: ownerFrameId });
+      current = parent.target; currentView = parentView;
+    }
     const name = `__attachClick_${crypto.randomUUID().replaceAll('-', '')}`;
-    let timer, guard;
-    const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, resolve, reject }));
-    // Mark handled before any setup can fail.
+    const guards = [], contexts = new Set();
+    const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, contexts, resolve, reject }));
     receipt.catch(() => {});
     try {
-      const frame = node?.frameId || frameId;
-      const { executionContextId } = await cdp(tabId, 'Page.createIsolatedWorld', { frameId: frame, worldName: 'browser-attach-input' });
-      if (!executionContextId) throw new Error('Could not create an isolated click verification context; no input was dispatched.');
-      pending.get(tabId).contextId = executionContextId;
-      await cdp(tabId, 'Runtime.addBinding', { name, executionContextId });
-      const isolated = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: node?.backendNodeId || backendNodeId,
-        executionContextId, objectGroup: 'browser-attach' });
-      const installed = await cdp(tabId, 'Runtime.callFunctionOn', {
-        objectId: isolated.object.objectId, functionDeclaration: installGuard.toString(),
-        arguments: [{ value: name }], objectGroup: 'browser-attach',
-      });
-      if (installed.exceptionDetails) value(installed);
-      guard = installed.result?.objectId;
-      if (!guard) throw new Error('Could not install click target verification; no input was dispatched.');
-      const deadline = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Click did not finish with verified delivery within 5 seconds. Outcome is unknown; browser UI may be capturing input during a tab drag or native menu. Finish that interaction and observe before retrying. Never automatically replay or fall back to DOM click.')), 5000); });
-      const sent = Promise.all([
-        cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'none', buttons: 0, ...point }),
-        cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...point }),
-        cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...point }),
-      ]);
-      // Both protocol delivery and a trusted DOM event must be confirmed. Deadline frees the queue.
-      const outcomes = await Promise.race([Promise.allSettled([sent, receipt]), deadline]);
-      for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
-      return { clicked: point, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', observe_again: true };
+      const targets = [{ target, frameId: node?.frameId || frameId, backendNodeId: node?.backendNodeId || backendNodeId, leaf: true }, ...boundaries];
+      for (const item of targets) {
+        const sendTo = (method, params) => budget.run(() => cdp(item.target, method, params));
+        const frame = item.frameId;
+        const { executionContextId } = await sendTo('Page.createIsolatedWorld', { frameId: frame, worldName: 'browser-attach-input' });
+        if (!executionContextId) throw new Error('Could not create an isolated click verification context; no input was dispatched.');
+        contexts.add(JSON.stringify([item.target.sessionId, executionContextId]));
+        await sendTo('Runtime.addBinding', { name, executionContextId });
+        const isolated = await sendTo('DOM.resolveNode', { backendNodeId: item.backendNodeId, executionContextId, objectGroup: 'browser-attach' });
+        const installed = await sendTo('Runtime.callFunctionOn', {
+          objectId: isolated.object.objectId, functionDeclaration: installGuard.toString(),
+          arguments: [{ value: name }, { value: options }, { value: budget.remaining() + 500 }, { value: item.leaf === true }], objectGroup: 'browser-attach',
+        });
+        if (installed.exceptionDetails) value(installed);
+        if (!installed.result?.objectId) throw new Error('Could not install click target verification; no input was dispatched.');
+        guards.push({ target: item.target, objectId: installed.result.objectId });
+      }
+      budget.dispatch();
+      const dispatch = params => budget.run(() => cdp(tabId, 'Input.dispatchMouseEvent', { ...params, ...rootPoint }));
+      const commands = [dispatch({ type: 'mouseMoved', button: 'none', buttons: 0, modifiers: options.modifiers })];
+      for (let count = 1; count <= options.click_count; count++) {
+        commands.push(dispatch({ type: 'mousePressed', button: options.button, buttons: options.buttons, clickCount: count, modifiers: options.modifiers }));
+        commands.push(dispatch({ type: 'mouseReleased', button: options.button, buttons: 0, clickCount: count, modifiers: options.modifiers }));
+      }
+      await budget.run(() => Promise.all([Promise.all(commands), receipt]));
+      return { clicked: rootPoint, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
     } finally {
-      clearTimeout(timer); pending.delete(tabId);
+      pending.delete(tabId);
       // A page handler may have opened a modal. Renderer cleanup can finish after
       // it is dismissed, but must not keep the tab queue locked until then.
-      const cleanup = [cdp(tabId, 'Runtime.removeBinding', { name })];
-      if (guard) cleanup.push(cdp(tabId, 'Runtime.callFunctionOn', { objectId: guard,
-        functionDeclaration: 'function() { this.stop(); }' }));
+      const cleanup = guards.flatMap(({ target, objectId }) => [cdp(target, 'Runtime.removeBinding', { name }),
+        cdp(target, 'Runtime.callFunctionOn', { objectId, functionDeclaration: 'function() { this.stop(); }' })]);
       let cleanupTimer;
       try { await Promise.race([Promise.allSettled(cleanup),
         new Promise(resolve => { cleanupTimer = setTimeout(resolve, 250); })]); }
@@ -98,31 +129,29 @@ export function createClick(cdp, value, viewport, position) {
   return { click, event, cancel };
 }
 
-function checkClickable() {
-  const element = this.nodeType === 3 ? this.parentElement : this;
-  if (!element?.isConnected) throw new Error('Element is detached');
-  if (element.matches(':disabled') || element.closest('[inert]')) throw new Error('Element is disabled or inert');
-  const rect = element.getBoundingClientRect(), style = element.ownerDocument.defaultView.getComputedStyle(element);
-  if (style.visibility !== 'visible' || !rect.width || !rect.height) throw new Error('Element is not visible');
-  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-}
-
-function installGuard(name) {
+function installGuard(name, options, expiryMs, verifyDelivery) {
   const target = this.nodeType === 3 ? this.parentElement : this;
   const win = target.ownerDocument.defaultView, report = win[name];
-  let rejected = false;
-  const types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+  let rejected = false, completed = 0;
+  const types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'auxclick', 'contextmenu', 'dblclick'];
   const listeners = [];
   function listener(event, expected) {
     if (!event.isTrusted) return;
     const element = target.nodeType === 3 ? target.parentElement : target;
-    const matched = !rejected && target.isConnected && !element.matches(':disabled') && !element.closest('[inert]') &&
+    const modifiers = (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+    const matched = event.button === options.domButton && modifiers === options.modifiers && !rejected && target.isConnected && !element.matches(':disabled') && !element.closest('[inert]') &&
       event.composedPath().some(node => node === expected);
     if (!matched) {
       rejected = true; event.preventDefault(); event.stopImmediatePropagation();
       report(JSON.stringify({ matched: false }));
-    } else if (event.type === 'click' && expected === target) report(JSON.stringify({ matched: true }));
-    if (event.type === 'click' && (!matched || expected === target)) stop();
+    } else {
+      const terminal = options.button === 'right' ? 'contextmenu' : options.button === 'middle' ? 'auxclick' : options.click_count === 2 ? 'dblclick' : 'click';
+      if (verifyDelivery && event.type === terminal && expected === target) {
+        completed++;
+        if (options.button === 'left' || completed === options.click_count) report(JSON.stringify({ matched: true }));
+      }
+    }
+
   }
   let expiry;
   function stop() {
@@ -141,7 +170,7 @@ function installGuard(name) {
     if (!root.host) break;
     expected = root.host;
   }
-  expiry = win.setTimeout(stop, 10000);
+  expiry = win.setTimeout(stop, expiryMs);
   return { stop };
 }
 
@@ -170,4 +199,30 @@ export function clippedPoint(quad, view) {
     point.x += (a.x + b.x) * cross; point.y += (a.y + b.y) * cross;
   }
   return { x: point.x / (3 * twiceArea), y: point.y / (3 * twiceArea) };
+}
+
+export function clickOptions(args) {
+  const button = args.button ?? 'left', click_count = args.click_count ?? 1, modifiers = args.modifiers ?? [];
+  const buttons = { left: [1, 0], middle: [4, 1], right: [2, 2] }, masks = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
+  if (!Object.hasOwn(buttons, button)) throw new Error('button must be left, middle or right');
+  if (![1, 2].includes(click_count)) throw new Error('click_count must be 1 or 2');
+  if (!Array.isArray(modifiers) || modifiers.some(key => !Object.hasOwn(masks, key))) throw new Error('modifiers must contain Alt, Control, Meta or Shift');
+  if (args.mode === 'dom' && (button !== 'left' || click_count !== 1 || modifiers.length)) throw new Error('DOM click supports only left single click without modifiers');
+  return { button, click_count, modifiers: modifiers.reduce((mask, key) => mask | masks[key], 0), buttons: buttons[button][0], domButton: buttons[button][1] };
+}
+
+// Affine transforms cover translation, scale, rotation and skew. Reject
+// perspective rather than silently clicking a wrongly transformed position.
+export function framePoint(point, quad, view, inverse = false) {
+  const [x, y, x1, y1, x2, y2, x3, y3] = quad;
+  const ax = x1 - x, ay = y1 - y, bx = x3 - x, by = y3 - y;
+  if (Math.abs(x2 - x1 - x3 + x) > 0.5 || Math.abs(y2 - y1 - y3 + y) > 0.5) throw new Error('Perspective iframe transforms are unsupported; no input was dispatched.');
+  const determinant = ax * by - ay * bx;
+  if (Math.abs(determinant) < 0.001) throw new Error('Frame has no visible content area; no input was dispatched.');
+  if (inverse) {
+    const dx = point.x - x, dy = point.y - y;
+    return { x: (dx * by - dy * bx) / determinant * view.width, y: (dy * ax - dx * ay) / determinant * view.height };
+  }
+  return { x: x + point.x / view.width * ax + point.y / view.height * bx,
+    y: y + point.x / view.width * ay + point.y / view.height * by };
 }

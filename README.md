@@ -19,10 +19,8 @@
 ## 环境要求
 
 - Node.js **22 或更新版本**，以及 npm。
-- Chrome / Edge **120 或更新版本**，且允许加载未打包扩展。推荐使用最新稳定版。
+- Chrome / Edge **125 或更新版本**，且允许加载未打包扩展。推荐使用最新稳定版。
 - 支持 stdio MCP 的客户端，能从 `PATH` 找到 Node/npm。
-
-运行时不依赖 Python 或 Playwright。浏览器、Hub 和上传文件需要位于同一台机器。
 
 ## 快速开始
 
@@ -38,7 +36,7 @@ browser-attach setup
 也可以不全局安装：
 
 ```sh
-npx --yes --package=@evan_zhong/browser-attach@0.4.0 browser-attach setup
+npx --yes --package=@evan_zhong/browser-attach@0.5.0 browser-attach setup
 ```
 
 ### 2. 配置 MCP 客户端
@@ -50,7 +48,7 @@ npx --yes --package=@evan_zhong/browser-attach@0.4.0 browser-attach setup
   "mcpServers": {
     "browser_attach": {
       "command": "npx",
-      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.4.0", "browser-attach", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.5.0", "browser-attach", "mcp"]
     }
   }
 }
@@ -121,7 +119,7 @@ MCP 客户端 → Node.js stdio MCP → 127.0.0.1 Hub
 
 浏览器扩展具有调试权限，客户端操作可使用现有网站登录态；只应将其接入你信任的 MCP 客户端。网页内容不应被视为用户授权。配对密钥和生成的 `config.generated.js` 不应提交或发布，打包检查会拒绝包含该文件的包。
 
-目前仅支持 Chrome / Edge 的 HTTP(S) 页面。跨进程 iframe 覆盖、hover / drag、下载管理、网络拦截和 Firefox / WebKit 尚不支持。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
+目前仅支持 Chrome / Edge 的 HTTP(S) 页面。hover / drag、下载管理、网络拦截和 Firefox / WebKit 尚不支持。跨进程 iframe 使用递归 session 路由，覆盖快照、输入、上传和日志；透视变换的 iframe 点击会明确拒绝。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
 
 ## 本地开发
 

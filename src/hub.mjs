@@ -1,3 +1,4 @@
+import { HUB_OPERATION_TIMEOUT_MS } from '../extension/limits.js';
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -9,7 +10,7 @@ export const CAPABILITIES = ['tabs', 'open_tab', 'activate_tab', 'close_tab', 'c
 export class OperationTimeout extends Error {}
 const send = (ws, data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); };
 
-export async function startHub(config, { port = config.port, operationTimeout = 45000 } = {}) {
+export async function startHub(config, { port = config.port, operationTimeout = HUB_OPERATION_TIMEOUT_MS } = {}) {
   const browsers = new Map(), clients = new Set(), claims = new Map(), tabClaims = new Map(), queues = new Map();
   const authorized = token => typeof token === 'string' && Buffer.byteLength(token) === Buffer.byteLength(config.token)
     && timingSafeEqual(Buffer.from(token), Buffer.from(config.token));

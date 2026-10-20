@@ -1,3 +1,4 @@
+import { CLIENT_RESPONSE_TIMEOUT_MS } from '../extension/limits.js';
 import { spawn } from 'node:child_process';
 import { open, mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -77,7 +78,7 @@ export class AttachClient {
       const timer = setTimeout(() => {
         this.pending.delete(id); this.socket.close();
         reject(new Error('Hub response timed out; outcome may be unknown. Observe again.'));
-      }, 50000);
+      }, CLIENT_RESPONSE_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
       this.socket.send(JSON.stringify({ id, method, arguments: args }));
     });

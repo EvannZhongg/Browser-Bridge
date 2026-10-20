@@ -33,7 +33,7 @@ try {
   assert.equal(paired.extensionDir, join(home, 'extension'));
   ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
   await once(ws, 'open'); const hello = once(ws, 'message');
-  ws.send(JSON.stringify({ type: 'hello', token: config.token, browser: { family: 'chrome', instance_id: 'package', run_id: 'one', profile_name: 'test', extension_version: '0.4.0' } }));
+  ws.send(JSON.stringify({ type: 'hello', token: config.token, browser: { family: 'chrome', instance_id: 'package', run_id: 'one', profile_name: 'test', extension_version: '0.5.0' } }));
   await hello;
   ws.on('message', raw => { const data = JSON.parse(raw.toString()); if (data.id) ws.send(JSON.stringify({ id: data.id, result: { released: true } })); });
   client = new Client({ name: 'package-test', version: '1' });

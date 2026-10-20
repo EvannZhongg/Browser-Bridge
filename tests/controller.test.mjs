@@ -61,6 +61,8 @@ function fixture() {
           { nodeId: '2', backendDOMNodeId: 12, role: { value: 'button' }, name: { value: 'Submit' } },
           { nodeId: '3', backendDOMNodeId: 13, role: { value: 'textbox' }, name: { value: 'Name' } },
         ] };
+        if (method === 'DOM.describeNode' && args.objectId === 'focused') return { node: {} };
+        if (method === 'Runtime.evaluate' && args.expression.includes('function activeElement')) return { result: { objectId: 'focused' } };
         if (method === 'DOM.describeNode') return { node: { frameId: 'remote', attributes: ['src', 'https://frame.test/'] } };
         if (method === 'DOM.resolveNode') return { object: { objectId: `object-${args.backendNodeId}` } };
         if (method === 'DOM.getContentQuads') return { quads: [[10, 10, 100, 10, 100, 50, 10, 50]] };
@@ -69,7 +71,7 @@ function fixture() {
         if (method === 'Runtime.evaluate' && args.expression.includes('title: document.title')) return { result: { value: { title: tabs.get(9).title, url: tabs.get(9).url } } };
         if (method === 'Runtime.evaluate') return { result: { value: { width: 1024, height: 768, scroll_x: 0, scroll_y: 0, device_pixel_ratio: 1 } } };
         if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installGuard')) return { result: { objectId: 'guard' } };
-        if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function checkClickable')) return { result: { value: { x: 10, y: 10, width: 90, height: 40 } } };
+        if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function inspectTarget')) return { result: { value: { ready: true, x: 10, y: 10, width: 90, height: 40 } } };
         if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes("input.type !== 'file'")) return { result: { objectId: 'file-input' } };
         if (method === 'Runtime.callFunctionOn') return { result: { value: !blocked } };
         if (method === 'Page.getLayoutMetrics') return { cssContentSize: { width: 1024, height: 1800 } };
@@ -123,6 +125,42 @@ test('coordinate actions are bounded by the viewport', async () => {
   await assert.rejects(f.exec('click', { x: 1024, y: 0 }), /viewport/);
   await f.exec('click', { x: 500, y: 300 });
   await f.exec('scroll', { delta_y: 300 });
+});
+
+test('scroll defaults to DOM; explicit wheel uses viewport coordinates and never substitutes DOM', async () => {
+  const f = fixture(); await f.claim();
+  const ref = f.ref(await f.exec('snapshot'));
+  await f.exec('scroll', {delta_y:120});
+  assert.ok(f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('function scrollAtPoint')));
+  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
+  await assert.rejects(f.exec('click', {ref}), /stale/);
+  f.calls.length = 0;
+  const result = await f.exec('scroll', {mode:'wheel',x:25,y:30,delta_x:-40,delta_y:120});
+  const dispatch = f.calls.find(call => call.method === 'Input.dispatchMouseEvent');
+  assert.deepEqual(dispatch.target, {tabId:9});
+  assert.deepEqual(dispatch.args, {type:'mouseWheel',x:25,y:30,deltaX:-40,deltaY:120,button:'none',buttons:0,modifiers:0});
+  assert.equal(result.method,'native_wheel'); assert.equal(result.application_result,'not_checked');
+  assert.equal(result.scrolled, undefined);
+  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('function scrollAtPoint')));
+  await assert.rejects(f.exec('scroll',{mode:'bad',delta_y:1}),/mode/);
+  await assert.rejects(f.exec('scroll',{mode:'wheel',x:-1,delta_y:1}),/viewport/);
+  await assert.rejects(f.exec('scroll',{mode:'wheel',delta_y:Infinity}),/finite/);
+  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length,1);
+});
+
+test('a stalled native wheel frees the queue, reports unknown outcome and never replays a late response', async () => {
+  const f = fixture(); await f.claim();
+  const send = f.api.debugger.sendCommand; let finish;
+  f.api.debugger.sendCommand = (target,method,args) => {
+    const result = send(target,method,args);
+    if (method === 'Input.dispatchMouseEvent') return new Promise(resolve => { finish = () => resolve(result); });
+    return result;
+  };
+  await assert.rejects(f.exec('scroll',{mode:'wheel',delta_y:100,timeout_ms:100}),/Outcome is unknown/);
+  assert.ok((await f.exec('snapshot')).snapshot);
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length,1);
+  assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('function scrollAtPoint')));
 });
 
 test('scrolled-page hit testing uses document coordinates while native input keeps viewport coordinates', async () => {
@@ -215,7 +253,7 @@ test('swallowed keyboard events and forged page-world receipts cannot report del
   const emit = f.api.debugger.onEvent.emit;
   f.api.debugger.onEvent.emit = (target, method, params) => emit(target, method,
     method === 'Runtime.bindingCalled' ? { ...params, executionContextId: 999 } : params);
-  await assert.rejects(f.exec('press_key', { key: 'Z' }), /verified delivery within 5 seconds.*Browser UI/);
+  await assert.rejects(f.exec('press_key', { key: 'Z' }), /verified delivery within 5000 ms.*Browser UI/);
   const keys = f.calls.filter(call => call.method === 'Input.dispatchKeyEvent');
   assert.deepEqual(keys.map(call => call.args.type), ['rawKeyDown', 'char', 'keyUp']);
   assert.equal(f.calls.filter(call => call.method === 'Runtime.removeBinding').length, 1);
@@ -606,18 +644,17 @@ test('main-frame navigation and same-document navigation still invalidate the ob
   }
 });
 
-test('continuously moving refs still dispatch a verified native click with current geometry', async () => {
+test('continuously moving refs exhaust the actionability deadline without dispatch', async () => {
   const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
   let sample = 0;
   f.api.debugger.sendCommand = async (target, method, args) => {
     const result = await send(target, method, args);
-    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function checkClickable')) result.result.value.x = ++sample;
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function inspectTarget')) result.result.value.x = ++sample;
     return result;
   };
-  const result = await f.exec('click', { ref: f.ref(await f.exec('snapshot')) });
+  await assert.rejects(f.exec('click', { ref: f.ref(await f.exec('snapshot')), timeout_ms: 100 }), /no input was dispatched/);
   assert.ok(sample > 1);
-  assert.equal(result.target_verified, true);
-  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 3);
+  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
 });
 
 test('evaluation runs once, awaits promises, bounds values, invalidates refs and enforces ownership', async () => {
@@ -720,4 +757,68 @@ test('tab lifecycle is explicit, HTTP(S)-only and requires ownership to activate
   assert.equal((await f.exec('close_tab')).closed, true);
   assert.equal(f.controller.claimedCount(), 0);
   await assert.rejects(f.exec('read_text'), /not claimed/);
+});
+
+test('39 seconds of navigation plus 7 seconds of observation fits the transport budget', async t => {
+  const f = fixture(); await f.claim();
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Page.navigate') await new Promise(resolve => setTimeout(resolve, 39000));
+    if (method === 'Accessibility.getFullAXTree') await new Promise(resolve => setTimeout(resolve, 7000));
+    return send(target, method, args);
+  };
+  const result = f.exec('navigate', { url: 'http://localhost:8000/slow', timeout_ms: 40000 });
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(39000); await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(7000); await new Promise(resolve => setImmediate(resolve));
+  assert.ok((await result).snapshot);
+  assert.equal(f.controller.claimedCount(), 1);
+});
+
+test('a stalled post-navigation snapshot returns navigation success and never saves late refs', async t => {
+  const f = fixture(); await f.claim();
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const send = f.api.debugger.sendCommand;
+  let finish;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Accessibility.getFullAXTree') await new Promise(resolve => { finish = resolve; });
+    return send(target, method, args);
+  };
+  const result = f.exec('navigate', { url: 'http://localhost:8000/slow', timeout_ms: 40000 });
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(10000); await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await result).navigated_to, 'http://localhost:8000/slow');
+  assert.match((await result).observation_error, /Navigation observation timed out/);
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.controller.claimedCount(), 1);
+  assert.equal(f.calls.filter(call => call.method === 'Page.navigate').length, 1);
+  await assert.rejects(f.exec('snapshot', { cursor: 'late@1' }), /stale/);
+});
+
+test('OOPIF trees omitted from root frame metadata still invalidate the full subtree', async () => {
+  const f = fixture(); await f.claim();
+  const emit = f.api.debugger.onEvent.emit, root = {tabId:9}, child = {tabId:9,sessionId:'s1'};
+  emit(root, 'Target.attachedToTarget', {sessionId:'s1',targetInfo:{type:'iframe',targetId:'child'}});
+  emit(child, 'Target.attachedToTarget', {sessionId:'s2',targetInfo:{type:'iframe',targetId:'nested'}});
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const frame = target.sessionId === 's1' ? 'child' : target.sessionId === 's2' ? 'nested' : 'main';
+    if (method === 'Page.getFrameTree') return {frameTree:{frame:{id:frame,url:'https://fixture.test/'}}};
+    if (method === 'Accessibility.getFullAXTree') return {nodes:[
+      {nodeId:'button',backendDOMNodeId:12,role:{value:'button'},name:{value:frame}},
+      ...(frame !== 'nested' ? [{nodeId:'iframe',backendDOMNodeId:14,role:{value:'Iframe'}}] : []),
+    ]};
+    if (method === 'DOM.describeNode' && args.backendNodeId === 14) return {node:{frameId:frame === 'main' ? 'child':'nested'}};
+    return send(target,method,args);
+  };
+  const snap = await f.exec('snapshot');
+  const ref = frame => snap.snapshot.split('\n').find(line => line.includes(`button "${frame}"`)).match(/\[([^\]]+)\]/)[1];
+  assert.equal(snap.omitted_frames.length,0);
+  emit(child,'Page.fileChooserOpened',{backendNodeId:77,frameId:'nested'});
+  emit(child,'Page.frameNavigated',{frame:{id:'child'}});
+  await assert.rejects(f.exec('click',{ref:ref('child')}),/stale/);
+  await assert.rejects(f.exec('click',{ref:ref('nested')}),/stale/);
+  assert.equal((await f.exec('click',{ref:ref('main')})).target_verified,true);
+  await assert.rejects(f.exec('upload_file',{files:[]}),/No pending/);
 });

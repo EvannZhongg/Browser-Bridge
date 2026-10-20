@@ -28,7 +28,7 @@ test('network lifecycle is append-only and correlates redirects without retainin
   assert.equal(failed.entries[0].canceled, true);
 });
 
-test('console collects previews, errors/rejections and browser messages; excludes old, unclaimed and child events', () => {
+test('console collects previews, errors/rejections and browser messages; excludes old and unclaimed events and records child sessions', () => {
   const f = fixture();
   f.emit('Runtime.consoleAPICalled', { type: 'warn', timestamp: 1, args: [{ value: 'historical' }] });
   f.emit('Runtime.consoleAPICalled', { type: 'warn', executionContextId: 0, args: [{ value: 'removed context' }] });
@@ -38,7 +38,9 @@ test('console collects previews, errors/rejections and browser messages; exclude
   f.emit('Runtime.consoleAPICalled', { type: 'warning', args, stackTrace: { callFrames: [{ url: 'https://fixture.test/', lineNumber: 10, columnNumber: 2 }] } });
   f.emit('Runtime.exceptionThrown', { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: 'Error: rejected' } } });
   f.emit('Log.entryAdded', { entry: { level: 'error', source: 'network', text: 'browser failure' } });
-  const result = f.read('console');
+  const child = f.read('console').entries[0];
+  assert.equal(child.session_id, 'child');
+  const result = f.read('console', { after_seq: 1 });
   assert.equal(result.entries.length, 3); assert.equal(result.entries[0].level, 'warning');
   assert.match(result.entries[0].text, /x: 42/); assert.equal(result.entries[0].location.line, 10);
   assert.ok(!JSON.stringify(result).includes('private-handle'));
@@ -74,4 +76,24 @@ test('filters advance cursor through unmatched events and character budget evict
   f.emit('Network.requestWillBeSent', { requestId: 'b', request: { url: 'https://fixture.test/image', method: 'GET' } });
   const network = f.read('network', { url_contains: '/api' });
   assert.equal(network.entries.length, 1); assert.equal(network.next_seq, 2);
+});
+
+test('identical child/root request and context ids retain independent ownership', () => {
+  const f = fixture();
+  for (const [sessionId, frameId] of [[undefined, 'main'], ['child', 'remote']]) {
+    const source = { tabId: 9, ...(sessionId ? {sessionId} : {}) };
+    f.emit('Runtime.executionContextCreated', { context: {id:42,auxData:{frameId}} }, source);
+    f.emit('Runtime.consoleAPICalled', { executionContextId:42, type:'log', args:[{value:frameId}] }, source);
+    f.emit('Network.requestWillBeSent', {requestId:'same',frameId,request:{url:`https://${frameId}.test/`,method:'GET'}}, source);
+  }
+  f.emit('Network.loadingFinished', {requestId:'same'}, {tabId:9});
+  f.emit('Network.loadingFailed', {requestId:'same',errorText:'child failed'}, {tabId:9,sessionId:'child'});
+  const consoleRows = f.read('console').entries;
+  assert.deepEqual(consoleRows.map(row => row.frame_id), ['main','remote']);
+  const finished = f.read('network').entries.slice(2);
+  assert.deepEqual(finished.map(row => row.url), ['https://main.test/','https://remote.test/']);
+  assert.deepEqual(finished.map(row => row.session_id), [null,'child']);
+  f.logs.detach(9,'child');
+  f.emit('Runtime.consoleAPICalled', {executionContextId:42,type:'log',args:[]}, {tabId:9,sessionId:'child'});
+  assert.equal(f.read('console').entries.at(-1).frame_id, undefined);
 });

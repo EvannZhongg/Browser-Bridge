@@ -28,7 +28,7 @@ async function fixture(t, options) {
     const ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
     sockets.push(ws); await once(ws, 'open');
     const response = once(ws, 'message');
-    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.4.0' } }));
+    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.5.0' } }));
     const connected = JSON.parse((await response)[0].toString());
     ws.on('message', raw => {
       const data = JSON.parse(raw.toString()); requests.push(data);
@@ -140,6 +140,8 @@ test('real stdio MCP exposes 20 tools, single JSON content, PNG image, and valid
     const mode = tools.find(tool => tool.name === `browser_${name}`).inputSchema.properties.mode;
     assert.deepEqual(mode.enum, ['native', 'dom']); assert.equal(mode.default, 'native');
   }
+  const scrollSchema = tools.find(tool => tool.name === 'browser_scroll').inputSchema.properties;
+  assert.deepEqual(scrollSchema.mode.enum, ['dom', 'wheel']); assert.equal(scrollSchema.mode.default, 'dom');
   for (const name of ['upload_file', 'open_tab', 'activate_tab', 'close_tab', 'evaluate', 'network_logs', 'console_logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
   const call = (name, args = {}) => mcp.callTool({ name: `browser_${name}`, arguments: args });
   const browsers = await call('list_browsers');
@@ -162,6 +164,12 @@ test('real stdio MCP exposes 20 tools, single JSON content, PNG image, and valid
   const clickCount = f.requests.filter(item => item.command === 'click').length;
   assert.equal((await call('click', { tab_handle: handle, x: 1, y: 1, mode: 'dom' })).isError, true);
   assert.equal(f.requests.filter(item => item.command === 'click').length, clickCount);
+  await call('scroll',{tab_handle:handle,delta_y:120});
+  await call('scroll',{tab_handle:handle,mode:'wheel',delta_y:120,timeout_ms:700});
+  const scrolls = f.requests.filter(item => item.command === 'scroll');
+  assert.equal(scrolls[0].arguments.mode,'dom'); assert.equal(scrolls[1].arguments.mode,'wheel');
+  assert.equal(scrolls[1].arguments.timeout_ms,700);
+  assert.equal((await call('scroll',{tab_handle:handle,mode:'invalid',delta_y:1})).isError,true);
   const image = await call('screenshot', { tab_handle: handle });
   assert.equal(image.content[1].mimeType, 'image/png');
   assert.equal(JSON.parse(image.content[0].text).capture.image_to_viewport_css.scale_x, 1);
@@ -201,7 +209,7 @@ test('setup installs stable extension data outside package, and preserves curren
   assert.equal(a.config.extension_id.length, 32);
   assert.equal(a.extensionDir, join(temp, 'extension'));
   assert.ok((await readFile(join(a.extensionDir, 'config.generated.js'), 'utf8')).includes(a.config.token));
-  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.4.0');
+  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.5.0');
 });
 
 test('Nosis configuration uses the current server schema and preserves unrelated servers', async t => {

@@ -1,3 +1,5 @@
+import { NAVIGATION_MAX_TIMEOUT_MS } from './limits.js';
+
 // Lifecycle events can precede the Page.navigate reply. Keep them until its loader is known.
 export function createNavigation(cdp) {
   const pending = new Map();
@@ -5,7 +7,7 @@ export function createNavigation(cdp) {
   function cancel(tabId) { pending.get(tabId)?.cancel(); }
   async function navigate(tabId, url, { wait_until = 'domcontentloaded', timeout_ms = 15000 } = {}) {
     if (!['commit', 'domcontentloaded', 'load'].includes(wait_until)) throw new Error('wait_until must be commit, domcontentloaded or load');
-    if (!Number.isInteger(timeout_ms) || timeout_ms < 100 || timeout_ms > 40000) throw new Error('timeout_ms must be 100..40000');
+    if (!Number.isInteger(timeout_ms) || timeout_ms < 100 || timeout_ms > NAVIGATION_MAX_TIMEOUT_MS) throw new Error('timeout_ms must be 100..40000');
     let result, resolveDone, rejectDone, timer;
     const events = [];
     const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });

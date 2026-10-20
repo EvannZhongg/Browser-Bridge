@@ -43,6 +43,26 @@ for(const input of document.querySelectorAll('input[type=file]')){
 }
 document.querySelector('#name').oninput=sync;sync();</script>`;
 const fixture = http.createServer((request, response) => {
+  const port = fixture.address().port;
+  if (request.url === '/frames') {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(`<title>Frame fixture</title><button>Main frame button</button><iframe style="margin:60px;width:650px;height:500px" src="http://localhost:${port}/frame"></iframe><script>window.frameState={};addEventListener('message',event=>{window.frameState[event.data.id]=event.data})</script>`); return;
+  }
+  if (request.url?.startsWith('/frame') || request.url === '/nested') {
+    const nested = request.url === '/nested';
+    response.setHeader('Content-Type', 'text/html');
+    response.end(`<title>Child fixture</title><button id="go">${nested ? 'Nested' : 'Child'} button</button><input aria-label="Child name" id="name"><input id="file" type="file" hidden><button onclick="file.click()">Child upload</button><pre id="state"></pre>
+      ${nested ? '' : `<iframe style="margin:20px;width:400px;height:180px" src="http://127.0.0.1:${port}/nested"></iframe>`}
+      <script>const data={id:${JSON.stringify(nested ? 'nested' : 'child')},clicks:0,doubles:0,middle:0,right:0,control:0,keys:0,wheels:0,wheelTrusted:false,text:'',files:[]};
+      function publish(){state.textContent=JSON.stringify(data);top.postMessage(data,'*')}
+      go.onclick=e=>{data.clicks++;if(e.ctrlKey)data.control++;console.log(data.id+' click');fetch('/api/ok');publish()};
+      go.ondblclick=e=>{data.doubles++;publish()};go.onmousedown=e=>{if(e.button===1)e.preventDefault()};go.onauxclick=e=>{if(e.button===1){data.middle++;publish()}};
+      go.oncontextmenu=e=>{e.preventDefault();data.right++;publish()};
+      document.querySelector('#name').oninput=()=>{data.text=document.querySelector('#name').value;publish()};
+      addEventListener('keydown',()=>{data.keys++;publish()});
+      addEventListener('wheel',e=>{e.preventDefault();data.wheels++;data.wheelTrusted=e.isTrusted;publish()},{passive:false});
+      file.onchange=()=>{data.files=[...file.files].map(f=>f.name);publish()};publish();</script>`); return;
+  }
   if (request.url === '/api/redirect') { response.writeHead(302, { Location: '/api/ok' }); response.end(); return; }
   if (request.url === '/api/failed') { request.socket.destroy(); return; }
   if (request.url === '/api/ok') { response.setHeader('Content-Type', 'application/json'); response.end('{"ok":true}'); return; }
@@ -75,7 +95,7 @@ try {
   browser = spawn(values.executable, [
     `--user-data-dir=${profile}`, `--disable-extensions-except=${pairing.extensionDir}`, `--load-extension=${pairing.extensionDir}`,
     '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', '--headless=new',
-    '--enable-unsafe-extension-debugging', 'about:blank',
+    '--enable-unsafe-extension-debugging', '--site-per-process', 'about:blank',
   ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   browser.on('error', error => { console.error(error.message); });
   let stderr = ''; browser.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-6000); });
@@ -201,8 +221,75 @@ try {
   const dialog = await snapshot(); assert.equal(dialog.dialog.type, 'confirm');
   await call('handle_dialog', { ...handle, accept: false }); checks.push('existing dialog handling');
   const final = await state(); assert.deepEqual(final.errors, []); checks.push('no page JavaScript errors');
+
+  await call('navigate', { ...handle, url: `${url}frames` });
+  const childRef = async (role, label) => {
+    const tree = (await snapshot()).snapshot;
+    const line = tree.split('\n').find(line => line.includes(`${role} "${label}"`));
+    assert.ok(line, `Missing ${label}: ${tree}`); return line.match(/\[([^\]]+)\]/)[1];
+  };
+  const frameState = async id => (await evaluate(`window.frameState[${JSON.stringify(id)}]`)).value;
+  await until(async () => (await snapshot()).snapshot.includes('Nested button'), 'nested OOPIF snapshot');
+  const childClick = await call('click', { ...handle, ref: await childRef('button', 'Child button') });
+  await until(async () => (await frameState('child'))?.clicks === 1, 'OOPIF native click');
+  await call('click', { ...handle, ...childClick.clicked });
+  await until(async () => (await frameState('child'))?.clicks === 2, 'root coordinate OOPIF click');
+  await call('scroll', { ...handle, mode:'wheel', ...childClick.clicked, delta_y:80 });
+  await until(async () => (await frameState('child'))?.wheels === 1, 'OOPIF native wheel handler');
+  assert.equal((await frameState('child')).wheelTrusted,true);
+  await call('fill', { ...handle, ref: await childRef('textbox', 'Child name'), text: 'OOPIF native' });
+  await call('press_key', { ...handle, key: 'Z' });
+  await until(async () => (await frameState('child'))?.text === 'OOPIF nativez', 'OOPIF fill and key');
+  await call('fill', { ...handle, ref: await childRef('textbox', 'Child name'), text: 'DOM child', mode: 'dom' });
+  assert.equal((await frameState('child')).text, 'DOM child');
+  for (const options of [{button:'right'}, {button:'middle'}, {click_count:2}, {modifiers:['Control']}, {button:'right',click_count:2}, {button:'middle',click_count:2}]) {
+    try { await call('click', { ...handle, ref: await childRef('button', 'Child button'), ...options }); }
+    catch (error) { console.error('Mouse options', options, await frameState('child')); throw error; }
+  }
+  const mouseState = await frameState('child');
+  assert.equal(mouseState.right, 3); assert.equal(mouseState.middle, 3); assert.equal(mouseState.doubles, 1); assert.equal(mouseState.control, 1);
+  await call('click', { ...handle, ref: await childRef('button', 'Child upload') });
+  await call('upload_file', { ...handle, files: [file] });
+  await until(async () => (await frameState('child'))?.files.length === 1, 'OOPIF chooser upload');
+  await call('click', { ...handle, ref: await childRef('button', 'Nested button') });
+  await until(async () => (await frameState('nested'))?.clicks === 1, 'nested OOPIF click');
+  assert.ok((await call('console_logs', handle)).entries.some(e => e.session_id && e.text.includes('child click')));
+  assert.ok((await call('network_logs', handle)).entries.some(e => e.session_id && e.url?.includes('/api/ok')));
+  // External subframe navigation must expire only its subtree, without consuming main refs.
+  if (!values.connected) {
+    await evaluate(`document.querySelector('iframe').src = 'http://localhost:${fixture.address().port}/frame?reload'`);
+    // evaluate deliberately invalidates observations; take another before the timed reload.
+    await evaluate(`setTimeout(()=>document.querySelector('iframe').src += '&again', 500)`);
+    const stable = await childRef('button', 'Main frame button');
+    await new Promise(resolve => setTimeout(resolve, 800));
+    await call('click', { ...handle, ref: stable });
+  }
+  await evaluate(`(()=>{const cover=document.createElement('button');cover.id='cover';cover.textContent='Cover';cover.style='position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647';cover.onclick=()=>window.coverClicks=(window.coverClicks||0)+1;document.body.append(cover)})()`);
+  const covered = await rawCall('click', { ...handle, ref: await childRef('button', 'Child button'), timeout_ms: 500 });
+  assert.equal(covered.isError, true); assert.match(covered.content[0].text, /covers this frame/);
+  assert.equal((await evaluate('window.coverClicks||0')).value, 0);
+  await call('navigate', { ...handle, url });
+  checks.push('nested OOPIF snapshot/native and DOM fill/keyboard/right-middle-double-Control clicks/chooser upload/logs/subframe navigation cleanup');
+
+  await call('fill', { ...handle, ref: await ref('Name'), text: '' });
+  await evaluate(`(()=>{window.keyEvents=[];addEventListener('keydown',e=>{keyEvents.push({key:e.key,code:e.code,trusted:e.isTrusted});if(['F8','Insert','PageUp'].includes(e.key))e.preventDefault()})})()`);
+  for (const key of ['F8','Insert','PageUp']) await call('press_key', { ...handle, key });
+  const keys = (await evaluate('window.keyEvents')).value;
+  assert.deepEqual(keys.map(e=>e.code), ['F8','Insert','PageUp']); assert.ok(keys.every(e=>e.trusted));
+  for (const key of ['Shift+1',';',':','?','+','Backslash','Quote','Backquote']) await call('press_key', { ...handle, key });
+  assert.equal((await state()).name, "!;:?+\\'`");
+  await evaluate(`(()=>{const zone=document.createElement('div');zone.id='wheel-zone';zone.style='position:fixed;left:20px;top:240px;width:300px;height:180px;overflow:auto;z-index:10';zone.innerHTML='<div style="height:1000px">Custom wheel scroller</div>';window.wheelState={count:0,dx:0,dy:0,trusted:false};zone.addEventListener('wheel',e=>{e.preventDefault();wheelState={count:wheelState.count+1,dx:e.deltaX,dy:e.deltaY,trusted:e.isTrusted}}, {passive:false});document.body.append(zone)})()`);
+  await call('scroll', { ...handle, x:100,y:300,delta_y:90 });
+  assert.equal((await evaluate('window.wheelState.count')).value,0);
+  const wheel = await call('scroll', { ...handle,mode:'wheel',x:100,y:300,delta_x:-15,delta_y:120 });
+  assert.equal(wheel.method,'native_wheel'); assert.equal(wheel.scrolled,undefined);
+  await until(async () => (await evaluate('window.wheelState.count')).value === 1, 'trusted custom wheel handler');
+  const wheelState = (await evaluate('window.wheelState')).value;
+  assert.deepEqual(wheelState,{count:1,dx:-15,dy:120,trusted:true});
+  checks.push('F8/Insert/PageUp trusted keys, shifted punctuation text, DOM default and native wheel custom handler');
+
   await call('release_tab', handle);
-  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.4.0', checks, calls: calls.length, results: calls };
+  const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: '0.5.0', checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });
   await writeFile(join(out, `npm-live-${values.family}.json`), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, results: undefined }, null, 2));

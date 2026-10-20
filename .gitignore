@@ -1,5 +1,6 @@
 .venv/
 .local/
+.nosis/
 __pycache__/
 *.egg-info/
 extension/config.generated.js
