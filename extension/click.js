@@ -26,7 +26,9 @@ export function createClick(cdp, value, viewport, position) {
         const bounds = value(await cdp(tabId, 'Runtime.callFunctionOn', { objectId: node.objectId,
           functionDeclaration: checkClickable.toString(), returnByValue: true }));
         if (previous && JSON.stringify(bounds) === JSON.stringify(previous)) break;
-        if (attempt === 9) throw new Error('Element is moving; no stable click point. Observe again.');
+        // Stability is a short settling opportunity, not a prerequisite: infinite
+        // animations still use a fresh quad and the trusted-event target guard below.
+        if (attempt === 9) break;
         previous = bounds;
         await new Promise(resolve => setTimeout(resolve, 20));
       }

@@ -1,5 +1,27 @@
 # BrowserBridge 0.3.0 验证报告
 
+**2026-10-20 三项问题核验与修复后的最新结果**
+
+`npm test`：44 项全部通过，新增 iframe 导航/移除/读取竞态、子树 ref 与 chooser 清理、cursor 保留、无限几何位移、标签管理及跨会话权限测试。`npm run test:package` 通过，仓库外安装的 stdio MCP 暴露 17 个工具。
+
+`npm run test:interaction -- --regressions --executable <path> --family <family>` 在独立临时 profile 中通过真实扩展与 Hub，测试结果如下：
+
+| 场景 | Chromium 156 | Edge 155 |
+|---|---|---|
+| 后台 ref / 坐标点击，目标标签保持非活动 | 43 / 11 ms，可信事件命中 | 77 / 25 ms，可信事件命中 |
+| iframe 导航后使用先前主页面 ref | 命中 | 命中 |
+| iframe 每 60 ms 刷新期间读取快照 | 连续 20 次成功 | 连续 20 次成功 |
+| 无限 CSS transform 动画中的按钮 | 3 次各命中，344–691 ms | 3 次各命中，300–324 ms |
+| 新建、claim、激活、聚焦窗口、关闭标签 | 成功；关闭后句柄失效 | 成功；关闭后句柄失效 |
+
+原始专项结果：忽略目录 `test-results/regressions-chromium.json`、`regressions-edge.json`。计时仅代表本机 fixture。后台点击并非必然等 5 秒失败；claim 继续不抢焦点，需要前台渲染时可以显式调用 activate_tab。激活标签与聚焦窗口分开调用 Chrome API，依据 [Tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs) 与 [Windows API](https://developer.chrome.com/docs/extensions/reference/api/windows)。
+
+实测还确认 iframe 刷新会触发标签级 `tabs.onUpdated(status: loading)`；因此仅过滤 `Page.frameNavigated.parentId` 不足以修复，已同时删除 status-only 更新对整页观察的失效处理，主文档仍通过 CDP 事件及 URL 更新失效。
+
+完整交互脚本首次在 Chromium 156 的后台 `Control+A` + `Z` 断言失败：预期 `z`，实际仍为原输入文本。随后在独立临时 profile 中分别验证 HEAD 基线扩展和当前修改后的扩展，均完整通过：后台填充/按键/上传、前后台/遮挡点击、缩放、hover 位移拒绝、闭合 Shadow DOM、21 页续读和导航。当前版本后台 ref 点击约 26–27 ms，坐标点击约 6–7 ms。键盘实现未修改；首次失败没有稳定复现，保留这条记录，不据复跑宣称排除了所有偶发焦点问题。当前原始结果为 `test-results/interaction-chromium.json`，基线结果为 `test-results/baseline-interaction-chromium.json`。
+
+**以下为本轮修复之前的验证记录**
+
 日期：2026-10-20。本轮覆盖点击派发和命中、滚动坐标、语义快照分页、导航等待，以及 Node/npm、上传和 Nosis 接入回归。工具集合为 14 个；没有旧版兼容层。
 
 **自动测试**

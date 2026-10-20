@@ -91,7 +91,9 @@ browser-bridge stop
 |---|---|
 | browser_list_browsers | 发现连接的配置实例、版本和能力表 |
 | browser_list_tabs | 现有标签页身份与控制状态 |
+| browser_open_tab | 打开 HTTP(S) 标签，默认后台打开；加载后 list + claim |
 | browser_claim_tab / browser_release_tab | 校验身份、独占接管 / 释放 |
+| browser_activate_tab / browser_close_tab | 显式激活已接管标签 / 关闭并作废句柄 |
 | browser_snapshot | AX 树、引用、frame 覆盖和待处理文件选择器 |
 | browser_read_text | 主页面可见文本 |
 | browser_click | 当前 ref 或视口 CSS 坐标点击 |
@@ -103,7 +105,9 @@ browser-bridge stop
 | browser_upload_file | 本机文件选择、多个文件及清空 |
 | browser_screenshot | 视口 / 整页 PNG 与坐标映射 |
 
-总共 14 个工具；0.3 保持现有工具集合，通过已有参数补齐点击验证、快照续读和导航等待。普通结果只返回一份紧凑 JSON TextContent；截图另外返回标准 ImageContent。失败使用 MCP `isError`。
+总共 17 个工具，包含显式标签管理、点击验证、快照续读和导航等待。普通结果只返回一份紧凑 JSON TextContent；截图另外返回标准 ImageContent。失败使用 MCP `isError`。
+
+`browser_activate_tab(tab_handle, focus_window)` 默认 `focus_window: true`，选中目标标签并聚焦其窗口；传 `false` 只在窗口内选中标签。`claim_tab` 继续返回 `activation_requested: false`，普通点击也不自动切前台。后台或遮挡页面需要前台渲染时，先显式 activate，再重新观察。`browser_open_tab(browser_id, url, active)` 默认 `active: false`，返回新 tab_id；加载后通过 list_tabs 获取精确标题/URL 再 claim。`browser_close_tab(tab_handle)` 关闭已接管的标签，可能丢弃未保存状态；保留页面则使用 release_tab。
 
 **文件上传**
 
@@ -149,13 +153,13 @@ Hub 按需后台启动，多客户端共用；只监听 loopback，扩展验证�
 
 每个 MCP 连接有独立 owner，tab_handle 不跨连接共享；同一 tab 只允许一个 owner。断连、浏览器重启、用户停止调试均会使句柄失效。动作超时会释放该连接的控制权，结果可能未知，不自动重放。任务结束仍应显式 release，不能假设 MCP 客户端每轮都会关闭连接。
 
-不主动激活标签页、浏览器窗口或系统鼠标；DOM / AX 和常规输入可在后台执行。网站自己弹出的新窗口及浏览器权限 UI 仍可能改变焦点。页面带“Agent 已接管”标记及短暂点击指示；截图默认隐藏标记。
+claim 和常规输入不主动激活标签页或浏览器窗口，也不移动系统鼠标；DOM / AX 和常规输入可在后台执行。显式 activate_tab 可以切换标签并聚焦窗口；open_tab 的 active 参数可以选中新标签。网站自己弹出的新窗口及浏览器权限 UI 仍可能改变焦点。页面带“Agent 已接管”标记及短暂点击指示；截图默认隐藏标记。
 
-截图有 5 秒超时：被遮挡或非活动的 Chromium 页面可能停止渲染，失败时优先使用 AX / 文本，不自动切前台。PNG 像素要按返回的 `image_to_viewport_css` 映射到视口 CSS 坐标；整页截图的视口外位置需先滚动。
+截图有 5 秒超时：被遮挡或非活动的 Chromium 页面可能停止渲染，可显式调用 activate_tab 后再次观察，或使用 AX / 文本；截图本身不自动切前台。PNG 像素要按返回的 `image_to_viewport_css` 映射到视口 CSS 坐标；整页截图的视口外位置需先滚动。
 
-点击保持原生输入，连续派发 move/down/up 后统一等待确认；ref 会检查可见、启用、稳定和遮挡。命中查询换算为文档 CSS 坐标，鼠标输入仍为视口 CSS 坐标。隔离世界中的事件校验会阻止偏离目标的点击；只有收到匹配目标的可信 click 才返回 `target_verified: true`。这证明事件送达，不证明提交、付款等业务已完成。无确认时 5 秒内明确报错，不自动重试。
+点击保持原生输入，连续派发 move/down/up 后统一等待确认；ref 会检查可见、启用和遮挡。短暂等待稳定后，即使持续动画仍会使用最新几何位置尝试点击；快速移动造成偏离目标时仍会被命中检查或事件校验拒绝。命中查询换算为文档 CSS 坐标，鼠标输入仍为视口 CSS 坐标。隔离世界中的事件校验会阻止偏离目标的点击；只有收到匹配目标的可信 click 才返回 `target_verified: true`。这证明事件送达，不证明提交、付款等业务已完成。无确认时 5 秒内明确报错，不自动重试。
 
-AX 合并重复文本、移除 InlineTextBox，保留语义节点和交互子元素。`max_nodes` 为每页 10–3000，默认 600；`max_chars` 为每页序列化文本预算 1000–2000000，默认 24000。`truncated: true` 时传回 `next_cursor` 继续调用同一个 `browser_snapshot`，可以调整预算，refs 在续读过程中保持有效；动作、新快照和导航会使 cursor/ref 一起失效。单个超长节点无法放入一页时会明确提示需要的预算，不丢弃尾部。`omitted_frames` 单独报告未覆盖的跨进程 iframe；分页不表示已补齐 OOPIF。
+AX 合并重复文本、移除 InlineTextBox，保留语义节点和交互子元素。`max_nodes` 为每页 10–3000，默认 600；`max_chars` 为每页序列化文本预算 1000–2000000，默认 24000。`truncated: true` 时传回 `next_cursor` 继续调用同一个 `browser_snapshot`，可以调整预算，refs 在续读过程中保持有效；输入、新快照和主文档导航会使 cursor/ref 一起失效。iframe 导航、同文档导航或移除仅使其子树 refs 失效，主页面 refs 与 cursor 保留；读取期间变化的子 frame 或续读中失效的 frame 会跳过并列入 `omitted_frames`。单个超长节点无法放入一页时会明确提示需要的预算，不丢弃尾部。`omitted_frames` 也报告未覆盖的跨进程 iframe；分页不表示已补齐 OOPIF。
 
 `browser_navigate` 默认 `wait_until: "domcontentloaded"`、`timeout_ms: 15000`、`include_snapshot: true`，一次调用返回目标文档的标题、URL 和快照。可选 `commit` / `load`，超时范围 100–40000 ms；`include_snapshot: false` 省去快照。同文档 hash 导航不等待新的加载事件。超时不代表导航已取消，单页应用在 DOMContentLoaded 后仍可能异步更新，需按任务继续观察。
 
@@ -177,8 +181,9 @@ npm pack --dry-run
 ```powershell
 npm run test:live -- --executable "path/to/chromium-or-edge.exe" --family chromium
 npm run test:interaction -- --executable "path/to/chromium-or-edge.exe" --family chromium
+npm run test:interaction -- --regressions --executable "path/to/chromium-or-edge.exe" --family chromium
 ```
 
 浏览器需允许命令行加载扩展；常规新版 Chrome 不保证支持此参数。也可对已经连接的 Chrome / Edge 运行 `--connected --executable <浏览器路径> --family chrome` / `edge`。该模式在用户浏览器中新建本地测试页，结束后释放控制，测试页保留。
 
-2026-10-20：37 项自动测试；Chromium 156 和 Edge 155 独立窗口覆盖后台输入、焦点、缩放、动态位移、200 行完整快照及导航；Chrome 155、Edge 155 当前配置也验证上传及回归。具体结果见 [测试报告](TEST-REPORT.md) 和 [交互修复复核](INTERACTION-REVIEW.md)。
+2026-10-20：44 项自动测试、17 工具打包检查通过；Chromium 156 和 Edge 155 的专项测试验证后台点击、iframe 持续刷新下读取快照、无限 CSS 动画点击和标签打开/激活/关闭。Chromium 完整交互回归复跑通过；首次运行曾出现后台按键断言失败，记录见 [测试报告](TEST-REPORT.md)。此前交互分析见 [交互修复复核](INTERACTION-REVIEW.md)。

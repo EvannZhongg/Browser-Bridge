@@ -8,6 +8,7 @@ export function createController(api, notify = () => {}) {
   const claims = new Map();
   const snapshots = new Map();
   const documents = new Map();
+  const frameStates = new Map();
   const queues = new Map();
   const dialogs = new Map();
   const fileChoosers = new Map();
@@ -103,6 +104,7 @@ export function createController(api, notify = () => {}) {
     claims.delete(tabId);
     snapshots.delete(tabId);
     documents.delete(tabId);
+    frameStates.delete(tabId);
     dialogs.delete(tabId);
     fileChoosers.delete(tabId);
     notify({ type: 'detached', tab_id: tabId });
@@ -111,17 +113,25 @@ export function createController(api, notify = () => {}) {
   api.debugger.onEvent.addListener((source, method, params = {}) => {
     navigation.event(source.tabId, method, params);
     mouse.event(source.tabId, method, params);
-    if (method === 'DOM.documentUpdated' || method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument') {
+    const frames = frameStates.get(source.tabId);
+    if (method === 'Page.frameAttached') frames?.parents.set(params.frameId, params.parentFrameId);
+    const mainNavigation = method === 'Page.frameNavigated' && params.frame && !params.frame.parentId;
+    if (mainNavigation && frames) frames.mainId = params.frame.id;
+    if (method === 'Page.frameNavigated' && params.frame?.parentId) frames?.parents.set(params.frame.id, params.frame.parentId);
+    const sameDocumentMain = method === 'Page.navigatedWithinDocument' && params.frameId === frames?.mainId;
+    if (method === 'DOM.documentUpdated' || mainNavigation || sameDocumentMain) {
       documents.set(source.tabId, (documents.get(source.tabId) || 0) + 1);
       snapshots.delete(source.tabId);
       fileChoosers.delete(source.tabId);
+    } else if (method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument' || method === 'Page.frameDetached') {
+      invalidateFrame(source.tabId, params.frame?.id || params.frameId);
     }
     if (method === 'Page.fileChooserOpened' && claims.has(source.tabId)) {
       if (params.backendNodeId) fileChoosers.set(source.tabId, {
         backendNodeId: params.backendNodeId, mode: params.mode, frame_id: params.frameId,
       });
     }
-    if (method === 'Page.frameNavigated' && !params.frame?.parentId) visuals.navigated(source.tabId);
+    if (mainNavigation) visuals.navigated(source.tabId);
     if (method === 'Page.javascriptDialogOpening') {
       dialogs.set(source.tabId, { type: params.type, message: params.message, default_prompt: params.defaultPrompt });
       snapshots.delete(source.tabId);
@@ -133,11 +143,39 @@ export function createController(api, notify = () => {}) {
   });
   api.tabs.onRemoved.addListener(forget);
   api.tabs.onUpdated.addListener((tabId, change) => {
-    if (change.url || change.status === 'loading') {
+    // A subframe reload can also set the TAB status to loading. CDP main-frame
+    // events identify document changes; a status-only update carries no identity.
+    if (change.url) {
       documents.set(tabId, (documents.get(tabId) || 0) + 1);
       snapshots.delete(tabId); fileChoosers.delete(tabId);
     }
   });
+
+  function invalidateFrame(tabId, frameId) {
+    const frames = frameStates.get(tabId);
+    if (!frames || !frameId) return;
+    const affected = new Set([frameId]);
+    // Descendant documents disappear with their parent, even without individual events.
+    let size;
+    do {
+      size = affected.size;
+      for (const [id, parent] of frames.parents) if (affected.has(parent)) affected.add(id);
+    } while (size !== affected.size);
+    const state = snapshots.get(tabId);
+    for (const id of affected) {
+      frames.versions.set(id, (frames.versions.get(id) || 0) + 1);
+      if (state) omitFrame(state, id, 'Frame navigated or detached after observation');
+    }
+    if (affected.has(fileChoosers.get(tabId)?.frame_id)) fileChoosers.delete(tabId);
+  }
+
+  function omitFrame(state, frameId, reason) {
+    if (state.invalidFrames.has(frameId)) return;
+    state.invalidFrames.add(frameId);
+    for (const [ref, node] of state.refs) if (node.frameId === frameId) state.refs.delete(ref);
+    state.totalNodes -= state.entries.filter(entry => entry.frameId === frameId && entry.node).length;
+    state.metadata.omitted_frames.push({ frame_id: frameId, reason });
+  }
 
   async function snapshot(tabId, args = {}) {
     if (args.cursor != null) {
@@ -147,10 +185,15 @@ export function createController(api, notify = () => {}) {
     }
     snapshots.delete(tabId);
     const documentVersion = documents.get(tabId);
+    const versions = new Map(frameStates.get(tabId)?.versions);
     await cdp(tabId, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-bridge' });
     const { frameTree } = await cdp(tabId, 'Page.getFrameTree');
     const frames = [];
-    const flatten = tree => { frames.push(tree.frame); (tree.childFrames || []).forEach(flatten); };
+    const flatten = tree => {
+      frames.push(tree.frame);
+      if (tree.frame.parentId) frameStates.get(tabId)?.parents.set(tree.frame.id, tree.frame.parentId);
+      (tree.childFrames || []).forEach(flatten);
+    };
     flatten(frameTree);
     const knownFrames = new Set(frames.map(frame => frame.id));
     const token = crypto.randomUUID().slice(0, 8);
@@ -172,17 +215,21 @@ export function createController(api, notify = () => {}) {
         const attributes = owner.attributes || [], srcIndex = attributes.indexOf('src');
         const url = srcIndex >= 0 ? new URL(attributes[srcIndex + 1], frame.url).href : 'about:blank';
         knownFrames.add(childId); frames.push({ id: childId, url });
+        frameStates.get(tabId)?.parents.set(childId, frame.id);
       }
-      entries.push({ node: false, line: `Frame ${frame.id} ${frame.url}` });
+      entries.push({ node: false, frameId: frame.id, line: `Frame ${frame.id} ${frame.url}` });
       entries.push(...renderAX(nodes, token, refs, frame.id));
     }
     const metadata = value(await cdp(tabId, 'Runtime.evaluate', {
       expression: '({title: document.title, url: location.href})', returnByValue: true,
     }));
-    const state = { id: token, refs, entries, totalNodes: entries.filter(entry => entry.node).length,
+    const state = { id: token, refs, entries, invalidFrames: new Set(), totalNodes: entries.filter(entry => entry.node).length,
       metadata: { title: metadata.title, url: metadata.url, viewport: await viewport(tabId), omitted_frames: omittedFrames } };
-    const page = snapshotPage(state, args);
     if (documentVersion !== documents.get(tabId)) throw new Error('Document changed while reading the snapshot. Take a new browser_snapshot.');
+    for (const frame of frames) if (versions.get(frame.id) !== frameStates.get(tabId)?.versions.get(frame.id)) {
+      omitFrame(state, frame.id, 'Frame changed while reading the snapshot; take a new snapshot to observe it');
+    }
+    const page = snapshotPage(state, args);
     snapshots.set(tabId, state);
     return page;
   }
@@ -261,7 +308,7 @@ export function createController(api, notify = () => {}) {
             cdp(tabId, 'Page.captureScreenshot', { format: 'png', fromSurface: true,
               captureBeyondViewport: true, optimizeForSpeed: true, clip: captureClip }),
             new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(
-              'Screenshot did not finish within 5 seconds. An inactive or occluded Chromium page may not render. The bridge will not activate the tab; use DOM/AX, or explicitly view the page before requesting another screenshot.'
+              'Screenshot did not finish within 5 seconds. An inactive or occluded Chromium page may not render. Use browser_activate_tab before requesting another screenshot, or use DOM/AX.'
             )), 5000); }),
           ]);
         } finally { clearTimeout(timer); }
@@ -377,6 +424,13 @@ export function createController(api, notify = () => {}) {
   }
 
   async function execute(owner, command, args) {
+    if (command === 'open_tab') {
+      const url = httpUrl(args.url);
+      if (args.active != null && typeof args.active !== 'boolean') throw new Error('active must be a boolean');
+      const tab = await api.tabs.create({ url, active: args.active ?? false });
+      return { opened: true, tab_id: tab.id, window_id: tab.windowId, active: tab.active,
+        note: 'List tabs after loading, then claim the exact URL/title before controlling this tab.' };
+    }
     if (command === 'list_tabs') {
       const tabs = await api.tabs.query({});
       return { tabs: tabs.map(tab => ({ tab_id: tab.id, window_id: tab.windowId, title: tab.title || '', url: tab.url || '',
@@ -402,6 +456,13 @@ export function createController(api, notify = () => {}) {
           await cdp(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true });
           await cdp(tabId, 'DOM.enable');
           await cdp(tabId, 'Accessibility.enable');
+          const { frameTree } = await cdp(tabId, 'Page.getFrameTree');
+          const state = { mainId: frameTree.frame.id, parents: new Map(), versions: new Map() };
+          const remember = tree => {
+            if (tree.frame.parentId) state.parents.set(tree.frame.id, tree.frame.parentId);
+            (tree.childFrames || []).forEach(remember);
+          };
+          remember(frameTree); frameStates.set(tabId, state);
           claims.set(tabId, { owner, handle: args.tab_handle });
           let visualWarning;
           try { await visuals.install(tabId); }
@@ -415,6 +476,17 @@ export function createController(api, notify = () => {}) {
       }
       const claim = claims.get(tabId);
       if (!claim || claim.owner !== owner || claim.handle !== args.tab_handle) throw new Error('Tab is not claimed by this connection');
+      if (command === 'activate_tab') {
+        if (args.focus_window != null && typeof args.focus_window !== 'boolean') throw new Error('focus_window must be a boolean');
+        const tab = await api.tabs.update(tabId, { active: true });
+        if (args.focus_window ?? true) await api.windows.update(tab.windowId, { focused: true });
+        return { activated: true, window_focus_requested: args.focus_window ?? true, tab_id: tabId, window_id: tab.windowId };
+      }
+      if (command === 'close_tab') {
+        await api.tabs.remove(tabId);
+        if (claims.has(tabId)) forget(tabId);
+        return { closed: true, tab_id: tabId };
+      }
       if (command === 'release_tab') return await action(tabId, command, args);
       httpUrl((await api.tabs.get(tabId)).url);
       const result = await action(tabId, command, args);

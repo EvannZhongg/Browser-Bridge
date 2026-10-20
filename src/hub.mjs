@@ -4,8 +4,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { VERSION } from './config.mjs';
 
 const MAX_MESSAGE = 24 * 1024 * 1024;
-const OPERATIONS = new Set(['release_tab', 'snapshot', 'read_text', 'click', 'fill', 'press_key', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file']);
-export const CAPABILITIES = ['tabs', 'claim', 'ax_snapshot', 'text', 'click', 'fill', 'keyboard', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'visual_indicator'];
+const OPERATIONS = new Set(['release_tab', 'activate_tab', 'close_tab', 'snapshot', 'read_text', 'click', 'fill', 'press_key', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file']);
+export const CAPABILITIES = ['tabs', 'open_tab', 'activate_tab', 'close_tab', 'claim', 'ax_snapshot', 'text', 'click', 'fill', 'keyboard', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'visual_indicator'];
 export class OperationTimeout extends Error {}
 const send = (ws, data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); };
 
@@ -46,9 +46,10 @@ export async function startHub(config, { port = config.port, operationTimeout = 
       browsers: [...browsers.values()].map(browser => ({ browser_id: browser.id, ...browser.info, capabilities: CAPABILITIES })),
       hint: 'Load the paired extension in each Chrome/Edge profile if empty.',
     };
-    if (method === 'list_tabs' || method === 'claim_tab') {
+    if (method === 'list_tabs' || method === 'claim_tab' || method === 'open_tab') {
       const browser = browsers.get(args.browser_id);
       if (!browser) throw new Error('Browser is not connected; call browser_list_browsers again');
+      if (method === 'open_tab') return await requestBrowser(browser, owner, method, args);
       if (method === 'list_tabs') {
         const result = await requestBrowser(browser, owner, method, {});
         for (const [key, tab] of observed) if (tab.browser_id === browser.id) observed.delete(key);
@@ -85,7 +86,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
       const browser = browsers.get(claim.browser_id);
       if (!browser) throw new Error('Browser disconnected');
       const result = await requestBrowser(browser, owner, method, { ...args, tab_id: claim.tab_id });
-      if (method === 'release_tab') forget(handle);
+      if (method === 'release_tab' || method === 'close_tab') forget(handle);
       return { ...result, tab_handle: handle, tab_id: claim.tab_id };
     });
   }

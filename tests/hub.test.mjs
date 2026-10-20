@@ -36,6 +36,7 @@ async function fixture(t, options) {
       if (data.command === 'read_text' && options?.stall) return;
       let result = { ok: true };
       if (data.command === 'list_tabs') result = { tabs: structuredClone(tabs) };
+      if (data.command === 'open_tab') result = { opened: true, tab_id: 11, active: data.arguments.active ?? false };
       if (data.command === 'release_owner') released.add(data.owner);
       if (data.command === 'snapshot') result = { snapshot: '[s1:1] button "Test"' };
       if (data.command === 'screenshot') result = { data: PNG, capture: { css_width: 1, css_height: 1,
@@ -100,6 +101,21 @@ test('disconnect releases owner; browser restart invalidates old handles', async
   await assert.rejects(b.call('snapshot', { tab_handle: claim.tab_handle }), /expired/);
 });
 
+test('tab lifecycle routes to the selected browser and close expires only the owning handle', async t => {
+  const f = await fixture(t), browser = await f.extension(), a = f.client(), b = f.client();
+  await assert.rejects(a.call('open_tab', { browser_id: 'absent', url: 'https://example.com/' }), /not connected/);
+  const opened = await a.call('open_tab', { browser_id: browser.id, url: 'https://example.com/' });
+  assert.equal(opened.opened, true); assert.equal(opened.active, false);
+  const claim = await f.claim(a, browser), args = { tab_handle: claim.tab_handle };
+  await assert.rejects(b.call('activate_tab', args), /belongs to another/);
+  await assert.rejects(b.call('close_tab', args), /belongs to another/);
+  await a.call('activate_tab', { ...args, focus_window: true });
+  assert.equal(f.requests.find(item => item.command === 'activate_tab').arguments.tab_id, 9);
+  await a.call('close_tab', args);
+  await assert.rejects(a.call('snapshot', args), /expired/);
+  await f.claim(b, browser);
+});
+
 test('unknown outcome disconnects the client and releases its claims without replaying', async t => {
   const f = await fixture(t, { operationTimeout: 80, stall: true });
   const browser = await f.extension(), client = f.client(), claim = await f.claim(client, browser);
@@ -109,7 +125,7 @@ test('unknown outcome disconnects the client and releases its claims without rep
   assert.equal(f.requests.filter(item => item.command === 'read_text').length, 1);
 });
 
-test('real stdio MCP exposes 14 tools, single JSON content, PNG image, and validated upload', async t => {
+test('real stdio MCP exposes 17 tools, single JSON content, PNG image, and validated upload', async t => {
   const f = await fixture(t), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'bridge-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
@@ -119,7 +135,8 @@ test('real stdio MCP exposes 14 tools, single JSON content, PNG image, and valid
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 14); assert.ok(tools.some(tool => tool.name === 'browser_upload_file'));
+  assert.equal(tools.length, 17);
+  for (const name of ['upload_file', 'open_tab', 'activate_tab', 'close_tab']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
   const call = (name, args = {}) => mcp.callTool({ name: `browser_${name}`, arguments: args });
   const browsers = await call('list_browsers');
   assert.equal(browsers.structuredContent, undefined); assert.equal(browsers.content.length, 1);
@@ -138,6 +155,12 @@ test('real stdio MCP exposes 14 tools, single JSON content, PNG image, and valid
   const error = await call('read_text', { tab_handle: 'expired' });
   assert.equal(error.isError, true);
   assert.match(error.content[0].text, /^Tab handle/);
+  assert.ok(!(await call('open_tab', { browser_id: browser.id, url: 'https://example.com/' })).isError);
+  assert.equal(f.requests.find(item => item.command === 'open_tab').arguments.active, false);
+  assert.ok(!(await call('activate_tab', { tab_handle: handle })).isError);
+  assert.equal(f.requests.find(item => item.command === 'activate_tab').arguments.focus_window, true);
+  assert.ok(!(await call('close_tab', { tab_handle: handle })).isError);
+  assert.equal((await call('snapshot', { tab_handle: handle })).isError, true);
   await mcp.close();
 });
 

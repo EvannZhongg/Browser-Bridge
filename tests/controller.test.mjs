@@ -14,7 +14,11 @@ function fixture() {
   const api = { action: {
       setBadgeText: async args => { calls.push({ method: 'badge', args }); },
       setBadgeBackgroundColor: async () => {}, setTitle: async () => {},
-    }, tabs: { get: async id => tabs.get(id), query: async () => [...tabs.values()], onRemoved: event(), onUpdated: event() },
+    }, tabs: { get: async id => tabs.get(id), query: async () => [...tabs.values()], onRemoved: event(), onUpdated: event(),
+      create: async args => { calls.push({ method: 'tabs.create', args }); const tab = { id: 10, windowId: 1, title: '', ...args }; tabs.set(tab.id, tab); return tab; },
+      update: async (id, args) => { calls.push({ method: 'tabs.update', id, args }); Object.assign(tabs.get(id), args); return tabs.get(id); },
+      remove: async id => { calls.push({ method: 'tabs.remove', id }); tabs.delete(id); api.tabs.onRemoved.emit(id); },
+    }, windows: { update: async (id, args) => { calls.push({ method: 'windows.update', id, args }); } },
     debugger: { onDetach: event(), onEvent: event(),
       attach: async (target, version) => { calls.push({ method: 'attach', target, version }); },
       detach: async target => { calls.push({ method: 'detach', target }); api.debugger.onDetach.emit(target); },
@@ -353,4 +357,114 @@ test('upload validation failure never dispatches native file assignment', async 
   const ref = f.ref(await f.exec('snapshot'));
   await assert.rejects(f.exec('upload_file', { ref, files: ['C:\\a', 'C:\\b'] }), /Single-file/);
   assert.ok(!f.calls.some(call => call.method === 'DOM.setFileInputFiles'));
+});
+
+function withChildFrames(f) {
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Page.getFrameTree') result.frameTree.childFrames = [{
+      frame: { id: 'ad', parentId: 'main', url: 'http://localhost:8000/ad' },
+      childFrames: [{ frame: { id: 'nested', parentId: 'ad', url: 'http://localhost:8000/nested' } }],
+    }];
+    if (method === 'Accessibility.getFullAXTree' && args.frameId !== 'main') result.nodes = [
+      { nodeId: args.frameId, backendDOMNodeId: args.frameId === 'ad' ? 70 : 71,
+        role: { value: 'button' }, name: { value: args.frameId } },
+    ];
+    return result;
+  };
+}
+
+test('iframe navigation preserves main refs, invalidates descendant refs and scopes chooser cleanup', async () => {
+  const f = fixture(); withChildFrames(f); await f.claim();
+  const snap = await f.exec('snapshot'), mainRef = f.ref(snap);
+  const adRef = snap.snapshot.match(/\[([^\]]+)\] button "ad"/)[1];
+  const nestedRef = snap.snapshot.match(/\[([^\]]+)\] button "nested"/)[1];
+  const emit = (method, params) => f.api.debugger.onEvent.emit({ tabId: 9 }, method, params);
+  emit('Page.fileChooserOpened', { backendNodeId: 77, mode: 'selectSingle', frameId: 'main' });
+  emit('Page.frameNavigated', { frame: { id: 'ad', parentId: 'main' } });
+  f.api.tabs.onUpdated.emit(9, { status: 'loading' });
+  f.api.tabs.onUpdated.emit(9, { status: 'complete' });
+  await assert.rejects(f.exec('click', { ref: adRef }), /stale/);
+  await assert.rejects(f.exec('click', { ref: nestedRef }), /stale/);
+  assert.equal((await f.exec('click', { ref: mainRef })).file_chooser.pending, true);
+  emit('Page.fileChooserOpened', { backendNodeId: 77, frameId: 'nested' });
+  emit('Page.navigatedWithinDocument', { frameId: 'ad' });
+  await assert.rejects(f.exec('upload_file', { files: [] }), /No pending/);
+});
+
+test('iframe refresh during AX reading omits only its changed subtree and keeps main refs usable', async () => {
+  const f = fixture(); withChildFrames(f); await f.claim();
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Accessibility.getFullAXTree' && args.frameId === 'nested') {
+      f.api.debugger.onEvent.emit(target, 'Page.frameNavigated', { frame: { id: 'ad', parentId: 'main' } });
+    }
+    return result;
+  };
+  const snap = await f.exec('snapshot');
+  assert.match(snap.snapshot, /button "Submit"/);
+  assert.doesNotMatch(snap.snapshot, /button "ad"|button "nested"/);
+  assert.deepEqual(snap.omitted_frames.map(frame => frame.frame_id), ['ad', 'nested']);
+  await f.exec('click', { ref: f.ref(snap) });
+});
+
+test('iframe detach preserves cursor continuation and filters obsolete child entries', async () => {
+  const f = fixture(); withChildFrames(f); await f.claim();
+  f.nodes(Array.from({ length: 16 }, (_, i) => ({ nodeId: String(i), backendDOMNodeId: 100 + i,
+    role: { value: 'button' }, name: { value: `Main ${i}` } })));
+  const first = await f.exec('snapshot', { max_nodes: 10 });
+  f.api.debugger.onEvent.emit({ tabId: 9 }, 'Page.frameDetached', { frameId: 'ad', reason: 'remove' });
+  const next = await f.exec('snapshot', { cursor: first.next_cursor });
+  assert.equal(next.total_node_count, 16);
+  assert.equal(next.node_count, 6);
+  assert.doesNotMatch(next.snapshot, /button "ad"|button "nested"/);
+  await f.exec('click', { ref: f.ref(first) });
+});
+
+test('main-frame navigation and same-document navigation still invalidate the observation', async () => {
+  for (const [method, params] of [
+    ['Page.frameNavigated', { frame: { id: 'main' } }],
+    ['Page.navigatedWithinDocument', { frameId: 'main' }],
+  ]) {
+    const f = fixture(); await f.claim(); const ref = f.ref(await f.exec('snapshot'));
+    f.api.debugger.onEvent.emit({ tabId: 9 }, method, params);
+    await assert.rejects(f.exec('click', { ref }), /stale/);
+  }
+});
+
+test('continuously moving refs still dispatch a verified native click with current geometry', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  let sample = 0;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function checkClickable')) result.result.value.x = ++sample;
+    return result;
+  };
+  const result = await f.exec('click', { ref: f.ref(await f.exec('snapshot')) });
+  assert.ok(sample > 1);
+  assert.equal(result.target_verified, true);
+  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 3);
+});
+
+test('tab lifecycle is explicit, HTTP(S)-only and requires ownership to activate or close', async () => {
+  const f = fixture();
+  await assert.rejects(f.exec('open_tab', { url: 'javascript:alert(1)' }), /http/);
+  const opened = await f.exec('open_tab', { url: 'https://example.com/' });
+  assert.equal(opened.tab_id, 10); assert.equal(opened.active, false);
+  assert.equal(f.controller.claimedCount(), 0);
+  assert.equal((await f.claim()).activation_requested, false);
+  const snap = await f.exec('snapshot');
+  await assert.rejects(f.exec('activate_tab', {}, 'two'), /not claimed/);
+  await assert.rejects(f.exec('close_tab', {}, 'two'), /not claimed/);
+  await f.exec('activate_tab', { focus_window: false });
+  assert.ok(!f.calls.some(call => call.method === 'windows.update'));
+  await f.exec('activate_tab');
+  assert.deepEqual(f.calls.find(call => call.method === 'windows.update').args, { focused: true });
+  await f.exec('click', { ref: f.ref(snap) });
+  f.tabs.get(9).url = 'chrome://settings/';
+  assert.equal((await f.exec('close_tab')).closed, true);
+  assert.equal(f.controller.claimedCount(), 0);
+  await assert.rejects(f.exec('read_text'), /not claimed/);
 });

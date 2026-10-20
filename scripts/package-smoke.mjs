@@ -38,10 +38,10 @@ try {
   ws.on('message', raw => { const data = JSON.parse(raw.toString()); if (data.id) ws.send(JSON.stringify({ id: data.id, result: { released: true } })); });
   client = new Client({ name: 'package-test', version: '1' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(installed, 'bin/browser-bridge.mjs'), 'mcp', '--config', configPath], cwd: temp, env }));
-  assert.equal((await client.listTools()).tools.length, 14);
+  assert.equal((await client.listTools()).tools.length, 17);
   const result = await client.callTool({ name: 'browser_list_browsers', arguments: {} });
   assert.equal(JSON.parse(result.content[0].text).browsers[0].browser_id, 'package:one');
-  console.log(JSON.stringify({ archive, files: packed.files.length, installedOutsideCheckout: true, stdioTools: 14, extensionDirectoryOutsidePackage: true }));
+  console.log(JSON.stringify({ archive, files: packed.files.length, installedOutsideCheckout: true, stdioTools: 17, extensionDirectoryOutsidePackage: true }));
 } finally {
   await client?.close(); ws?.close(); await hub?.close();
   await rm(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
