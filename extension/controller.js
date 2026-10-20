@@ -1,14 +1,20 @@
 // Browser operations live here so the WebSocket transport cannot execute arbitrary CDP/JavaScript.
 import { createVisuals } from './visuals.js';
+import { renderAX, snapshotPage } from './snapshot.js';
+import { createNavigation } from './navigation.js';
+import { createClick } from './click.js';
 
 export function createController(api, notify = () => {}) {
   const claims = new Map();
   const snapshots = new Map();
+  const documents = new Map();
   const queues = new Map();
   const dialogs = new Map();
   const fileChoosers = new Map();
   const dialogWaiters = new Map();
   const visuals = createVisuals(api);
+  const navigation = createNavigation(cdp);
+  const mouse = createClick(cdp, value, viewport, position);
 
   function queued(tabId, operation) {
     const result = (queues.get(tabId) || Promise.resolve()).catch(() => {}).then(operation);
@@ -51,7 +57,7 @@ export function createController(api, notify = () => {}) {
   }
 
   async function getObject(tabId, ref) {
-    const node = snapshots.get(tabId)?.get(ref);
+    const node = snapshots.get(tabId)?.refs.get(ref);
     if (!node) throw new Error('Element ref is stale or unknown. Take a new browser_snapshot.');
     const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: node.backendNodeId, objectGroup: 'browser-bridge' });
     if (!resolved.object?.objectId) throw new Error('Element no longer exists. Take a new browser_snapshot.');
@@ -91,16 +97,22 @@ export function createController(api, notify = () => {}) {
   }
 
   function forget(tabId) {
+    navigation.cancel(tabId);
+    mouse.cancel(tabId);
     visuals.forget(tabId);
     claims.delete(tabId);
     snapshots.delete(tabId);
+    documents.delete(tabId);
     dialogs.delete(tabId);
     fileChoosers.delete(tabId);
     notify({ type: 'detached', tab_id: tabId });
   }
   api.debugger.onDetach.addListener(source => forget(source.tabId));
   api.debugger.onEvent.addListener((source, method, params = {}) => {
-    if (method === 'DOM.documentUpdated' || method === 'Page.frameNavigated') {
+    navigation.event(source.tabId, method, params);
+    mouse.event(source.tabId, method, params);
+    if (method === 'DOM.documentUpdated' || method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument') {
+      documents.set(source.tabId, (documents.get(source.tabId) || 0) + 1);
       snapshots.delete(source.tabId);
       fileChoosers.delete(source.tabId);
     }
@@ -121,12 +133,20 @@ export function createController(api, notify = () => {}) {
   });
   api.tabs.onRemoved.addListener(forget);
   api.tabs.onUpdated.addListener((tabId, change) => {
-    if (change.url || change.status === 'loading') { snapshots.delete(tabId); fileChoosers.delete(tabId); }
+    if (change.url || change.status === 'loading') {
+      documents.set(tabId, (documents.get(tabId) || 0) + 1);
+      snapshots.delete(tabId); fileChoosers.delete(tabId);
+    }
   });
 
-  async function snapshot(tabId, maxNodes) {
-    if (!Number.isInteger(maxNodes) || maxNodes < 10 || maxNodes > 3000) throw new Error('max_nodes must be 10..3000');
+  async function snapshot(tabId, args = {}) {
+    if (args.cursor != null) {
+      const state = snapshots.get(tabId);
+      if (!state) throw new Error('Snapshot cursor is stale or unknown. Take a new browser_snapshot.');
+      return snapshotPage(state, args);
+    }
     snapshots.delete(tabId);
+    const documentVersion = documents.get(tabId);
     await cdp(tabId, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-bridge' });
     const { frameTree } = await cdp(tabId, 'Page.getFrameTree');
     const frames = [];
@@ -134,75 +154,37 @@ export function createController(api, notify = () => {}) {
     flatten(frameTree);
     const knownFrames = new Set(frames.map(frame => frame.id));
     const token = crypto.randomUUID().slice(0, 8);
-    const refs = new Map();
-    const lines = [];
-    const omittedFrames = [];
-    let count = 0;
-    let truncated = false;
-    let serializedChars = 0;
-    let truncationReason = null;
-    const append = line => {
-      // Leave room for MCP envelopes and JSON escaping in hosts with small tool budgets.
-      const size = JSON.stringify(line).length;
-      if (serializedChars + size > 14000) { truncated = true; truncationReason = 'text_budget'; return false; }
-      serializedChars += size;
-      lines.push(line); return true;
-    };
+    const refs = new Map(), entries = [], omittedFrames = [];
     for (const frame of frames) {
-      if (truncated || count >= maxNodes) {
-        truncated = true; truncationReason ||= 'node_limit';
-        omittedFrames.push({ frame_id: frame.id, url: frame.url, reason: 'snapshot_budget' });
-        continue;
-      }
       let nodes;
-      try {
-        ({ nodes } = await cdp(tabId, 'Accessibility.getFullAXTree', { frameId: frame.id }));
-      } catch (error) {
+      try { ({ nodes } = await cdp(tabId, 'Accessibility.getFullAXTree', { frameId: frame.id })); }
+      catch (error) {
         if (frame.id === frameTree.frame.id) throw error;
         omittedFrames.push({ frame_id: frame.id, url: frame.url, reason: error.message });
         continue;
       }
-      // Out-of-process frames may be absent from Page.getFrameTree. Their AX
-      // iframe owners still let us report coverage instead of silently omitting them.
+      // Report cross-process frames that are missing from Page.getFrameTree.
       for (const node of nodes) {
         if (!/^iframe$/i.test(node.role?.value || '') || !node.backendDOMNodeId) continue;
         const { node: owner } = await cdp(tabId, 'DOM.describeNode', { backendNodeId: node.backendDOMNodeId, depth: 0 });
         const childId = owner.frameId || owner.contentDocument?.frameId;
         if (!childId || knownFrames.has(childId)) continue;
-        const attributes = owner.attributes || [];
-        const srcIndex = attributes.indexOf('src');
+        const attributes = owner.attributes || [], srcIndex = attributes.indexOf('src');
         const url = srcIndex >= 0 ? new URL(attributes[srcIndex + 1], frame.url).href : 'about:blank';
-        knownFrames.add(childId);
-        frames.push({ id: childId, url });
+        knownFrames.add(childId); frames.push({ id: childId, url });
       }
-      if (!append(`Frame ${frame.id} ${frame.url}`)) continue;
-      const byId = new Map(nodes.map(node => [node.nodeId, node]));
-      const visited = new Set();
-      const render = (node, depth) => {
-        if (!node || visited.has(node.nodeId)) return;
-        visited.add(node.nodeId);
-        if (truncated || count >= maxNodes) { truncated = true; truncationReason ||= 'node_limit'; return; }
-        let nextDepth = depth;
-        if (!node.ignored) {
-          const ref = node.backendDOMNodeId ? `${token}:${refs.size + 1}` : null;
-          const attributes = (node.properties || []).filter(prop =>
-            ['disabled', 'focused', 'expanded', 'checked', 'selected', 'required'].includes(prop.name)
-          ).map(prop => `${prop.name}=${JSON.stringify(prop.value?.value)}`).join(' ');
-          if (!append(`${'  '.repeat(Math.min(depth, 24))}${ref ? `[${ref}] ` : ''}${node.role?.value || 'node'} ${JSON.stringify(String(node.name?.value || '').slice(0, 1000))}${attributes ? ' ' + attributes : ''}`)) return;
-          if (ref) refs.set(ref, { backendNodeId: node.backendDOMNodeId });
-          count++;
-          nextDepth++;
-        }
-        for (const child of node.childIds || []) render(byId.get(child), nextDepth);
-      };
-      render(nodes[0], 0);
+      entries.push({ node: false, line: `Frame ${frame.id} ${frame.url}` });
+      entries.push(...renderAX(nodes, token, refs, frame.id));
     }
-    snapshots.set(tabId, refs);
-    const tab = await api.tabs.get(tabId);
-    return { title: tab.title, url: tab.url, snapshot_id: token, snapshot: lines.join('\n'), node_count: count, truncated,
-      truncation_reason: truncationReason, viewport: await viewport(tabId),
-      omitted_frames: omittedFrames,
-      note: omittedFrames.length ? 'Some frames were not read; see omitted_frames for coverage and reasons. Screenshot coordinate actions remain available.' : 'Refs expire after actions, navigation or another snapshot.' };
+    const metadata = value(await cdp(tabId, 'Runtime.evaluate', {
+      expression: '({title: document.title, url: location.href})', returnByValue: true,
+    }));
+    const state = { id: token, refs, entries, totalNodes: entries.filter(entry => entry.node).length,
+      metadata: { title: metadata.title, url: metadata.url, viewport: await viewport(tabId), omitted_frames: omittedFrames } };
+    const page = snapshotPage(state, args);
+    if (documentVersion !== documents.get(tabId)) throw new Error('Document changed while reading the snapshot. Take a new browser_snapshot.');
+    snapshots.set(tabId, state);
+    return page;
   }
 
   const modifiers = { Alt: 1, Control: 2, Ctrl: 2, Meta: 4, Shift: 8 };
@@ -256,7 +238,7 @@ export function createController(api, notify = () => {}) {
       if (command === 'snapshot') return { dialog: dialogs.get(tabId), note: 'Use browser_handle_dialog to accept or dismiss this dialog.' };
       if (command !== 'release_tab') throw new Error('A JavaScript dialog is open. Observe browser_snapshot and use browser_handle_dialog.');
     }
-    if (command === 'snapshot') return await snapshot(tabId, args.max_nodes ?? 600);
+    if (command === 'snapshot') return await snapshot(tabId, args);
     if (command === 'read_text') {
       const limit = args.max_chars ?? 20000;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100000) throw new Error('max_chars must be 1..100000');
@@ -294,9 +276,14 @@ export function createController(api, notify = () => {}) {
       const url = httpUrl(args.url);
       snapshots.delete(tabId);
       fileChoosers.delete(tabId);
-      const result = await cdp(tabId, 'Page.navigate', { url });
-      if (result.errorText) throw new Error(result.errorText);
-      return { navigating_to: url, note: 'Navigation started. Read a fresh snapshot to observe its state.' };
+      const result = await navigation.navigate(tabId, url, args);
+      if (args.include_snapshot === false) {
+        const metadata = value(await cdp(tabId, 'Runtime.evaluate', {
+          expression: '({title: document.title, url: location.href})', returnByValue: true,
+        }));
+        return { ...result, ...metadata };
+      }
+      return { ...result, ...await snapshot(tabId) };
     }
     // Resolve the ref before consuming it; every input invalidates the whole observation.
     const node = args.ref ? await getObject(tabId, args.ref) : null;
@@ -346,34 +333,10 @@ export function createController(api, notify = () => {}) {
       return { files_set: args.files.length, cleared: args.files.length === 0, observe_again: true };
     }
     if (command === 'click') {
-      if ((args.ref != null) === (args.x != null || args.y != null)) throw new Error('Provide either ref or x/y');
-      let point;
-      if (node) {
-        await cdp(tabId, 'DOM.scrollIntoViewIfNeeded', { backendNodeId: node.backendNodeId });
-        const { quads } = await cdp(tabId, 'DOM.getContentQuads', { backendNodeId: node.backendNodeId });
-        const view = await viewport(tabId);
-        for (const quad of quads || []) {
-          const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
-          const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
-          if (x >= 0 && y >= 0 && x < view.width && y < view.height) { point = position(view, x, y); break; }
-        }
-        if (!point) throw new Error('Element has no visible click point. Inspect a screenshot.');
-        // Ref clicks must not accidentally activate an overlay covering the element.
-        const { backendNodeId } = await cdp(tabId, 'DOM.getNodeForLocation', { x: Math.round(point.x), y: Math.round(point.y) });
-        const hit = await cdp(tabId, 'DOM.resolveNode', { backendNodeId, objectGroup: 'browser-bridge' });
-        const unblocked = value(await cdp(tabId, 'Runtime.callFunctionOn', {
-          objectId: node.objectId, functionDeclaration: 'function(hit) { return this === hit || this.contains(hit); }',
-          arguments: [{ objectId: hit.object.objectId }], returnByValue: true,
-        }));
-        if (!unblocked) throw new Error('Another element covers this ref. Inspect a new snapshot or screenshot.');
-      } else point = position(await viewport(tabId), args.x, args.y);
-      await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
-      let visualWarning = await visuals.click(tabId, point.x, point.y);
-      await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
-      await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
-      visualWarning ||= await visuals.click(tabId, point.x, point.y);
-      return { clicked: point, coordinate_space: 'viewport_css_pixels', observe_again: true,
-        ...(visualWarning ? { visual_warning: visualWarning } : {}) };
+      const result = await mouse.click(tabId, node, args);
+      // Visuals must not separate mouse move/down/up or delay input delivery.
+      void visuals.click(tabId, result.clicked.x, result.clicked.y).catch(() => {});
+      return result;
     }
     if (command === 'fill') {
       if (!node || typeof args.text !== 'string') throw new Error('fill requires a fresh ref and text');
@@ -435,6 +398,7 @@ export function createController(api, notify = () => {}) {
         await api.debugger.attach({ tabId }, '1.3');
         try {
           await cdp(tabId, 'Page.enable');
+          await cdp(tabId, 'Page.setLifecycleEventsEnabled', { enabled: true });
           await cdp(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true });
           await cdp(tabId, 'DOM.enable');
           await cdp(tabId, 'Accessibility.enable');

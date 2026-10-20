@@ -51,7 +51,7 @@ export async function configureNosis(directory = join(homedir(), '.nosis')) {
   const backup = `${path}.browser-bridge-${Date.now()}.bak`;
   await cp(path, backup);
   data.mcp ||= {}; data.mcp.enabled = true; data.mcp.servers ||= {};
-  data.mcp.servers.browser_bridge = { ...mcpSettings(), scope: 'session', startup_timeout_seconds: 20,
+  data.mcp.servers.browser_bridge = { ...mcpSettings(), startup_timeout_seconds: 20,
     call_timeout_seconds: 60, tools: { approval: 'always' } };
   await writeJson(path, data);
   return { path, backup };

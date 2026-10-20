@@ -20,7 +20,7 @@ browser-bridge setup --extension-dir ./extension
 
 Windows 也可运行 `./scripts/install.ps1 -ConfigureNosis`：安装 npm 命令、配对仓库扩展并备份/更新 Nosis 配置。常规用户通过 `browser-bridge setup --nosis` 接入 Nosis。自定义 `--config` 时应自行向 MCP 配置添加相同参数；`--nosis` 只接受默认配对路径。
 
-该 Windows 脚本将本次 clone 的 `.local/runtime` 设为 `BROWSER_BRIDGE_HOME`，并把这个本机值写入 Nosis 的 `env`。本机 Nosis Broker 与直接启动进程对 AppData 配对文件存在可见性差异，需使用双方都能访问的目录；详情与数据传递结论见 [Nosis 接入分析](NOSIS-INTEGRATION.md)。通用 `mcp-config.json` 不写入这个本机路径。
+该 Windows 脚本将本次 clone 的 `.local/runtime` 设为 `BROWSER_BRIDGE_HOME`，并把这个本机值写入 Nosis 的 `env`。此前本机 Nosis 共享 Broker 与直接启动进程对 AppData 配对文件存在可见性差异，需使用双方都能访问的目录；详情与数据传递结论见 [Nosis 接入分析](NOSIS-INTEGRATION.md)。通用 `mcp-config.json` 不写入这个本机路径。
 
 **可移植 MCP 配置**
 
@@ -45,7 +45,7 @@ Windows 也可运行 `./scripts/install.ps1 -ConfigureNosis`：安装 npm 命令
 
 ```powershell
 npm pack
-npm install --global ./evannzhongg-browser-bridge-0.2.0.tgz
+npm install --global ./evannzhongg-browser-bridge-0.3.0.tgz
 browser-bridge setup
 ```
 
@@ -56,13 +56,13 @@ browser-bridge setup
   "mcpServers": {
     "browser_bridge": {
       "command": "npx",
-      "args": ["--yes", "--package=@evannzhongg/browser-bridge@0.2.0", "browser-bridge", "mcp"]
+      "args": ["--yes", "--package=@evannzhongg/browser-bridge@0.3.0", "browser-bridge", "mcp"]
     }
   }
 }
 ```
 
-对应首次配对：`npx --yes --package=@evannzhongg/browser-bridge@0.2.0 browser-bridge setup`。未发布前不要将该 registry 配置当作已经可用。
+对应首次配对：`npx --yes --package=@evannzhongg/browser-bridge@0.3.0 browser-bridge setup`。未发布前不要将该 registry 配置当作已经可用。
 
 **本机数据与升级**
 
@@ -103,7 +103,7 @@ browser-bridge stop
 | browser_upload_file | 本机文件选择、多个文件及清空 |
 | browser_screenshot | 视口 / 整页 PNG 与坐标映射 |
 
-总共 14 个工具；本次仅新增 `browser_upload_file`。普通结果只返回一份紧凑 JSON TextContent；截图另外返回标准 ImageContent。失败使用 MCP `isError`。
+总共 14 个工具；0.3 保持现有工具集合，通过已有参数补齐点击验证、快照续读和导航等待。普通结果只返回一份紧凑 JSON TextContent；截图另外返回标准 ImageContent。失败使用 MCP `isError`。
 
 **文件上传**
 
@@ -153,7 +153,13 @@ Hub 按需后台启动，多客户端共用；只监听 loopback，扩展验证�
 
 截图有 5 秒超时：被遮挡或非活动的 Chromium 页面可能停止渲染，失败时优先使用 AX / 文本，不自动切前台。PNG 像素要按返回的 `image_to_viewport_css` 映射到视口 CSS 坐标；整页截图的视口外位置需先滚动。
 
-AX 默认 600 节点，允许 10–3000，另有约 14000 字符的序列化预算；返回截断原因与 omitted_frames。跨进程 iframe 尚未完整覆盖。文本默认 20000 字符，允许 1–100000，仅读取主页面可见正文。
+点击保持原生输入，连续派发 move/down/up 后统一等待确认；ref 会检查可见、启用、稳定和遮挡。命中查询换算为文档 CSS 坐标，鼠标输入仍为视口 CSS 坐标。隔离世界中的事件校验会阻止偏离目标的点击；只有收到匹配目标的可信 click 才返回 `target_verified: true`。这证明事件送达，不证明提交、付款等业务已完成。无确认时 5 秒内明确报错，不自动重试。
+
+AX 合并重复文本、移除 InlineTextBox，保留语义节点和交互子元素。`max_nodes` 为每页 10–3000，默认 600；`max_chars` 为每页序列化文本预算 1000–2000000，默认 24000。`truncated: true` 时传回 `next_cursor` 继续调用同一个 `browser_snapshot`，可以调整预算，refs 在续读过程中保持有效；动作、新快照和导航会使 cursor/ref 一起失效。单个超长节点无法放入一页时会明确提示需要的预算，不丢弃尾部。`omitted_frames` 单独报告未覆盖的跨进程 iframe；分页不表示已补齐 OOPIF。
+
+`browser_navigate` 默认 `wait_until: "domcontentloaded"`、`timeout_ms: 15000`、`include_snapshot: true`，一次调用返回目标文档的标题、URL 和快照。可选 `commit` / `load`，超时范围 100–40000 ms；`include_snapshot: false` 省去快照。同文档 hash 导航不等待新的加载事件。超时不代表导航已取消，单页应用在 DOMContentLoaded 后仍可能异步更新，需按任务继续观察。
+
+`browser_read_text` 默认 20000 字符，允许 1–100000，仅读取主页面可见正文。宿主的 Artifact 长行读取问题见 [Nosis 接入分析](NOSIS-INTEGRATION.md)，并不等于 Bridge 快照的游标分页。
 
 当前不支持下拉专用选择、鼠标 hover / drag、下载管理、网络拦截、测试运行器、Firefox / WebKit。完整优先级与源码依据见 [Playwright 对照分析](PLAYWRIGHT-ANALYSIS.md)。
 
@@ -170,8 +176,9 @@ npm pack --dry-run
 
 ```powershell
 npm run test:live -- --executable "path/to/chromium-or-edge.exe" --family chromium
+npm run test:interaction -- --executable "path/to/chromium-or-edge.exe" --family chromium
 ```
 
 浏览器需允许命令行加载扩展；常规新版 Chrome 不保证支持此参数。也可对已经连接的 Chrome / Edge 运行 `--connected --executable <浏览器路径> --family chrome` / `edge`。该模式在用户浏览器中新建本地测试页，结束后释放控制，测试页保留。
 
-2026-10-20：27 项自动测试通过；Chromium 156 临时配置、Chrome 155 和 Edge 155 当前配置均通过 15 项上传及回归检查。测试范围与限制见 [测试报告](TEST-REPORT.md)。
+2026-10-20：37 项自动测试；Chromium 156 和 Edge 155 独立窗口覆盖后台输入、焦点、缩放、动态位移、200 行完整快照及导航；Chrome 155、Edge 155 当前配置也验证上传及回归。具体结果见 [测试报告](TEST-REPORT.md) 和 [交互修复复核](INTERACTION-REVIEW.md)。

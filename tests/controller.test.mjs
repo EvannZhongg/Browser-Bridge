@@ -10,6 +10,7 @@ function fixture() {
   let blocked = false;
   let modalOnClick = false;
   let customNodes;
+  let binding;
   const api = { action: {
       setBadgeText: async args => { calls.push({ method: 'badge', args }); },
       setBadgeBackgroundColor: async () => {}, setTitle: async () => {},
@@ -19,6 +20,17 @@ function fixture() {
       detach: async target => { calls.push({ method: 'detach', target }); api.debugger.onDetach.emit(target); },
       sendCommand: async (target, method, args) => {
         calls.push({ method, args, target });
+        if (method === 'Runtime.addBinding') binding = args.name;
+        if (method === 'Page.createIsolatedWorld') return { executionContextId: 42 };
+        if (method === 'Page.navigate') {
+          tabs.get(9).url = args.url; tabs.get(9).title = 'Destination';
+          api.debugger.onEvent.emit(target, 'Page.frameNavigated', { frame: { id: 'main' } });
+          api.debugger.onEvent.emit(target, 'Page.lifecycleEvent', { frameId: 'main', loaderId: 'new', name: 'DOMContentLoaded' });
+          return { frameId: 'main', loaderId: 'new' };
+        }
+        if (method === 'Input.dispatchMouseEvent' && args.type === 'mouseReleased' && !modalOnClick) {
+          api.debugger.onEvent.emit(target, 'Runtime.bindingCalled', { name: binding, executionContextId: 42, payload: JSON.stringify({ matched: true }) });
+        }
         if (modalOnClick && method === 'Input.dispatchMouseEvent' && args.type === 'mouseReleased') {
           api.debugger.onEvent.emit(target, 'Page.javascriptDialogOpening', { type: 'confirm', message: 'Modal' });
           return await new Promise(() => {});
@@ -33,8 +45,11 @@ function fixture() {
         if (method === 'DOM.describeNode') return { node: { frameId: 'remote', attributes: ['src', 'https://frame.test/'] } };
         if (method === 'DOM.resolveNode') return { object: { objectId: `object-${args.backendNodeId}` } };
         if (method === 'DOM.getContentQuads') return { quads: [[10, 10, 100, 10, 100, 50, 10, 50]] };
-        if (method === 'DOM.getNodeForLocation') return { backendNodeId: 12 };
+        if (method === 'DOM.getNodeForLocation') return { backendNodeId: 12, frameId: 'main' };
+        if (method === 'Runtime.evaluate' && args.expression.includes('title: document.title')) return { result: { value: { title: tabs.get(9).title, url: tabs.get(9).url } } };
         if (method === 'Runtime.evaluate') return { result: { value: { width: 1024, height: 768, scroll_x: 0, scroll_y: 0, device_pixel_ratio: 1 } } };
+        if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installGuard')) return { result: { objectId: 'guard' } };
+        if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function checkClickable')) return { result: { value: { x: 10, y: 10, width: 90, height: 40 } } };
         if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes("input.type !== 'file'")) return { result: { objectId: 'file-input' } };
         if (method === 'Runtime.callFunctionOn') return { result: { value: !blocked } };
         if (method === 'Page.getLayoutMetrics') return { cssContentSize: { width: 1024, height: 1800 } };
@@ -88,6 +103,19 @@ test('coordinate actions are bounded by the viewport', async () => {
   await assert.rejects(f.exec('click', { x: 1024, y: 0 }), /viewport/);
   await f.exec('click', { x: 500, y: 300 });
   await f.exec('scroll', { delta_y: 300 });
+});
+
+test('scrolled-page hit testing uses document coordinates while native input keeps viewport coordinates', async () => {
+  const f = fixture(); await f.claim();
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Runtime.evaluate' && args.expression.includes('scroll_x: scrollX')) result.result.value.scroll_y = 500;
+    return result;
+  };
+  await f.exec('click', { ref: f.ref(await f.exec('snapshot')) });
+  assert.equal(f.calls.find(call => call.method === 'DOM.getNodeForLocation').args.y, 530);
+  assert.equal(f.calls.find(call => call.method === 'Input.dispatchMouseEvent').args.y, 30);
 });
 
 test('fill uses a resolved node and text input; no arbitrary script operation exists', async () => {
@@ -188,7 +216,7 @@ test('AX iframe owners expose remote frame coverage when the frame tree omits th
   assert.match(snapshot.omitted_frames[0].reason, /another process/);
 });
 
-test('long AX names stop at an explicit serialized text budget', async () => {
+test('long AX names can be continued without loss, with stable refs and configurable budgets', async () => {
   const f = fixture(); await f.claim();
   const nodes = [{ nodeId: 'root', role: { value: 'RootWebArea' }, childIds: [] }];
   for (let i = 0; i < 80; i++) {
@@ -196,10 +224,96 @@ test('long AX names stop at an explicit serialized text budget', async () => {
     nodes.push({ nodeId: String(i), role: { value: 'button' }, backendDOMNodeId: i + 1, name: { value: '长文本"\\'.repeat(200) } });
   }
   f.nodes(nodes);
-  const snapshot = await f.exec('snapshot', { max_nodes: 3000 });
+  const snapshot = await f.exec('snapshot', { max_nodes: 3000, max_chars: 14000 });
   assert.equal(snapshot.truncated, true);
   assert.equal(snapshot.truncation_reason, 'text_budget');
   assert.ok(JSON.stringify(snapshot).length < 16000);
+  let page = snapshot, count = snapshot.node_count;
+  while (page.next_cursor) {
+    page = await f.exec('snapshot', { cursor: page.next_cursor, max_nodes: 3000, max_chars: 14000 });
+    assert.equal(page.snapshot_id, snapshot.snapshot_id);
+    count += page.node_count;
+  }
+  assert.equal(count, 81);
+  assert.equal(f.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length, 1);
+  const stale = await f.exec('snapshot', { max_chars: 14000 });
+  await f.exec('click', { ref: stale.snapshot.match(/\[([^\]]+)\] button/)[1] });
+  await assert.rejects(f.exec('snapshot', { cursor: stale.next_cursor }), /stale/);
+});
+
+test('compact AX represents 200 list items without duplicate inline text or lost interactive children', async () => {
+  const f = fixture(); await f.claim();
+  const nodes = [{ nodeId: 'root', role: { value: 'RootWebArea' }, childIds: [] }];
+  for (let i = 1; i <= 200; i++) {
+    nodes[0].childIds.push(`li${i}`);
+    nodes.push({ nodeId: `li${i}`, role: { value: 'listitem' }, backendDOMNodeId: i, childIds: [`text${i}`] },
+      { nodeId: `text${i}`, role: { value: 'StaticText' }, name: { value: `Row ${i}: alpha beta gamma delta epsilon` }, childIds: [`inline${i}`] },
+      { nodeId: `inline${i}`, role: { value: 'InlineTextBox' }, name: { value: `Row ${i}: alpha beta gamma delta epsilon` } });
+  }
+  nodes[0].childIds.push('button');
+  nodes.push({ nodeId: 'button', backendDOMNodeId: 500, role: { value: 'button' }, name: { value: 'Go' }, childIds: ['label'] },
+    { nodeId: 'label', role: { value: 'StaticText' }, name: { value: 'Go' } });
+  f.nodes(nodes);
+  const page = await f.exec('snapshot');
+  assert.equal(page.truncated, false);
+  assert.equal(page.node_count, 202);
+  assert.equal((page.snapshot.match(/Row /g) || []).length, 200);
+  assert.doesNotMatch(page.snapshot, /InlineTextBox|StaticText/);
+  assert.match(page.snapshot, /button "Go"/);
+});
+
+test('mouse acknowledgments cannot serialize dispatch; mismatched events never report clicked', async () => {
+  const f = fixture(); await f.claim();
+  const send = f.api.debugger.sendCommand;
+  let releaseMove;
+  f.api.debugger.sendCommand = (target, method, args) => {
+    if (method === 'Input.dispatchMouseEvent' && args.type === 'mouseMoved') {
+      void send(target, method, args);
+      return new Promise(resolve => { releaseMove = resolve; });
+    }
+    if (method === 'Input.dispatchMouseEvent' && args.type === 'mouseReleased') releaseMove({});
+    return send(target, method, args);
+  };
+  const result = await f.exec('click', { x: 55, y: 30 });
+  assert.equal(result.target_verified, true);
+  assert.equal(result.application_result, 'not_checked');
+  const inputs = f.calls.filter(call => call.method === 'Input.dispatchMouseEvent');
+  assert.deepEqual(inputs.map(call => call.args.buttons), [0, 1, 0]);
+  const listener = f.api.debugger.onEvent.emit;
+  f.api.debugger.onEvent.emit = (target, method, args) => listener(target, method,
+    method === 'Runtime.bindingCalled' ? { ...args, payload: '{"matched":false}' } : args);
+  await assert.rejects(f.exec('click', { x: 55, y: 30 }), /target changed/);
+  assert.ok((await f.exec('snapshot')).snapshot);
+});
+
+test('missing trusted click events time out explicitly and the tab remains usable', async () => {
+  const f = fixture(); await f.claim();
+  const emit = f.api.debugger.onEvent.emit;
+  f.api.debugger.onEvent.emit = (target, method, args) => {
+    if (method !== 'Runtime.bindingCalled') emit(target, method, args);
+  };
+  await assert.rejects(f.exec('click', { x: 55, y: 30 }), /Outcome is unknown/);
+  assert.ok((await f.exec('snapshot')).snapshot);
+});
+
+test('navigate returns destination metadata and actionable snapshot in one operation', async () => {
+  const f = fixture(); await f.claim();
+  const old = f.ref(await f.exec('snapshot'));
+  const result = await f.exec('navigate', { url: 'http://localhost:8000/destination' });
+  assert.equal(result.title, 'Destination'); assert.equal(result.url, 'http://localhost:8000/destination');
+  await assert.rejects(f.exec('click', { ref: old }), /stale/);
+  await f.exec('click', { ref: f.ref(result) });
+});
+
+test('a document change during an AX read cannot resurrect invalidated refs and cursors', async () => {
+  const f = fixture(); await f.claim();
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Accessibility.getFullAXTree') f.api.debugger.onEvent.emit(target, 'DOM.documentUpdated');
+    return result;
+  };
+  await assert.rejects(f.exec('snapshot'), /Document changed/);
 });
 
 test('claim intercepts file choosers, click reports one, upload uses the native input and clears pending state', async () => {

@@ -10,7 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { startHub } from '../src/hub.mjs';
 import { BridgeClient } from '../src/client.mjs';
 import { ROOT, writeJson } from '../src/config.mjs';
-import { setup } from '../src/setup.mjs';
+import { setup, configureNosis } from '../src/setup.mjs';
 import { validateFiles } from '../src/upload.mjs';
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jB1kAAAAASUVORK5CYII=';
@@ -28,7 +28,7 @@ async function fixture(t, options) {
     const ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
     sockets.push(ws); await once(ws, 'open');
     const response = once(ws, 'message');
-    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.2.0' } }));
+    ws.send(JSON.stringify({ type: 'hello', token, browser: { family, instance_id: instance, run_id: run, profile_name: family, extension_version: '0.3.0' } }));
     const connected = JSON.parse((await response)[0].toString());
     ws.on('message', raw => {
       const data = JSON.parse(raw.toString()); requests.push(data);
@@ -160,5 +160,17 @@ test('setup installs stable extension data outside package, and preserves curren
   assert.equal(a.config.extension_id.length, 32);
   assert.equal(a.extensionDir, join(temp, 'extension'));
   assert.ok((await readFile(join(a.extensionDir, 'config.generated.js'), 'utf8')).includes(a.config.token));
-  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.2.0');
+  assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, '0.3.0');
+});
+
+test('Nosis configuration uses the current server schema and preserves unrelated servers', async t => {
+  const temp = await mkdtemp(join(tmpdir(), 'bridge-nosis-'));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const path = join(temp, 'agent_config.json');
+  await writeFile(path, JSON.stringify({ mcp: { servers: { other: { command: 'other-server' } } } }));
+  await configureNosis(temp);
+  const config = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(config.mcp.servers.other, { command: 'other-server' });
+  assert.equal(config.mcp.servers.browser_bridge.command, 'browser-bridge');
+  assert.ok(!('scope' in config.mcp.servers.browser_bridge));
 });

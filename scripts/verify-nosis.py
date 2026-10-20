@@ -23,7 +23,7 @@ def main():
     args = parser.parse_args()
     sys.path.insert(0, str(args.nosis_root.resolve()))
     from agent_core.mcp.config import load_mcp_config
-    from agent_runtime.mcp.client import McpClient
+    from agent_core.mcp.manager import McpClientManager
     from agent_core.tools import ToolCatalog, ToolCall, ToolExecutionContext
     from agent_core.session import Session
     from agent_core.workspace import Workspace
@@ -69,18 +69,17 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     settings = json.loads((args.config_dir / 'agent_config.json').read_text(encoding='utf-8-sig'))['mcp']['servers']['browser_bridge']
     config = load_mcp_config({'enabled': True, 'servers': {'browser_bridge': settings}})
     statuses = []
-    client = McpClient(args.config_dir, on_status=lambda event: statuses.append(vars(event)))
-    handle = client.bind(config, work, 'contract-' + run_id)
+    client = McpClientManager(config, work, on_status=lambda event: statuses.append(vars(event)))
     samples, errors, handles = [], [], []
     session = Session('bridge-' + run_id)
-    context = ToolExecutionContext(workspace=Workspace(work), session=session, mcp=handle, vision_input=True,
+    context = ToolExecutionContext(workspace=Workspace(work), session=session, mcp=client, vision_input=True,
         sessions_directory=work / '.nosis/sessions')
     normalizer = ToolResultNormalizer(context.workspace, session.session_id, sessions_directory=context.sessions_directory)
     try:
-        handle.acquire()
-        definitions = handle.wait_ready()
+        client.start()
+        definitions = client.wait_ready()
         assert len(definitions) == 14, statuses
-        tools = ToolCatalog(definitions).select(handle.tool_names, context)
+        tools = ToolCatalog(definitions).select(client.tool_names, context)
 
         def call(method, arguments=None, allow_error=False):
             result = tools.execute(ToolCall(uuid.uuid4().hex, 'mcp__browser_bridge__browser_' + method, arguments or {}))
@@ -199,7 +198,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     finally:
         for h in handles:
             try:
-                handle.call_tool('browser_bridge', 'browser_release_tab', h)
+                client.call_tool('browser_bridge', 'browser_release_tab', h)
             except Exception:
                 pass
         client.close()

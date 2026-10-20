@@ -1,0 +1,177 @@
+// Private CDP is test setup/observation only. Browser actions use the real extension and Hub.
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { parseArgs } from 'node:util';
+import WebSocket from 'ws';
+import { ROOT } from '../src/config.mjs';
+import { setup } from '../src/setup.mjs';
+import { startHub } from '../src/hub.mjs';
+import { BridgeClient } from '../src/client.mjs';
+
+const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' } } });
+if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');
+const dir = await mkdtemp(join(tmpdir(), 'bridge-interaction-'));
+const rows = Array.from({ length: 200 }, (_, i) => `<li>Row ${i+1}: alpha beta gamma delta epsilon</li>`).join('');
+const fixture = `<!doctype html><meta charset="utf-8"><title>Bridge issue probe</title>
+<style>#go{position:fixed;left:200px;top:200px;width:120px;height:40px}#state{white-space:pre-wrap}</style>
+<button id="go" onclick="window.__count++">Go</button>
+<input id="edit" aria-label="Name" style="position:fixed;left:20px;top:20px">
+<input id="file" type="file" hidden><button style="position:fixed;left:400px;top:20px" onclick="document.querySelector('#file').click()">Choose file</button>
+<div id="state"></div><ul>${rows}</ul>
+<script>window.__count=0;window.__events=[];for(const type of ['pointermove','pointerdown','pointerup','click'])document.addEventListener(type,e=>{const r=document.querySelector('#go').getBoundingClientRect();window.__events.push({type,target:e.target.id,x:e.clientX,y:e.clientY,trusted:e.isTrusted,rect:{x:r.x,y:r.y,width:r.width,height:r.height}})},true);</script>`;
+const sockets = new Set();
+const server = http.createServer((req, res) => {
+  if (req.url.startsWith('/slow.js')) { setTimeout(() => { res.setHeader('content-type','application/javascript');res.end('window.slowScriptReady=true;'); }, 1000); return; }
+  res.setHeader('content-type','text/html; charset=utf-8');
+  if (req.url.startsWith('/slow')) { res.end('<!doctype html><title>Slow probe</title><script src="/slow.js"></script><button id="ready">Ready</button>'); return; }
+  res.end(fixture);
+});
+server.on('connection', socket => { sockets.add(socket);socket.on('close',()=>sockets.delete(socket)); });
+await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+const base = `http://127.0.0.1:${server.address().port}`;
+const reserve = http.createServer();await new Promise(resolve=>reserve.listen(0,'127.0.0.1',resolve));const port=reserve.address().port;await new Promise(resolve=>reserve.close(resolve));
+const paired = await setup({ configPath:join(dir,'config.json'), port });
+const hub=await startHub(paired.config);
+const profile=join(dir,'profile');await mkdir(profile);
+const browser=spawn(values.executable,[
+ `--user-data-dir=${profile}`,`--disable-extensions-except=${paired.extensionDir}`,`--load-extension=${paired.extensionDir}`,
+ '--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--enable-unsafe-extension-debugging','--window-size=1000,800','about:blank',
+],{windowsHide:true,stdio:'ignore'});
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function until(fn, description) { for(let i=0;i<100;i++){const value=await fn();if(value)return value;await pause(100)}throw new Error(description); }
+let ws,client,claim;
+const results={family:values.family,cases:[],snapshots:[],navigation:null};
+try {
+ const active=await until(async()=>{try{return(await readFile(join(profile,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/)}catch{return null}},'DevTools not ready');
+ ws=new WebSocket(`ws://127.0.0.1:${active[0]}${active[1]}`);await once(ws,'open');
+ const pending=new Map();let serial=0;
+ ws.on('message',raw=>{const data=JSON.parse(raw);const p=pending.get(data.id);if(p){pending.delete(data.id);data.error?p.reject(new Error(data.error.message)):p.resolve(data.result)}});
+ const cdp=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id=++serial;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}))});
+ client=new BridgeClient(paired.config);
+ if(process.env.BRIDGE_TEST_VERBOSE){const call=client.call.bind(client);client.call=(method,args)=>{console.error(method,args);return call(method,args)};}
+ const browserInfo=await until(async()=>{const r=await client.call('list_browsers');return r.browsers[0]},'Extension not connected');
+ const worker=await until(async()=>{const r=await cdp('Target.getTargets');return r.targetInfos.find(t=>t.type==='service_worker'&&t.url.includes(paired.config.extension_id))},'Worker missing');
+ const {sessionId}=await cdp('Target.attachToTarget',{targetId:worker.targetId,flatten:true});
+ const evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},sessionId);if(r.exceptionDetails)throw new Error(r.exceptionDetails.text);return r.result.value;};
+ const tab=await evaluate(`chrome.tabs.create({url:${JSON.stringify(base+'/probe')},active:true})`);
+ await pause(350);
+ const info=(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs.find(t=>t.tab_id===tab.id);
+ claim=await client.call('claim_tab',{browser_id:browserInfo.browser_id,tab_id:tab.id,expected_url:info.url,expected_title:info.title});
+ const h={tab_handle:claim.tab_handle};
+ const page=async expression=>(await evaluate(`chrome.debugger.sendCommand({tabId:${tab.id}},'Runtime.evaluate',{expression:${JSON.stringify(expression)},returnByValue:true,awaitPromise:true})`)).result.value;
+ const state=()=>page(`(()=>{const r=document.querySelector('#go')?.getBoundingClientRect();return {count:window.__count,events:window.__events,visibility:document.visibilityState,dpr:devicePixelRatio,rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null}})()`);
+ const cover=await evaluate(`chrome.tabs.create({url:${JSON.stringify(base+'/cover')},active:false})`);
+ const focus = () => evaluate(`chrome.windows.getAll({populate:true}).then(w=>w.map(x=>({id:x.id,focused:x.focused,state:x.state,active:x.tabs.filter(t=>t.active).map(t=>t.id)})).sort((a,b)=>a.id-b.id))`);
+ await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);await pause(250);
+ const operationsFocus=await focus();
+ const backgroundFocus=await evaluate(`chrome.tabs.get(${cover.id})`);
+ const nameSnapshot=await client.call('snapshot',h);
+ const nameRef=nameSnapshot.snapshot.match(/\[([^\]]+)\] textbox "Name"/)[1];
+ await client.call('fill',{...h,ref:nameRef,text:'后台输入'});
+ assert.equal(await page('document.querySelector("#edit").value'),'后台输入');
+ await client.call('press_key',{...h,key:'Control+A'});await client.call('press_key',{...h,key:'Z'});
+ assert.equal(await page('document.querySelector("#edit").value'),'z');
+ await client.call('scroll',{...h,x:900,y:500,delta_y:500});assert.ok(await page('scrollY > 0'));
+ const file=join(dir,'background.txt');await writeFile(file,'background upload');
+ const uploadSnapshot=await client.call('snapshot',h);
+ const uploadRef=uploadSnapshot.snapshot.match(/\[([^\]]+)\] button "Choose file"/)[1];
+ await client.call('click',{...h,ref:uploadRef});await client.call('upload_file',{...h,files:[file]});
+ assert.equal(await page('document.querySelector("#file").files[0].text()'),'background upload');
+ assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
+ assert.equal((await evaluate(`chrome.tabs.get(${cover.id})`)).active,backgroundFocus.active);
+ const operationsAfter=await focus();
+ assert.deepEqual(operationsAfter.map(({focused,...w})=>w),operationsFocus.map(({focused,...w})=>w));
+ for(const window of operationsFocus)if(!window.focused)assert.equal(operationsAfter.find(w=>w.id===window.id).focused,false);
+ results.background_operations=['fill','press_key','scroll','click chooser','upload_file'];
+ const s=await client.call('snapshot',h);
+ assert.equal(s.truncated,false);assert.match(s.snapshot,/Row 200:/);assert.doesNotMatch(s.snapshot,/InlineTextBox/);
+ results.snapshots.push({node_count:s.node_count,chars:s.snapshot.length,total:s.total_node_count,all_200_rows:true});
+ let part=await client.call('snapshot',{...h,max_nodes:10,max_chars:1000}), combined=part.snapshot, pages=1;
+ const firstRef=part.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
+ while(part.next_cursor){part=await client.call('snapshot',{...h,cursor:part.next_cursor,max_nodes:10,max_chars:1000});combined+='\n'+part.snapshot;pages++;}
+ assert.equal((combined.match(/Row \d+:/g)||[]).length,200);
+ await client.call('click',{...h,ref:firstRef});
+ results.snapshots.push({pages,all_200_rows:true,first_page_ref_survived:true});
+ for(const scenario of ['foreground_ref','background_ref','background_coordinate','occluded_window_ref']){
+  let coverWindow;
+  if(scenario==='occluded_window_ref'){
+   await evaluate(`chrome.tabs.update(${tab.id},{active:true})`);
+   coverWindow=await evaluate(`chrome.windows.create({url:${JSON.stringify(base+'/cover-window')},focused:true,width:1100,height:900,left:0,top:0})`);
+  }else await evaluate(`chrome.tabs.update(${scenario==='foreground_ref'?tab.id:cover.id},{active:true})`);
+  await pause(350);
+  const before=await focus();
+  for(let run=1;run<=3;run++){
+   await page('window.__count=0;window.__events=[];true');
+   const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
+   const start=performance.now();
+   const result=await client.call('click',{...h,...(scenario==='background_coordinate'?{x:260,y:220}:{ref})});
+   const ms=Math.round(performance.now()-start),observed=await state();
+   assert.equal(result.target_verified,true);assert.equal(observed.count,1);assert.ok(observed.events.some(e=>e.type==='click'&&e.trusted&&e.target==='go'));
+   const after=await focus();
+   assert.deepEqual(after.map(({focused,...w})=>w),before.map(({focused,...w})=>w),'Bridge must not activate tabs or change window state');
+   for(const window of before)if(!window.focused)assert.equal(after.find(w=>w.id===window.id).focused,false,'Bridge must not bring an unfocused window forward');
+   if(scenario.startsWith('background'))assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
+   if(coverWindow)assert.equal(after.find(w=>w.id===tab.windowId).focused,false);
+   results.cases.push({scenario,run,ms,visibility:observed.visibility,count:observed.count,focus_not_stolen:true});
+   console.log(JSON.stringify(results.cases.at(-1)));
+  }
+  if(coverWindow)await evaluate(`chrome.windows.remove(${coverWindow.id})`);
+ }
+ await evaluate(`chrome.tabs.update(${tab.id},{active:true})`);
+ for(const zoom of [0.8,1.25]){
+  await evaluate(`chrome.tabs.setZoom(${tab.id},${zoom})`);await pause(200);
+  await page('window.__count=0;window.__events=[];true');
+  const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
+  const result=await client.call('click',{...h,ref});const observed=await state();assert.equal(observed.count,1);
+  results.cases.push({scenario:'zoom_ref',zoom,result,observed});
+ }
+ await evaluate(`chrome.tabs.setZoom(${tab.id},1)`);await pause(150);
+ await evaluate(`chrome.debugger.sendCommand({tabId:${tab.id}},'Input.dispatchMouseEvent',{type:'mouseMoved',x:10,y:10})`);
+ await page(`window.__count=0;window.__events=[];const b=document.querySelector('#go');b.style.width='40px';b.onmouseenter=()=>{b.style.transform='translateX(30px)';b.onmouseenter=null};true`);
+ const hs=await client.call('snapshot',h),hoverRef=hs.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
+ let hoverError;try{await client.call('click',{...h,ref:hoverRef})}catch(error){hoverError=error.message}
+ assert.match(hoverError,/target changed/);const hoverState=await state();assert.equal(hoverState.count,0);
+ results.cases.push({scenario:'hover_shift_30px',error:hoverError,observed:hoverState});
+ await page(`(()=>{window.__shadowCount=0;const host=document.createElement('div');host.style='position:fixed;left:500px;top:150px';document.body.append(host);const root=host.attachShadow({mode:'closed'});const b=document.createElement('button');b.textContent='Closed control';b.onclick=()=>window.__shadowCount++;root.append(b);return true})()`);
+ const shadowSnapshot=await client.call('snapshot',h);
+ const shadowRef=shadowSnapshot.snapshot.match(/\[([^\]]+)\] button "Closed control"/)[1];
+ assert.equal((await client.call('click',{...h,ref:shadowRef})).target_verified,true);
+ assert.equal(await page('window.__shadowCount'),1);
+ assert.equal(await page('Object.getOwnPropertyNames(window).filter(n=>n.startsWith("__bridgeClick_")).length'),0);
+ results.cases.push({scenario:'closed_shadow_target',target_verified:true,count:1,page_binding_exposed:false});
+ // A verified click may destroy its own execution context through normal link navigation.
+ await page(`(()=>{const a=document.createElement('a');a.href='/slow';a.textContent='Open slow';a.style='position:fixed;left:500px;top:100px';document.body.append(a);return true})()`);
+ const linkSnapshot=await client.call('snapshot',h);
+ const linkRef=linkSnapshot.snapshot.match(/\[([^\]]+)\] link "Open slow"/)[1];
+ assert.equal((await client.call('click',{...h,ref:linkRef})).target_verified,true);
+ await until(async()=>{try{return await page('!!document.querySelector("#ready")')}catch{return false}},'link destination');
+ results.cases.push({scenario:'click_link_navigation',target_verified:true,destination_ready:true});
+ await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);
+ const navigationFocus=await focus(), start=performance.now();
+ const nav=await client.call('navigate',{...h,url:base+'/slow'});
+ const ms=performance.now()-start;const immediate=await page(`({ready:document.readyState,hasTarget:!!document.querySelector('#ready'),title:document.title})`);
+ const immediateSnapshot=await client.call('snapshot',h);
+ assert.ok(nav.snapshot.includes('\"Ready\"'));assert.equal(nav.title,'Slow probe');assert.equal(nav.url,base+'/slow');assert.equal(immediate.hasTarget,true);
+ assert.deepEqual((await focus()).map(({focused,...w})=>w),navigationFocus.map(({focused,...w})=>w));
+ assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
+ await pause(50);
+ const later=await page(`({ready:document.readyState,hasTarget:!!document.querySelector('#ready'),title:document.title})`);
+ results.navigation={ms:Math.round(ms),result:nav,immediate,later,immediate_snapshot_has_ready:immediateSnapshot.snapshot.includes('"Ready"')};
+ const fragment=await client.call('navigate',{...h,url:base+'/slow#fragment',include_snapshot:false});
+ assert.equal(fragment.same_document,true);assert.equal(fragment.snapshot,undefined);assert.equal(fragment.url,base+'/slow#fragment');
+ results.browser=browserInfo.user_agent;results.extension_version=browserInfo.extension_version;
+ console.log(JSON.stringify({snapshots:results.snapshots,background_operations:results.background_operations,
+  hover:results.cases.find(c=>c.scenario==='hover_shift_30px'),navigation:results.navigation}));
+ await client.call('release_tab',h);claim=null;
+} finally {
+ if(claim)await client?.call('release_tab',{tab_handle:claim.tab_handle}).catch(()=>{});
+ await client?.close();ws?.close();browser.kill();await hub.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
+ await mkdir(join(ROOT,'test-results'),{recursive:true});
+ await writeFile(join(ROOT,'test-results',`interaction-${values.family}.json`),JSON.stringify(results,null,2));
+ await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{});
+}
