@@ -6,7 +6,7 @@
 
 让 MCP 客户端操作你已经打开、已经登录的 Chrome / Edge 标签页。BrowserAttach 通过本机配对扩展连接浏览器，保留现有登录状态，不需要启动远程调试端口或单独的自动化浏览器。
 
-[npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [使用指南](docs/USAGE.md) · [问题反馈](https://github.com/EvannZhongg/BrowserAttach/issues) · [贡献指南](CONTRIBUTING.md)
+[npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [使用指南](docs/USAGE.md) · [架构与设计](docs/ARCHITECTURE.md) · [验证报告](docs/TEST-REPORT.md) · [问题反馈](https://github.com/EvannZhongg/BrowserAttach/issues) · [贡献指南](CONTRIBUTING.md)
 
 ## 能做什么
 
@@ -115,7 +115,7 @@ MCP 客户端 → Node.js stdio MCP → 127.0.0.1 Hub
 
 每个 MCP 连接拥有独立控制权，句柄不能跨连接使用。断连或停止调试会释放控制。客户端端点要求 Bearer 密钥并拒绝网页 Origin；扩展验证固定 Origin、密钥和版本。`browser_evaluate` 可以使用页面现有登录态读写数据，执行后 refs 失效；超时或报错前可能已产生作用，不应自动重放。未暴露通用 CDP 工具。
 
-日志从接管开始采集，跨导航保留，释放时清除；每类最多保留 500 条、1,048,576 个 JSON 字符，超限淘汰会报告 `data_loss`。网络工具仅记录元数据，不读取请求/响应正文或 headers，不改变缓存或拦截流量。完整参数及边界见[使用指南](docs/USAGE.md#javascript-求值与诊断日志040)。
+日志从接管开始采集，跨导航保留，释放时清除；每类最多保留 500 条、1,048,576 个 JSON 字符，超限淘汰会报告 `data_loss`。网络工具仅记录元数据，不读取请求/响应正文或 headers，不改变缓存或拦截流量。完整参数及边界见[使用指南](docs/USAGE.md#诊断日志)。
 
 浏览器扩展具有调试权限，客户端操作可使用现有网站登录态；只应将其接入你信任的 MCP 客户端。网页内容不应被视为用户授权。配对密钥和生成的 `config.generated.js` 不应提交或发布，打包检查会拒绝包含该文件的包。
 
@@ -148,7 +148,7 @@ npm run test:interaction -- --executable /path/to/chromium --family chromium
 npm run test:interaction -- --tab-indicators --executable /path/to/chromium --family chromium
 ```
 
-这些测试使用临时配置和本地 fixture。测试覆盖与限制见 [测试报告](docs/TEST-REPORT.md)，实现讨论见 [交互复核](docs/INTERACTION-REVIEW.md) 和 [Playwright 对照分析](docs/PLAYWRIGHT-ANALYSIS.md)。
+这些测试使用临时配置和本地 fixture。测试覆盖与限制见 [验证报告](docs/TEST-REPORT.md)，实现与设计取舍见 [架构与设计](docs/ARCHITECTURE.md)。
 
 ## 参与贡献
 
