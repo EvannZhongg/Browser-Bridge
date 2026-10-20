@@ -42,7 +42,7 @@ python scripts/verify-nosis.py --nosis-root /path/to/Nosis --family chrome
 python scripts/verify-nosis.py --nosis-root /path/to/Nosis --family edge
 ```
 
-脚本读取本机 Nosis 配置，通过 Nosis ToolCatalog 发现并调用全部 20 个工具，验证结果封装、截图到模型消息的图片适配以及 `isError` 后连接仍可用。它用 `browser_open_tab` 在选定配置中创建本地 fixture；同一 family 有多个 profile 时用 `--browser-id <精确 browser_id>` 指定，结束后释放控制。Python 仅用于该测试，不是运行依赖。
+脚本读取本机 Nosis 配置，通过 Nosis ToolCatalog 发现并调用全部 19 个工具，其中 `browser_logs` 分别覆盖 console/network，验证结果封装、截图到模型消息的图片适配以及 `isError` 后连接仍可用。它用 `browser_open_tab` 在选定配置中创建本地 fixture；同一 family 有多个 profile 时用 `--browser-id <精确 browser_id>` 指定，结束后释放控制。Python 仅用于该测试，不是运行依赖。
 
 ## 故障排查
 

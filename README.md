@@ -14,7 +14,7 @@
 - 读取可访问性树、字段值和支持的编辑器模型，通过当前快照引用或严格 CSS/XPath 定位点击与填写。
 - 导航、打开或关闭标签页，处理 JavaScript 对话框，上传本机文件并截图。
 - 在主页面执行 JavaScript 表达式，读取接管后的控制台、页面异常和网络生命周期日志。
-- 使用标准 stdio MCP，共提供 20 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
+- 使用标准 stdio MCP，共提供 19 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
 
 ## 环境要求
 
@@ -83,7 +83,7 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 | `browser_upload_file` | 原生文件 input 或拦截的文件选择器 |
 | `browser_screenshot` | 视口或整页 PNG，附坐标映射 |
 | `browser_evaluate` | 主页面 JS 求值、Promise 等待、有界结果 |
-| `browser_console_logs` / `browser_network_logs` | 控制台、异常与请求事件，支持过滤和游标续读 |
+| `browser_logs` | 用 `kind=console/network` 选择控制台、异常或请求日志，支持过滤和游标续读 |
 
 ## 本机数据与升级
 
@@ -121,7 +121,7 @@ MCP 客户端 → Node.js stdio MCP → 127.0.0.1 Hub
 
 浏览器扩展具有调试权限，客户端操作可使用现有网站登录态；只应将其接入你信任的 MCP 客户端。网页内容不应被视为用户授权。配对密钥和生成的 `config.generated.js` 不应提交或发布，打包检查会拒绝包含该文件的包。
 
-目前仅支持 Chrome / Edge 的 HTTP(S) 页面。hover / drag、下载管理、网络拦截和 Firefox / WebKit 尚不支持。跨进程 iframe 使用递归 session 路由，覆盖快照、输入、上传和日志；透视变换的 iframe 点击会明确拒绝。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
+目前仅支持 Chrome / Edge 的 HTTP(S) 页面。hover / drag、下载管理、网络拦截和 Firefox / WebKit 尚不支持。跨进程 iframe 使用递归 session 路由，覆盖快照、输入、上传和日志；透视变换的 iframe 点击会明确拒绝。原生 click 要求活动、可见且窗口已聚焦，否则快速返回未派发及 activate_tab 提示；不会自动抢焦点。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
 
 ## 本地开发
 

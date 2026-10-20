@@ -27,7 +27,7 @@ export function createController(api, notify = () => {}) {
   const navigation = createNavigation(cdp);
   const diagnostics = createDiagnostics();
   const sessions = createSessions(cdp, invalidateFrame, (tabId, sessionId) => diagnostics.detach(tabId, sessionId));
-  const mouse = createClick(cdp, value, viewport, position, sessions);
+  const mouse = createClick(cdp, value, viewport, position, sessions, tabId => api.tabs.get(tabId), windowId => api.windows.get(windowId));
   const input = createInput(cdp, value, sessions);
   const evaluations = createEvaluations(cdp);
 
@@ -279,8 +279,7 @@ export function createController(api, notify = () => {}) {
 
   async function action(tabId, command, args) {
     // Reading buffered diagnostics does not require a responsive renderer.
-    if (command === 'console_logs') return diagnostics.read(tabId, 'console', args);
-    if (command === 'network_logs') return diagnostics.read(tabId, 'network', args);
+    if (command === 'logs') return diagnostics.read(tabId, args);
     if (command === 'handle_dialog') {
       if (typeof args.accept !== 'boolean') throw new Error('accept must be a boolean');
       const dialog = dialogs.get(tabId);
@@ -358,6 +357,10 @@ export function createController(api, notify = () => {}) {
     if (command === 'click' || command === 'fill') targetOptions(args, { coordinates: command === 'click' && inputMode(args) !== 'dom' });
     if (command === 'click') clickOptions(args);
     if (['click', 'fill', 'press_key', 'scroll'].includes(command)) args = { ...args, budget: deadline(args.timeout_ms) };
+    // Check before any renderer preparation or ref invalidation. A rejected
+    // background native click is known not to have dispatched, unlike a lost
+    // receipt after input. DOM mode remains an explicit separate operation.
+    if (command === 'click' && inputMode(args) === 'native') await mouse.assertReady(tabId, args.budget);
     // Reusable selectors permit many actions without a snapshot. Release the
     // previous operation's remote wrappers before resolving this one. Refs store
     // backend ids, not object handles; this cannot change their identity.
@@ -506,7 +509,12 @@ export function createController(api, notify = () => {}) {
       if (command === 'activate_tab') {
         if (args.focus_window != null && typeof args.focus_window !== 'boolean') throw new Error('focus_window must be a boolean');
         const tab = await api.tabs.update(tabId, { active: true });
-        if (args.focus_window ?? true) await api.windows.update(tab.windowId, { focused: true });
+        if (args.focus_window ?? true) {
+          await api.windows.update(tab.windowId, { focused: true });
+          // Explicit activation also restores the renderer focus, which can be
+          // lost when a focused iframe navigates even if its tab stays active.
+          await cdp(tabId, 'Page.bringToFront');
+        }
         return { activated: true, window_focus_requested: args.focus_window ?? true, tab_id: tabId, window_id: tab.windowId };
       }
       if (command === 'close_tab') {

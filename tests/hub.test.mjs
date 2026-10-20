@@ -75,6 +75,7 @@ test('profiles are separate and upload capability is advertised', async t => {
   const result = await f.client().call('list_browsers');
   assert.deepEqual(new Set(result.browsers.map(item => item.browser_id)), new Set([chrome.id, edge.id]));
   assert.ok(result.browsers.every(item => item.capabilities.includes('upload_file')));
+  assert.ok(result.browsers.every(item => item.capabilities.includes('logs') && !item.capabilities.includes('console_logs') && !item.capabilities.includes('network_logs')));
 });
 
 test('claims require exact latest observation; ownership and release are connection-scoped', async t => {
@@ -134,7 +135,7 @@ test('unknown outcome disconnects the client and releases its claims without rep
   assert.equal(f.requests.filter(item => item.command === 'read_text').length, 1);
 });
 
-test('real stdio MCP exposes 20 tools, single JSON content, PNG image, and validated upload', async t => {
+test('real stdio MCP exposes 19 tools including unified logs, single JSON content, PNG image, and validated upload', async t => {
   const f = await fixture(t), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
@@ -144,14 +145,19 @@ test('real stdio MCP exposes 20 tools, single JSON content, PNG image, and valid
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 20);
+  assert.equal(tools.length, 19);
+  assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
+  const logSchema = tools.find(tool => tool.name === 'browser_logs').inputSchema;
+  assert.deepEqual(logSchema.properties.kind.enum, ['console', 'network']);
+  assert.ok(logSchema.required.includes('kind'));
+  assert.equal(logSchema.properties.after_seq.default, 0);
   for (const name of ['click', 'fill']) {
     const mode = tools.find(tool => tool.name === `browser_${name}`).inputSchema.properties.mode;
     assert.deepEqual(mode.enum, ['native', 'dom']); assert.equal(mode.default, 'native');
   }
   const scrollSchema = tools.find(tool => tool.name === 'browser_scroll').inputSchema.properties;
   assert.deepEqual(scrollSchema.mode.enum, ['dom', 'wheel']); assert.equal(scrollSchema.mode.default, 'dom');
-  for (const name of ['upload_file', 'open_tab', 'activate_tab', 'close_tab', 'evaluate', 'network_logs', 'console_logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
+  for (const name of ['upload_file', 'open_tab', 'activate_tab', 'close_tab', 'evaluate', 'logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
   const call = (name, args = {}) => mcp.callTool({ name: `browser_${name}`, arguments: args });
   const browsers = await call('list_browsers');
   assert.equal(browsers.structuredContent, undefined); assert.equal(browsers.content.length, 1);
@@ -159,12 +165,19 @@ test('real stdio MCP exposes 20 tools, single JSON content, PNG image, and valid
   await call('list_tabs', { browser_id: browser.id });
   const result = await call('claim_tab', { browser_id: browser.id, tab_id: 9, expected_title: 'Demo', expected_url: f.tabs[0].url });
   const handle = JSON.parse(result.content[0].text).tab_handle;
-  for (const name of ['evaluate', 'network_logs', 'console_logs']) {
-    const args = { tab_handle: handle, ...(name === 'evaluate' ? { expression: 'document.title' } : {}) };
+  for (const [name, query] of [['evaluate', { expression: 'document.title' }], ['logs', { kind: 'console' }], ['logs', { kind: 'network' }]]) {
+    const args = { tab_handle: handle, ...query };
     assert.ok(!(await call(name, args)).isError);
     assert.ok(f.requests.some(item => item.command === name));
     assert.equal((await call(name, { ...args, tab_handle: 'expired' })).isError, true);
   }
+  const logCount = f.requests.filter(item => item.command === 'logs').length;
+  for (const query of [{}, { kind: 'all' }, { kind: 'console', url_contains: '/api' }, { kind: 'network', level: 'error' }]) {
+    const invalid = await call('logs', { tab_handle: handle, ...query });
+    assert.equal(invalid.isError, true);
+  }
+  assert.equal(f.requests.filter(item => item.command === 'logs').length, logCount);
+  for (const name of ['console_logs', 'network_logs']) await assert.rejects(f.client().call(name, { tab_handle: handle }), /Unknown browser operation/);
   const evaluationCount = f.requests.filter(item => item.command === 'evaluate').length;
   assert.equal((await call('evaluate', { tab_handle: handle, expression: '42', timeout_ms: 60000 })).isError, true);
   for (const max_chars of [0, 100001]) {

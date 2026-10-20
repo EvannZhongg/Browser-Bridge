@@ -1,8 +1,35 @@
 import { deadline, waitForTarget } from './actionability.js';
 
 // Native mouse dispatch stays in protocol order without serial compositor acknowledgments.
-export function createClick(cdp, value, viewport, position, sessions) {
+export function createClick(cdp, value, viewport, position, sessions, getTab, getWindow) {
   const pending = new Map();
+  async function assertReady(tabId, budget) {
+    const timeout = Math.min(500, budget.remaining());
+    const guidance = 'Call browser_activate_tab with this tab_handle, then browser_snapshot and retry browser_click. If focus is still unavailable, restore/focus the browser window. No input was dispatched.';
+    let timer;
+    try {
+      if (timeout <= 0) throw new Error('input deadline expired before the readiness check');
+      return await Promise.race([
+        (async () => {
+          const tab = await getTab(tabId);
+          if (!tab.active || tab.discarded || tab.frozen) throw new Error(`tab not active or renderer suspended (active=${tab.active}, discarded=${!!tab.discarded}, frozen=${!!tab.frozen})`);
+          const window = await getWindow(tab.windowId);
+          if (!window.focused || window.state === 'minimized') throw new Error(`browser window not focused/renderable (focused=${window.focused}, state=${window.state})`);
+          const state = value(await cdp(tabId, 'Runtime.evaluate', {
+            expression: '({visibility_state: document.visibilityState, has_focus: document.hasFocus()})', returnByValue: true,
+          }));
+          if (state?.visibility_state !== 'visible' || typeof state.has_focus !== 'boolean') throw new Error(`page not visible or readiness unavailable (visibility_state=${state?.visibility_state}, has_focus=${state?.has_focus})`);
+          // hasFocus can be false after a focused iframe navigates, even in an
+          // active visible page which accepts native mouse input. Report it,
+          // but use the browser window's focus as the precondition.
+          return { ...state, window_focused: window.focused };
+        })(),
+        new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(`readiness check did not respond within ${timeout} ms`)), timeout); }),
+      ]);
+    } catch (error) {
+      throw new Error(`TAB_NOT_READY: Native click not dispatched: ${error.message}. ${guidance}`);
+    } finally { clearTimeout(timer); }
+  }
   function event(tabId, method, params, sessionId) {
     const operation = pending.get(tabId);
     if (operation && method === 'Page.javascriptDialogOpening') {
@@ -118,6 +145,9 @@ export function createClick(cdp, value, viewport, position, sessions) {
         if (!installed.result?.objectId) throw new Error('Could not install click target verification; no input was dispatched.');
         guards.push({ target: item.target, objectId: installed.result.objectId });
       }
+      // Recheck the root page after target preparation: a user may have changed
+      // tabs/focus while we resolved a frame or installed the event guards.
+      const pageState = await assertReady(tabId, budget);
       budget.dispatch();
       const dispatch = params => budget.run(() => cdp(tabId, 'Input.dispatchMouseEvent', { ...params, ...rootPoint }));
       const commands = [dispatch({ type: 'mouseMoved', button: 'none', buttons: 0, modifiers: options.modifiers })];
@@ -126,7 +156,7 @@ export function createClick(cdp, value, viewport, position, sessions) {
         commands.push(dispatch({ type: 'mouseReleased', button: options.button, buttons: 0, clickCount: count, modifiers: options.modifiers }));
       }
       await budget.run(() => Promise.all([Promise.all(commands), receipt]));
-      return { clicked: rootPoint, hit_target: hitTarget, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
+      return { clicked: rootPoint, hit_target: hitTarget, page_state: pageState, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
     } finally {
       pending.delete(tabId);
       // A page handler may have opened a modal. Renderer cleanup can finish after
@@ -139,14 +169,20 @@ export function createClick(cdp, value, viewport, position, sessions) {
       finally { clearTimeout(cleanupTimer); }
     }
   }
-  return { click, event, cancel };
+  return { assertReady, click, event, cancel };
 }
 
 export function describeHit() {
   const element = this.nodeType === 3 ? this.parentElement : this;
+  let clickable, disabled = false;
+  for (let parent = element; parent; parent = parent.assignedSlot || parent.parentElement || parent.getRootNode().host) {
+    if (!clickable && parent.matches('button,a[href],input,select,textarea,summary,[role="button"],[role="link"],[onclick]')) clickable = parent;
+    if (parent.matches(':disabled,[inert],[aria-disabled="true"]')) disabled = true;
+  }
   return { tag: element.tagName?.toLowerCase(), text: (element.innerText || element.textContent || '').slice(0, 300),
-    role: element.getAttribute('role'), disabled: element.matches(':disabled') || !!element.closest('[inert]'),
-    clickable_hint: element.matches('button,a[href],input,select,textarea,summary,[role="button"],[role="link"],[onclick]') };
+    role: element.getAttribute('role'), disabled, clickable_hint: !!clickable,
+    clickable_target: clickable ? { tag: clickable.tagName.toLowerCase(), role: clickable.getAttribute('role'),
+      text: (clickable.innerText || clickable.textContent || '').slice(0, 300) } : null };
 }
 
 function installGuard(name, options, expiryMs, verifyDelivery) {

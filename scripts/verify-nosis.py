@@ -79,7 +79,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     try:
         client.start()
         definitions = client.wait_ready()
-        assert len(definitions) == 20, statuses
+        assert len(definitions) == 19, statuses
         tools = ToolCatalog(definitions).select(client.tool_names, context)
 
         def call(method, arguments=None, allow_error=False):
@@ -121,9 +121,9 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
 
         _, evaluated = call('evaluate', {**h, 'expression': "(async () => { console.warn('Nosis diagnostic warning'); await (await fetch(location.href)).text(); return {title: document.title, answer: 42}; })()"})
         assert evaluated['value'] == {'title': 'Nosis Attach contract fixture', 'answer': 42}
-        _, console = call('console_logs', h)
+        _, console = call('logs', {**h, 'kind': 'console'})
         assert any(item.get('level') == 'warning' and 'Nosis diagnostic warning' in item.get('text', '') for item in console['entries'])
-        _, network = call('network_logs', h)
+        _, network = call('logs', {**h, 'kind': 'network'})
         assert any(item.get('event') == 'response' and item.get('status') == 200 for item in network['entries'])
 
         _, extra = call('open_tab', {'browser_id': browser_id, 'url': url + '/extra', 'active': False})
@@ -215,7 +215,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         handles.clear()
         assert set(sample['method'] for sample in samples) == {
             'list_browsers','list_tabs','open_tab','activate_tab','close_tab','claim_tab','release_tab','snapshot','read_text','click','fill','press_key',
-            'scroll','navigate','handle_dialog','upload_file','screenshot','evaluate','console_logs','network_logs'}
+            'scroll','navigate','handle_dialog','upload_file','screenshot','evaluate','logs'}
         report = {'family': args.family, 'tools': len(definitions), 'statuses': statuses, 'samples': samples,
             'command': settings['command'], 'args': settings.get('args', []),
             'errors': errors, 'media_origin': 'tool_media', 'text_only_image_notice': True, 'image_limit_bytes': MAX_IMAGE_BYTES,

@@ -5,8 +5,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { VERSION } from './config.mjs';
 
 const MAX_MESSAGE = 24 * 1024 * 1024;
-const OPERATIONS = new Set(['release_tab', 'activate_tab', 'close_tab', 'snapshot', 'read_text', 'click', 'fill', 'press_key', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'evaluate', 'network_logs', 'console_logs']);
-export const CAPABILITIES = ['tabs', 'open_tab', 'activate_tab', 'close_tab', 'claim', 'ax_snapshot', 'text', 'click', 'fill', 'keyboard', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'visual_indicator', 'evaluate', 'network_logs', 'console_logs'];
+const OPERATIONS = new Set(['release_tab', 'activate_tab', 'close_tab', 'snapshot', 'read_text', 'click', 'fill', 'press_key', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'evaluate', 'logs']);
+export const CAPABILITIES = ['tabs', 'open_tab', 'activate_tab', 'close_tab', 'claim', 'ax_snapshot', 'text', 'click', 'fill', 'keyboard', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'visual_indicator', 'evaluate', 'logs'];
 export class OperationTimeout extends Error {}
 const send = (ws, data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); };
 

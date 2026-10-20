@@ -1,6 +1,8 @@
 # BrowserAttach 使用指南
 
-适用于 **0.6.0**：Node.js 22+、Chrome / Edge 125+、20 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于当前 **0.6.0 源码**：Node.js 22+、Chrome / Edge 125+、19 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+
+工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
 ## 基本流程
 
@@ -52,8 +54,7 @@
 | `browser_upload_file` | `files`, `ref`（可省略） | 原生 file input、隐藏 input 或已拦截的选择器 |
 | `browser_screenshot` | `full_page=false`, `include_indicators=false` | PNG + 像素到视口 CSS 的映射 |
 | `browser_evaluate` | `expression`, `timeout_ms=10000`, `max_chars=20000` | 主 frame 表达式求值，可等待 Promise |
-| `browser_console_logs` | `after_seq`, `limit`, `max_chars`, `level` | console、未捕获异常 / rejection、浏览器日志 |
-| `browser_network_logs` | `after_seq`, `limit`, `max_chars`, `url_contains` | 请求、重定向、响应、完成、失败、缓存事件 |
+| `browser_logs` | 必填 `kind=console/network`, `after_seq`, `limit`, `max_chars`, `level` / `url_contains` | 统一读取控制台、异常或网络日志；过滤条件按 kind 区分 |
 
 普通结果是一份紧凑 JSON 文本；截图另外返回标准图片内容。失败通过 MCP `isError` 返回，错误文本即原因。
 
@@ -98,7 +99,13 @@
 
 原生模式按序派发 move → down → up，显式设置 `buttons` 与修饰键，并在隔离世界安装命中校验：成功返回 `target_verified: true`、`application_result: "not_checked"`。左键单击 / 双击分别校验 `click` / `dblclick`，中键校验 `auxclick`，右键校验 `contextmenu`。目标被遮挡、在 hover 后移动或派发中变化时会明确报错并阻止不匹配事件；已送达的前序事件可能已有副作用，不能撤销或自动重试。
 
-原生 ref/selector 点击已自动滚入视口；viewport 坐标保留严格视口边界。document 坐标针对顶层文档，嵌套滚动容器和动态布局优先用 selector/ref。`hit_target` 返回派发前命中的 tag、最多 300 字符 text、role、disabled、clickable_hint；hint 仅为 HTML/ARIA 启发式判断，不能覆盖所有事件代理。坐标点击只知道当前位置的元素，无法推断调用者想点谁。DOM/网络变化也不能证明业务成功，需按具体任务观察。
+原生 click 在准备前、派发前分别检查顶层 tab 的 active/discarded/frozen、窗口 focused/minimized、`document.visibilityState` 和 `document.hasFocus()`；每次检查最多 500 ms，且受总输入截止时间限制。后台、不可见、暂停或窗口未聚焦时快速返回 `TAB_NOT_READY` 和 `No input was dispatched`，不等待完整的点击回执超时，也不自动调用 bringToFront。按错误提示调用 `browser_activate_tab`（默认 focus_window=true），重新 snapshot 后再 click；若系统不允许程序切换焦点，需要手动恢复/聚焦浏览器窗口。
+
+`hasFocus()` 仅作为诊断信息：聚焦的 iframe 导航后，主页面可能仍可交互但返回 false，因此不能单独以此拒绝。窗口焦点使用浏览器 API 确认，成功结果的 `page_state` 包含 visibility_state、has_focus、window_focused。此处采用保守前置条件，不再承诺原生后台点击；部分 Chromium 环境原本能接收后台输入，也会被提前拒绝。显式 DOM 模式仍可用于响应正常的后台 HTML 控件，且不会自动从原生模式降级。
+
+原生 ref/selector 点击已自动滚入视口；viewport 坐标保留严格视口边界。document 坐标针对顶层文档，嵌套滚动容器和动态布局优先用 selector/ref。`hit_target` 返回实际命中的 tag、最多 300 字符 text、role、disabled、clickable_hint，并由 clickable_target 给出最近的可点击候选祖先（含自身）的 tag/role/text。查找跨越 Shadow host 和 slot，例如 span 在 button 内时保留 tag=span，同时返回 clickable_hint=true、clickable_target.tag=button；disabled 同时观察祖先的禁用/inert/aria-disabled 状态。
+
+hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证明元素不可点击，也不能覆盖所有事件代理。它不会替换真正的鼠标命中节点或改变派发目标。坐标点击无法推断调用者的业务意图，DOM/网络变化也不能证明业务成功，需按具体任务观察。
 
 `selector` 可复用，但不是永久元素身份。每次解析使用当前 DOM，零个或多个匹配会报错；解析后目标被替换仍会安全失败，不自动重放。CSS/XPath 不穿透 Shadow DOM，那里继续使用 AX ref；iframe 用明确 `frame_id`。例如 `browser_click({tab_handle, selector:"#save"})` 或 `browser_fill({tab_handle, selector:"//input[@name='title']", selector_type:"xpath", text:"新标题", mode:"dom"})`。
 
@@ -134,6 +141,8 @@
 ### 结果未知时
 
 派发之后的超时会释放工具队列，但动作可能已经送达或稍后生效。此时先观察页面（快照、截图、日志），不要自动重放，也不要为了补一次而切换模式。
+
+`TAB_NOT_READY` 是明确的派发前失败，可以在激活、重新观察后再点击；它不属于“结果未知”。即使前置检查通过，用户仍可能在派发瞬间切换标签，浏览器菜单也可能捕获输入。派发后没有回执仍须报告 Outcome is unknown，不能仅凭 visibility/focus 或“没有观察到变化”宣称零效果。
 
 ## 导航、对话框与截图
 
@@ -200,10 +209,14 @@ handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`�
 ## 诊断日志
 
 ```json
-{"tab_handle":"...","after_seq":0,"limit":100,"max_chars":24000}
+{"tab_handle":"...","kind":"console","level":"error","after_seq":0,"limit":100,"max_chars":24000}
 ```
 
-两类日志各自拥有序列，只能在同一次 claim 内续读：把返回的 `next_seq` 作为下一次的 `after_seq`。`limit` 为 1–200，`max_chars` 为 1000–100000（约束 `entries` 数组）。`has_more` 表示还有事件可扫描，`latest_seq` 是当前末尾；被过滤器跳过的事件也会推进游标，想在改过滤条件后回看旧事件应从 `after_seq: 0` 开始。
+统一使用 `browser_logs`，`kind` 必填且只能是 `console` 或 `network`，没有默认值或混合模式。返回包含 `kind`、`entries` 及续读元数据。两类日志各自拥有缓冲和序列，只能在同一标签、同一次 claim、同一个 kind 内续读：把返回的 `next_seq` 作为下一次的 `after_seq`，切换 kind 时使用该 kind 自己的续读位置。`limit` 为 1–200，`max_chars` 为 1000–100000（约束 `entries` 数组）。`has_more` 表示还有事件可扫描，`latest_seq` 是当前末尾；被过滤器跳过的事件也会推进游标，想在改过滤条件后回看旧事件应从 `after_seq: 0` 开始。
+
+网络查询示例：`{"tab_handle":"...","kind":"network","url_contains":"/api/","after_seq":0}`。`level` 仅接受 console，`url_contains` 仅接受 network；传错类型明确报错，不会静默忽略。读取不消费缓冲，不使快照 refs 失效，JS 对话框打开时也可读取。
+
+旧的 `browser_console_logs` / `browser_network_logs` 已移除，没有别名或兼容转发。更新扩展、重启 Hub 与 MCP 连接并重新发现工具后使用新接口。
 
 - 控制台：`level` 可选 `log` / `debug` / `info` / `warning` / `error`，收集 console、未捕获异常 / rejection 和浏览器 Log 消息。对象参数是浅层预览，没有 live handle；行号列号从 0 开始，`timestamp` 与 `capture_started_at` 是 Unix 毫秒。
 - 网络：`url_contains`（最多 2000 字符）过滤 URL，事件为 `request` / `redirect` / `response` / `finished` / `failed` / `cache`。按 `session_id`、`request_id` 和重定向 `hop` 关联；404 属于 `response`，连接失败属于 `failed`。timestamp 是 CDP 单调时钟秒，`request` 另带 Unix 秒的 `wall_time`。

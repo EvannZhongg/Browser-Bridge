@@ -30,7 +30,7 @@ function fixture() {
         if (!groups.has(groupId)) groups.set(groupId, { id: groupId, windowId: 1 });
         calls.push({ method: 'tabs.group', tabIds, groupId }); return groupId; },
       ungroup: async id => { if (tabs.has(id)) tabs.get(id).groupId = -1; calls.push({ method: 'tabs.ungroup', id }); },
-    }, windows: { update: async (id, args) => { calls.push({ method: 'windows.update', id, args }); } },
+    }, windows: { get: async id => ({ id, focused: true, state: 'normal' }), update: async (id, args) => { calls.push({ method: 'windows.update', id, args }); } },
     debugger: { onDetach: event(), onEvent: event(),
       attach: async (target, version) => { calls.push({ method: 'attach', target, version }); },
       detach: async target => { calls.push({ method: 'detach', target }); api.debugger.onDetach.emit(target); },
@@ -68,6 +68,7 @@ function fixture() {
         if (method === 'DOM.getContentQuads') return { quads: [[10, 10, 100, 10, 100, 50, 10, 50]] };
         if (method === 'DOM.getNodeForLocation') return { backendNodeId: 12, frameId: 'main' };
         if (method === 'Runtime.evaluate' && args.expression.includes('function installKeyReceipt')) return { result: { objectId: 'key-guard' } };
+        if (method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')) return { result: { value: { visibility_state: 'visible', has_focus: true } } };
         if (method === 'Runtime.evaluate' && args.expression.includes('title: document.title')) return { result: { value: { title: tabs.get(9).title, url: tabs.get(9).url } } };
         if (method === 'Runtime.evaluate') return { result: { value: { width: 1024, height: 768, scroll_x: 0, scroll_y: 0, device_pixel_ratio: 1 } } };
         if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installGuard')) return { result: { objectId: 'guard' } };
@@ -92,6 +93,76 @@ test('tab_id claim tolerates title drift; explicitly supplied identity guards st
   assert.equal(claimed.title, 'New title');
   await assert.rejects(f.exec('click', { ref: 'old', selector: '#submit' }), /exactly one/);
   await assert.rejects(f.exec('click', { selector: '#submit', mode: 'dom', coordinate_space: 'document' }), /coordinate clicks only/);
+});
+
+test('background native click fails before renderer work, keeps refs and can recover after explicit activation', async () => {
+  const f = fixture(); await f.claim(); const ref = f.ref(await f.exec('snapshot'));
+  f.tabs.get(9).active = false;
+  f.calls.length = 0;
+  await assert.rejects(f.exec('click', { ref, timeout_ms: 30000 }), error => {
+    assert.match(error.message, /TAB_NOT_READY.*tab not active.*browser_activate_tab.*No input was dispatched/);
+    assert.doesNotMatch(error.message, /unknown/i); return true;
+  });
+  assert.equal(f.calls.length, 0);
+  await f.exec('activate_tab');
+  assert.equal((await f.exec('click', { ref })).target_verified, true);
+});
+
+test('hidden, unfocused or suspended native click sends no input and never brings the page forward', async () => {
+  for (const state of [{ visibility_state: 'hidden', has_focus: false }, { visibility_state: 'visible', has_focus: false }]) {
+    const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+    if (state.visibility_state === 'visible') f.api.windows.get = async () => ({ focused: false, state: 'normal' });
+    f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
+      ? { result: { value: state } } : send(target, method, args);
+    await assert.rejects(f.exec('click', { x: 10, y: 10 }), /TAB_NOT_READY.*No input was dispatched/);
+    assert.ok(!f.calls.some(call => call.method.startsWith('Input.') || ['Page.bringToFront', 'tabs.update', 'windows.update'].includes(call.method)));
+  }
+  for (const property of ['discarded', 'frozen']) {
+    const f = fixture(); await f.claim(); f.tabs.get(9)[property] = true; f.calls.length = 0;
+    await assert.rejects(f.exec('click', { selector: '#submit' }), /TAB_NOT_READY.*renderer suspended/);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test('an unresponsive click preflight fails in 500ms without consuming the input timeout or dispatching late input', async t => {
+  const f = fixture(); await f.claim(); t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const send = f.api.debugger.sendCommand; let finish;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')) return await new Promise(resolve => {
+      finish = () => resolve({ result: { value: { visibility_state: 'visible', has_focus: true } } });
+    });
+    return send(target, method, args);
+  };
+  const result = assert.rejects(f.exec('click', { x: 10, y: 10, timeout_ms: 30000 }), /TAB_NOT_READY.*within 500 ms.*No input was dispatched/);
+  await new Promise(resolve => setImmediate(resolve)); t.mock.timers.tick(500); await result;
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!f.calls.some(call => call.method.startsWith('Input.')));
+  assert.ok((await f.exec('snapshot')).snapshot);
+});
+
+test('focus lost during native preparation is caught by the final preflight without dispatch or fallback', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand; let checks = 0;
+  f.api.windows.get = async () => ({ focused: ++checks === 1, state: 'normal' });
+  f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
+    ? { result: { value: { visibility_state: 'visible', has_focus: true } } } : send(target, method, args);
+  await assert.rejects(f.exec('click', { x: 10, y: 10 }), /TAB_NOT_READY.*window not focused/);
+  assert.equal(checks, 2);
+  assert.ok(!f.calls.some(call => call.method.startsWith('Input.') || call.args?.functionDeclaration?.includes('function clickElement')));
+});
+
+test('hasFocus false alone does not reject an active visible page in a focused window', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
+    ? { result: { value: { visibility_state: 'visible', has_focus: false } } } : send(target, method, args);
+  const result = await f.exec('click', { x: 10, y: 10 });
+  assert.equal(result.target_verified, true); assert.equal(result.page_state.has_focus, false); assert.equal(result.page_state.window_focused, true);
+});
+
+test('explicit DOM click remains available on a background tab without a native readiness check', async () => {
+  const f = fixture(); await f.claim(); f.tabs.get(9).active = false;
+  const result = await f.exec('click', { ref: f.ref(await f.exec('snapshot')), mode: 'dom' });
+  assert.equal(result.method, 'dom'); assert.equal(result.events_trusted, false);
+  assert.ok(!f.calls.some(call => call.method.startsWith('Input.') || call.args?.expression?.includes('visibility_state: document.visibilityState')));
 });
 
 test('selectors resolve afresh per action, route isolated frame nodes and refuse ambiguous targets', async () => {
@@ -787,8 +858,8 @@ test('evaluation timeout and modal release the queue, leaving diagnostics availa
   assert.equal((await f.exec('snapshot')).dialog.message, 'eval modal');
   const emit = (method, params) => f.api.debugger.onEvent.emit({ tabId: 9 }, method, params);
   emit('Runtime.consoleAPICalled', { type: 'warn', args: [{ value: 'fixture warning' }], timestamp: Date.now() });
-  assert.equal((await f.exec('console_logs')).entries[0].text, 'fixture warning');
-  await f.exec('network_logs');
+  assert.equal((await f.exec('logs', { kind: 'console' })).entries[0].text, 'fixture warning');
+  await f.exec('logs', { kind: 'network' });
   await f.exec('handle_dialog', { accept: true });
   assert.equal(executions, 2);
 });
@@ -799,13 +870,13 @@ test('diagnostics are enabled on claim, survive navigation, keep refs and clear 
   const emit = (method, params) => f.api.debugger.onEvent.emit({ tabId: 9 }, method, params);
   emit('Runtime.consoleAPICalled', { type: 'log', args: [{ value: 'retained' }] });
   const ref = f.ref(await f.exec('snapshot'));
-  assert.equal((await f.exec('console_logs')).entries.length, 1);
+  assert.equal((await f.exec('logs', { kind: 'console' })).entries.length, 1);
   await f.exec('click', { ref });
   emit('Page.frameNavigated', { frame: { id: 'main' } });
-  assert.equal((await f.exec('console_logs')).entries[0].text, 'retained');
-  await assert.rejects(f.exec('console_logs', {}, 'two'), /not claimed/);
+  assert.equal((await f.exec('logs', { kind: 'console' })).entries[0].text, 'retained');
+  await assert.rejects(f.exec('logs', { kind: 'console' }, 'two'), /not claimed/);
   await f.exec('release_tab'); await f.claim();
-  assert.equal((await f.exec('console_logs')).entries.length, 0);
+  assert.equal((await f.exec('logs', { kind: 'console' })).entries.length, 0);
 });
 
 test('evaluation serializer handles cycles, avoids getters and bounds traversal and escaped transfer size', () => {

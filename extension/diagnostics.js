@@ -107,14 +107,18 @@ export function createDiagnostics() {
       } else if (method === 'Network.requestServedFromCache') add('cache');
     }
   }
-  function read(tabId, kind, args) {
+  function read(tabId, args) {
     const state = tabs.get(tabId);
     if (!state) throw new Error('Diagnostics are unavailable; claim the tab again');
+    const { kind } = args;
+    if (!['console', 'network'].includes(kind)) throw new Error('kind must be console or network');
+    if (kind === 'console' && args.url_contains != null) throw new Error('url_contains is only valid for kind=network');
+    if (kind === 'network' && args.level != null) throw new Error('level is only valid for kind=console');
     if (args.level != null && !['log', 'debug', 'info', 'warning', 'error'].includes(args.level)) throw new Error('Invalid console level');
     if (args.url_contains != null && (typeof args.url_contains !== 'string' || args.url_contains.length > 2000)) throw new Error('url_contains must be at most 2000 characters');
     return { ...state[kind].read(args, record => kind === 'console' ? !args.level || record.level === args.level
       : !args.url_contains || record.url?.includes(args.url_contains)),
-      capture_started_at: state.started, scope: 'tab_and_iframes', retained_across_navigation: true };
+      kind, capture_started_at: state.started, scope: 'tab_and_iframes', retained_across_navigation: true };
   }
   return { start, event, read, detach(tabId, sessionId) {
     const state = tabs.get(tabId);

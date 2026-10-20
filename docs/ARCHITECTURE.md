@@ -20,7 +20,7 @@ MCP 客户端
 | `src/setup.mjs` | 生成配对密钥、复制稳定扩展目录、写 Nosis 配置 |
 | `src/hub.mjs` | 浏览器与会话注册、独占 claim、每标签串行队列、超时 |
 | `src/client.mjs` | MCP 进程到 Hub 的 WebSocket 客户端，按需拉起 Hub |
-| `src/mcp.mjs` | 20 个工具的 schema、结果与图片封装 |
+| `src/mcp.mjs` | 19 个工具的 schema、结果与图片封装 |
 | `extension/controller.js` | 操作实现；传输层从不暴露原始 CDP |
 | `extension/sessions.js` | 扁平 debugger session 与 frame/OOPIF 归属 |
 | `extension/{click,input,actionability}.js` | 原生/DOM 输入、可操作性等待与送达校验 |
@@ -29,6 +29,15 @@ MCP 客户端
 | `extension/visuals.js`、`click-visuals.js` | 无标题红色原生标签组、临时点击反馈 |
 
 Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopback。
+
+## MCP 描述分层
+
+- 初始化响应的 `instructions` 集中说明跨工具规则：接管/释放、不自动激活、ref 生命周期、selector 解析、未知结果不重放、原生/DOM 输入、超时、验证范围和页面内容不可信。客户端应将这些 instructions 纳入模型上下文，不能只提供 tools/list。
+- 单个工具 description 只保留用途和特有行为，例如 evaluate 的缓存续读、navigate 的观察预算、fill 的 setter/input/change、press_key 的 keydown 回执。
+- 参数 schema 表达类型、枚举、范围、默认值与参数专属限制；例如 DOM click 仅支持元素目标和无修饰键的左键单击。
+- [使用指南](USAGE.md) 保留完整原理、边界与示例。包内文档不会自动成为模型上下文，不能替代初始化 instructions 中的必要规则。
+
+描述分层本身不改变工具名称、参数约束、默认值或执行语义；原生点击就绪检查是独立的行为改动。
 
 ## 控制模型
 
@@ -63,6 +72,9 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 ```
 
 - **只重试准备**：等待阶段可以反复轮询，但一旦派发就不再重试。超时分为"未派发"和"已派发、结果未知"两种错误文本。
+- **原生点击就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求活动、可见、未暂停的 tab 与已聚焦且未最小化的窗口。不满足时以 TAB_NOT_READY 明确报告未派发，并提示 activate_tab → snapshot → click。click 不主动激活；仅显式 activate_tab 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
+- **焦点信号边界**：document.hasFocus() 在 iframe 导航后可能为 false，不能单独用作不可交互证据。窗口焦点由 browser API 确认，页面焦点作为 page_state 诊断。前置条件采用保守策略，会拒绝部分原先可成功的后台点击；不是试图用状态检查证明派发后的结果。
+- **命中提示**：保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。语义候选不会被用于替换点击目标。
 - **送达不等于业务完成**：`target_verified` / `delivery_verified` / `value_verified` 分别证明可信事件命中、keydown 送达、字段文本写入；点击与按键另返回 `application_result: "not_checked"`，`fill` 只表示写入校验通过。
 - **OOPIF 坐标**：点击从顶层派发。逐层用 `DOM.getBoxModel` 把坐标换算到祖先文档，并用 `DOM.getNodeForLocation` 确认该位置确实落在 frame owner 上，防止祖先页面的遮挡被跳过。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
@@ -70,8 +82,10 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 
 ## 诊断模型
 
+统一由 `browser_logs(kind=console/network)` 读取，替代两个独立工具。两者共享只读权限、生命周期、分页和预算接口，合并减少工具发现与调用选择的重复；事件结构和过滤条件通过必填 kind 区分。实现只统一 schema 和调用路由，保留各类缓冲，不新增聚合状态机。旧命令已删除，没有兼容层。
+
 - 每次 claim 开启 Runtime / Log / Network 观察，`Network.enable` 把缓冲区设为 0，避免浏览器侧缓存响应体。
-- 两类 append-only 缓冲各自维护 `seq`：读取使用 `after_seq` + `limit` + `max_chars`，同一 requestId 的重定向用 `hop` 区分，完成事件后追加而不是覆盖请求行。
+- 两类 append-only 缓冲各自维护 `seq`：读取使用 `after_seq` + `limit` + `max_chars`；续读位置必须与 tab claim 和 kind 一起保存。网络突发流量不会挤掉控制台错误。console 的 level 与 network 的 url_contains 不得跨类使用。两种 timestamp 基准不同，不混排或伪造统一时间轴。同一 requestId 的重定向用 `hop` 区分，完成事件后追加而不是覆盖请求行。
 - 上限为每类 500 条 / 1,048,576 字符，活跃请求表 500 项；淘汰记录 `dropped_through_seq`，读取返回 `data_loss`。
 - 导航保留缓冲，release / detach / 关闭 / 断连清理；不落盘、不读取 headers 或正文、不修改缓存与 service worker。
 

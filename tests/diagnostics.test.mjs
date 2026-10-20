@@ -5,8 +5,37 @@ import { createDiagnostics } from '../extension/diagnostics.js';
 function fixture() {
   const logs = createDiagnostics(); logs.start(9);
   return { logs, emit: (method, params, source = { tabId: 9 }) => logs.event(source, method, params),
-    read: (kind, args = {}) => logs.read(9, kind, args) };
+    read: (kind, args = {}) => logs.read(9, { kind, ...args }) };
 }
+
+test('unified log query requires a kind and refuses irrelevant filters', () => {
+  const f = fixture();
+  for (const kind of [undefined, '', 'all', '__proto__']) assert.throws(() => f.read(kind), /kind must be console or network/);
+  assert.throws(() => f.read('console', { url_contains: '' }), /only valid for kind=network/);
+  assert.throws(() => f.read('network', { level: 'error' }), /only valid for kind=console/);
+  assert.throws(() => f.read('console', { level: 'unknown' }), /console level/);
+  assert.throws(() => f.read('network', { url_contains: 5 }), /url_contains/);
+  assert.equal(f.read('console').kind, 'console');
+  assert.equal(f.read('network').kind, 'network');
+});
+
+test('network traffic cannot evict console messages; kind-specific cursors and loss stay independent', () => {
+  const f = fixture();
+  f.emit('Runtime.consoleAPICalled', { type: 'error', args: [{ value: 'retained console error' }] });
+  const consolePage = f.read('console');
+  for (let i = 0; i < 700; i++) f.emit('Network.requestWillBeSent', { requestId: String(i), request: { url: 'https://fixture.test/api', method: 'GET' } });
+  const networkPage = f.read('network', { limit: 1 });
+  assert.equal(networkPage.kind, 'network'); assert.equal(networkPage.entries[0].seq, 201);
+  assert.equal(networkPage.data_loss, true); assert.equal(networkPage.dropped_through_seq, 200);
+  assert.equal(f.read('console').entries[0].text, 'retained console error');
+  f.emit('Runtime.consoleAPICalled', { type: 'log', args: [{ value: 'later console' }] });
+  const nextConsole = f.read('console', { after_seq: consolePage.next_seq });
+  assert.equal(nextConsole.kind, 'console'); assert.equal(nextConsole.data_loss, false);
+  assert.deepEqual(nextConsole.entries.map(entry => entry.text), ['later console']);
+  assert.equal(nextConsole.next_seq, 2); assert.equal(nextConsole.dropped_through_seq, 0);
+  const nextNetwork = f.read('network', { after_seq: networkPage.next_seq, limit: 1 });
+  assert.equal(nextNetwork.entries[0].seq, 202); assert.equal(nextNetwork.data_loss, false);
+});
 
 test('network lifecycle is append-only and correlates redirects without retaining headers or bodies', () => {
   const f = fixture();

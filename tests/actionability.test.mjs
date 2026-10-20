@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deadline, inspectTarget, waitForTarget } from '../extension/actionability.js';
-import { clickOptions, framePoint } from '../extension/click.js';
+import { clickOptions, describeHit, framePoint } from '../extension/click.js';
 import { NAVIGATION_MAX_TIMEOUT_MS, NAVIGATION_OBSERVATION_TIMEOUT_MS, HUB_OPERATION_TIMEOUT_MS, CLIENT_RESPONSE_TIMEOUT_MS } from '../extension/limits.js';
 
 test('transport budgets leave headroom after maximum navigation plus observation', () => {
@@ -55,6 +55,24 @@ test('mouse parameters validate buttons, double clicks, modifiers and DOM limita
   for (const args of [{button:'bad'}, {click_count:3}, {modifiers:['Ctrl']}, {mode:'dom',button:'right'}, {mode:'dom',click_count:2}]) {
     assert.throws(() => clickOptions(args));
   }
+});
+
+test('hit hints follow ancestors and shadow/slot boundaries while preserving the actual hit node', () => {
+  const element = (tag, parent, { clickable = false, disabled = false } = {}) => ({ nodeType: 1, tagName: tag.toUpperCase(),
+    parentElement: parent, innerText: tag, getRootNode: () => ({}), getAttribute: () => null,
+    matches: selector => selector.startsWith('button,') ? clickable : disabled });
+  const button = element('button', null, { clickable: true }), span = element('span', button);
+  const hit = describeHit.call(span);
+  assert.equal(hit.tag, 'span'); assert.equal(hit.clickable_hint, true); assert.equal(hit.clickable_target.tag, 'button');
+  assert.equal(hit.disabled, false);
+  const shadow = element('span', null); shadow.getRootNode = () => ({ host: button });
+  assert.equal(describeHit.call(shadow).clickable_target.tag, 'button');
+  const slotted = element('span', null); slotted.assignedSlot = element('slot', button);
+  assert.equal(describeHit.call(slotted).clickable_hint, true);
+  const disabled = element('button', null, { clickable: true, disabled: true });
+  assert.equal(describeHit.call(element('span', disabled)).disabled, true);
+  const plain = describeHit.call(element('span', element('div', null)));
+  assert.equal(plain.clickable_hint, false); assert.equal(plain.clickable_target, null);
 });
 
 test('frame coordinate conversion preserves affine transforms and refuses perspective', () => {

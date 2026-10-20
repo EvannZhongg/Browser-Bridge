@@ -38,10 +38,13 @@ try {
   ws.on('message', raw => { const data = JSON.parse(raw.toString()); if (data.id) ws.send(JSON.stringify({ id: data.id, result: { released: true } })); });
   client = new Client({ name: 'package-test', version: '1' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(installed, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp, env }));
-  assert.equal((await client.listTools()).tools.length, 20);
+  const tools = (await client.listTools()).tools;
+  assert.equal(tools.length, 19);
+  assert.ok(tools.some(tool => tool.name === 'browser_logs'));
+  assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const result = await client.callTool({ name: 'browser_list_browsers', arguments: {} });
   assert.equal(JSON.parse(result.content[0].text).browsers[0].browser_id, 'package:one');
-  console.log(JSON.stringify({ archive, files: packed.files.length, installedOutsideCheckout: true, stdioTools: 20, extensionDirectoryOutsidePackage: true }));
+  console.log(JSON.stringify({ archive, files: packed.files.length, installedOutsideCheckout: true, stdioTools: tools.length, extensionDirectoryOutsidePackage: true }));
 } finally {
   await client?.close(); ws?.close(); await hub?.close();
   await rm(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

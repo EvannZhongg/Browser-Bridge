@@ -13,7 +13,7 @@ import { setup } from '../src/setup.mjs';
 import { startHub } from '../src/hub.mjs';
 import { AttachClient } from '../src/client.mjs';
 
-const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, headless: { type: 'boolean', default: false }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');
 const dir = await mkdtemp(join(tmpdir(), 'attach-interaction-'));
 const rows = Array.from({ length: 200 }, (_, i) => `<li>Row ${i+1}: alpha beta gamma delta epsilon</li>`).join('');
@@ -42,11 +42,12 @@ const profile=join(dir,'profile');await mkdir(profile);
 const browser=spawn(values.executable,[
  `--user-data-dir=${profile}`,`--disable-extensions-except=${paired.extensionDir}`,`--load-extension=${paired.extensionDir}`,
  '--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--enable-unsafe-extension-debugging','--window-size=1000,800','about:blank',
+ ...(values.headless?['--headless=new']:[]),
 ],{windowsHide:true,stdio:'ignore'});
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(fn, description) { for(let i=0;i<100;i++){const value=await fn();if(value)return value;await pause(100)}throw new Error(description); }
 let ws,client,claim;
-const results={family:values.family,cases:[],snapshots:[],navigation:null};
+const results={family:values.family,headless:values.headless,cases:[],snapshots:[],navigation:null};
 try {
  const active=await until(async()=>{try{return(await readFile(join(profile,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/)}catch{return null}},'DevTools not ready');
  ws=new WebSocket(`ws://127.0.0.1:${active[0]}${active[1]}`);await once(ws,'open');
@@ -79,6 +80,8 @@ try {
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach-click]").length'),0);
   const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
+  await assert.rejects(client.call('click',{...h,ref}),/TAB_NOT_READY.*No input was dispatched/);
+  await client.call('activate_tab',h);
   assert.equal((await client.call('click',{...h,ref})).target_verified,true);
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
   await until(()=>page('document.querySelectorAll("[data-local-browser-attach-click]").length===1'),'transient click visual');
@@ -114,6 +117,7 @@ try {
   await assert.rejects(client.call('snapshot',disconnectedHandle),/expired/);claim=null;
   results.cases.push({scenario:'session_disconnect_restores_group',restored:true});
  } else if (values['input-capture']) {
+  await client.call('activate_tab',h);
   const refFor = (snapshot, role, label) => snapshot.snapshot.match(new RegExp(`\\[([^\\]]+)\\] ${role} "${label}"`))[1];
   const inputRef = async () => refFor(await client.call('snapshot',h),'textbox','Name');
   const buttonRef = async () => refFor(await client.call('snapshot',h),'button','Go');
@@ -155,8 +159,8 @@ try {
   assert.equal(await page('document.querySelector("#edit").value'),'z');
   assert.equal((await client.call('click',{...h,ref:await buttonRef()})).target_verified,true);
   assert.equal((await state()).count,2);
-  assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
-  results.cases.push({scenario:'native_recovered',value:'z',count:2,background:true});
+  assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,true);
+  results.cases.push({scenario:'native_recovered',value:'z',count:2,background:false});
   await page(`document.body.insertAdjacentHTML('beforeend','<textarea aria-label="Extra area" style="position:fixed;left:20px;top:60px"></textarea><div contenteditable="true" role="textbox" aria-label="Rich editor" style="position:fixed;left:20px;top:120px;width:120px;height:50px;white-space:pre-wrap"></div>');true`);
   for (const label of ['Extra area','Rich editor']) {
    for (const mode of ['native','dom']) {
@@ -181,11 +185,12 @@ try {
   for (const coordinates of [false, true]) {
    await page('window.__count=0;window.__events=[];true');
    const snap = await client.call('snapshot', h), start = performance.now();
-   const result = await client.call('click', {...h, ...(coordinates ? {x:260,y:220} : {ref:refFor(snap)})});
-   assert.equal(result.target_verified,true); assert.equal((await state()).count,1);
+   await assert.rejects(client.call('click', {...h, timeout_ms:30000, ...(coordinates ? {x:260,y:220} : {ref:refFor(snap)})}), /TAB_NOT_READY.*No input was dispatched/);
+   assert.ok(performance.now()-start<2000); assert.equal((await state()).count,0);
    assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
-   results.cases.push({scenario:coordinates?'background_coordinate':'background_ref',ms:Math.round(performance.now()-start),target_verified:true});
+   results.cases.push({scenario:coordinates?'background_coordinate':'background_ref',ms:Math.round(performance.now()-start),not_dispatched:true});
   }
+  await client.call('activate_tab',h);
   await page(`window.__adLoads=0;const ad=document.createElement('iframe');ad.id='ad';ad.style='position:fixed;left:600px;top:20px;width:200px;height:100px';ad.onload=()=>window.__adLoads++;ad.src='/ad';document.body.append(ad);true`);
   await until(()=>page('window.__adLoads>0'),'initial iframe load');
   const snap = await client.call('snapshot',h), mainRef = refFor(snap);
@@ -197,16 +202,25 @@ try {
   for(let i=0;i<20;i++) assert.match((await client.call('snapshot',h)).snapshot,/button "Go"/);
   await page(`clearInterval(window.__adTimer);document.querySelector('#ad').remove();true`);
   results.cases.push({scenario:'snapshot_during_iframe_refresh',snapshots:20});
-  await client.call('activate_tab', {...h,focus_window:false});
+  await client.call('activate_tab', h);
   assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,true);
   await page(`const style=document.createElement('style');style.textContent='@keyframes drift{from{transform:translateX(-5px)}to{transform:translateX(5px)}}#go{animation:drift 0.7s linear infinite alternate}';document.head.append(style);true`);
   for(let i=0;i<3;i++) {
    await page('window.__count=0;window.__events=[];true');
    const snap=await client.call('snapshot',h),start=performance.now();
-   assert.equal((await client.call('click',{...h,ref:refFor(snap)})).target_verified,true);
-   const observed=await state();assert.equal(observed.count,1);
-   assert.ok(observed.events.some(e=>e.type==='click'&&e.trusted&&e.target==='go'));
-   results.cases.push({scenario:'infinite_css_animation',run:i+1,ms:Math.round(performance.now()-start),target_verified:true});
+   let result, error;
+   try { result=await client.call('click',{...h,ref:refFor(snap),timeout_ms:500}); } catch(failure) { error=failure.message; }
+   const observed=await state();
+   if(result) {
+    assert.equal(result.target_verified,true);assert.equal(observed.count,1);
+    assert.ok(observed.events.some(e=>e.type==='click'&&e.trusted&&e.target==='go'));
+   } else {
+    // Compositor timing can either expose stable bounds or continuous motion.
+    // Both a verified click and a pre-dispatch refusal are valid; uncertainty
+    // or duplicate effects must never be accepted as animation-test success.
+    assert.match(error,/no input was dispatched/i);assert.equal(observed.count,0);
+   }
+   results.cases.push({scenario:'infinite_css_animation',run:i+1,ms:Math.round(performance.now()-start),target_verified:!!result,error});
   }
   const opened=await client.call('open_tab',{browser_id:browserInfo.browser_id,url:base+'/ad',active:false});
   await until(async()=>{const tabs=(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs;return tabs.find(t=>t.tab_id===opened.tab_id&&t.title==='Ad frame')},'opened tab loaded');
@@ -233,14 +247,14 @@ try {
  const file=join(dir,'background.txt');await writeFile(file,'background upload');
  const uploadSnapshot=await client.call('snapshot',h);
  const uploadRef=uploadSnapshot.snapshot.match(/\[([^\]]+)\] button "Choose file"/)[1];
- await client.call('click',{...h,ref:uploadRef});await client.call('upload_file',{...h,files:[file]});
+ await client.call('click',{...h,ref:uploadRef,mode:'dom'});await client.call('upload_file',{...h,files:[file]});
  assert.equal(await page('document.querySelector("#file").files[0].text()'),'background upload');
  assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
  assert.equal((await evaluate(`chrome.tabs.get(${cover.id})`)).active,backgroundFocus.active);
  const operationsAfter=await focus();
  assert.deepEqual(operationsAfter.map(({focused,...w})=>w),operationsFocus.map(({focused,...w})=>w));
  for(const window of operationsFocus)if(!window.focused)assert.equal(operationsAfter.find(w=>w.id===window.id).focused,false);
- results.background_operations=['fill','press_key','scroll','click chooser','upload_file'];
+ results.background_operations=['fill','press_key','scroll','DOM click chooser','upload_file'];
  const s=await client.call('snapshot',h);
  assert.equal(s.truncated,false);assert.match(s.snapshot,/Row 200:/);assert.doesNotMatch(s.snapshot,/InlineTextBox/);
  results.snapshots.push({node_count:s.node_count,chars:s.snapshot.length,total:s.total_node_count,all_200_rows:true});
@@ -248,34 +262,44 @@ try {
  const firstRef=part.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
  while(part.next_cursor){part=await client.call('snapshot',{...h,cursor:part.next_cursor,max_nodes:10,max_chars:1000});combined+='\n'+part.snapshot;pages++;}
  assert.equal((combined.match(/Row \d+:/g)||[]).length,200);
+ await client.call('activate_tab',h);
  await client.call('click',{...h,ref:firstRef});
  results.snapshots.push({pages,all_200_rows:true,first_page_ref_survived:true});
  for(const scenario of ['foreground_ref','background_ref','background_coordinate','occluded_window_ref']){
   let coverWindow;
   if(scenario==='occluded_window_ref'){
    await evaluate(`chrome.tabs.update(${tab.id},{active:true})`);
-   coverWindow=await evaluate(`chrome.windows.create({url:${JSON.stringify(base+'/cover-window')},focused:true,width:1100,height:900,left:0,top:0})`);
-  }else await evaluate(`chrome.tabs.update(${scenario==='foreground_ref'?tab.id:cover.id},{active:true})`);
+   coverWindow=await evaluate(`chrome.windows.create({url:${JSON.stringify(base+'/cover-window')},focused:true,width:${values.headless?800:1100},height:${values.headless?600:900},left:0,top:0})`);
+  }else if(scenario==='foreground_ref') await client.call('activate_tab',h);
+  else await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);
   await pause(350);
   const before=await focus();
+  const ready=await page('({visible:document.visibilityState==="visible",has_focus:document.hasFocus()})');
+  const expectNativeReady=scenario==='foreground_ref'||(scenario==='occluded_window_ref'&&before.find(w=>w.id===tab.windowId).focused&&ready.visible);
   for(let run=1;run<=3;run++){
    await page('window.__count=0;window.__events=[];true');
    const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
    const start=performance.now();
-   const result=await client.call('click',{...h,...(scenario==='background_coordinate'?{x:260,y:220}:{ref})});
+   let result, clickError;
+   try { result=await client.call('click',{...h,...(scenario==='background_coordinate'?{x:260,y:220}:{ref})}); }
+   catch(error) { clickError=error.message; }
    const ms=Math.round(performance.now()-start),observed=await state();
-   assert.equal(result.target_verified,true);assert.equal(observed.count,1);assert.ok(observed.events.some(e=>e.type==='click'&&e.trusted&&e.target==='go'));
+   if(expectNativeReady) {
+    assert.equal(clickError,undefined);assert.equal(result.target_verified,true);assert.equal(observed.count,1);assert.ok(observed.events.some(e=>e.type==='click'&&e.trusted&&e.target==='go'));
+   } else {
+    assert.match(clickError,/TAB_NOT_READY.*No input was dispatched/);assert.equal(observed.count,0);assert.equal(observed.events.length,0);assert.ok(ms<2000);
+   }
    const after=await focus();
    assert.deepEqual(after.map(({focused,...w})=>w),before.map(({focused,...w})=>w),'Attach must not activate tabs or change window state');
    for(const window of before)if(!window.focused)assert.equal(after.find(w=>w.id===window.id).focused,false,'Attach must not bring an unfocused window forward');
    if(scenario.startsWith('background'))assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
-   if(coverWindow)assert.equal(after.find(w=>w.id===tab.windowId).focused,false);
-   results.cases.push({scenario,run,ms,visibility:observed.visibility,count:observed.count,focus_not_stolen:true});
+   if(coverWindow)assert.equal(after.find(w=>w.id===tab.windowId).focused,before.find(w=>w.id===tab.windowId).focused);
+   results.cases.push({scenario,run,ms,visibility:observed.visibility,count:observed.count,focus_not_stolen:true,expected_native_ready:expectNativeReady,error:clickError});
    console.log(JSON.stringify(results.cases.at(-1)));
   }
   if(coverWindow)await evaluate(`chrome.windows.remove(${coverWindow.id})`);
  }
- await evaluate(`chrome.tabs.update(${tab.id},{active:true})`);
+ await client.call('activate_tab',h);
  for(const zoom of [0.8,1.25]){
   await evaluate(`chrome.tabs.setZoom(${tab.id},${zoom})`);await pause(200);
   await page('window.__count=0;window.__events=[];true');

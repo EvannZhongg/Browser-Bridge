@@ -110,6 +110,10 @@ try {
   }
   mcp = new Client({ name: 'live-test', version: '1' });
   await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp }));
+  const tools = (await mcp.listTools()).tools;
+  assert.equal(tools.length, 19);
+  assert.ok(tools.some(tool => tool.name === 'browser_logs'));
+  assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const rawCall = async (method, args = {}) => {
     if (process.env.ATTACH_TEST_VERBOSE) console.error(method, args.ref || '');
     const result = await mcp.callTool({ name: `browser_${method}`, arguments: args });
@@ -126,7 +130,7 @@ try {
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };
   const evaluate = (expression, args = {}) => call('evaluate', { ...handle, expression, ...args });
-  assert.ok(!(await call('console_logs', handle)).entries.some(entry => entry.text === 'attach-before-claim'));
+  assert.ok(!(await call('logs', { ...handle, kind: 'console' })).entries.some(entry => entry.text === 'attach-before-claim'));
   assert.deepEqual((await evaluate('Promise.resolve({title: document.title, answer: 6 * 7})')).value,
     { title: 'Attach upload fixture', answer: 42 });
   const special = await evaluate('(()=>{const result={big:12n};result.self=result;return result})()');
@@ -145,17 +149,40 @@ try {
   assert.equal(all.length, 40); assert.deepEqual(all.map(item => item.i), Array.from({ length: 40 }, (_, i) => i));
   assert.equal((await evaluate('window.pageRuns')).value, 1);
   await evaluate(`(()=>{
-    const button=document.createElement('button');button.id='offscreen';button.textContent='Offscreen target';
+    const button=document.createElement('button');button.id='offscreen';button.innerHTML='<span style="display:block;width:100%;height:100%">Offscreen target</span>';
     button.style='position:absolute;left:20px;top:2200px;width:160px;height:40px';
     button.onclick=()=>window.extraClicks=(window.extraClicks||0)+1;document.body.append(button);
     const text=document.createElement('textarea');text.id='full-text';text.value='all\\nlines\\nhere';document.body.append(text);
   })()`);
   const located = await call('click', { ...handle, selector: '#offscreen' });
-  assert.equal(located.hit_target.tag, 'button'); assert.equal(located.hit_target.text, 'Offscreen target');
+  assert.equal(located.hit_target.tag, 'span'); assert.equal(located.hit_target.text, 'Offscreen target');
   assert.equal(located.hit_target.clickable_hint, true);
+  assert.equal(located.hit_target.clickable_target.tag, 'button');
   await call('click', { ...handle, selector: '//*[@id="offscreen"]', selector_type: 'xpath' });
   await call('click', { ...handle, x: 100, y: 2220, coordinate_space: 'document' });
   assert.equal((await evaluate('window.extraClicks')).value, 3);
+  const readyTree = await call('snapshot', handle);
+  const readyRef = readyTree.snapshot.split('\n').find(line => line.includes('button "Offscreen target"')).match(/\[([^\]]+)\]/)[1];
+  const backgroundCover = await call('open_tab', { browser_id: browserId, url: `${url}?click-cover`, active: true });
+  for (const target of [{ selector: '#offscreen' }, { ref: readyRef }, { x: 100, y: 100 }]) {
+    const start = performance.now();
+    const blocked = await rawCall('click', { ...handle, ...target, timeout_ms: 30000 });
+    assert.equal(blocked.isError, true);
+    assert.match(blocked.content[0].text, /TAB_NOT_READY.*browser_activate_tab.*No input was dispatched/);
+    assert.doesNotMatch(blocked.content[0].text, /unknown/i);
+    assert.ok(performance.now() - start < 2000, 'background click must fail quickly, not consume the input deadline');
+  }
+  assert.equal((await evaluate('window.extraClicks')).value, 3);
+  await call('click', { ...handle, selector: '#offscreen', mode: 'dom' });
+  assert.equal((await evaluate('window.extraClicks')).value, 4);
+  await call('activate_tab', handle);
+  await call('snapshot', handle);
+  assert.equal((await call('click', { ...handle, selector: '#offscreen' })).target_verified, true);
+  assert.equal((await evaluate('window.extraClicks')).value, 5);
+  const listedCover = await until(async () => (await call('list_tabs', { browser_id: browserId })).tabs.find(tab => tab.tab_id === backgroundCover.tab_id && tab.title === 'Attach upload fixture'), 'background click cover');
+  const coverClaim = await call('claim_tab', { browser_id: browserId, tab_id: listedCover.tab_id });
+  await call('close_tab', { tab_handle: coverClaim.tab_handle });
+  checks.push('background native ref/selector/coordinate click fast rejection without effects; explicit DOM and activation recovery; span/button hit hints');
   assert.equal((await rawCall('click', { ...handle, selector: 'button' })).isError, true);
   await call('fill', { ...handle, selector: '#name', mode: 'dom', text: 'selector input' });
   assert.equal((await call('read_text', { ...handle, selector: '#name', mode: 'value' })).text, 'selector input');
@@ -174,29 +201,31 @@ try {
     return true;
   })()`);
   const consoleLogs = await until(async () => {
-    const result = await call('console_logs', handle);
+    const result = await call('logs', { ...handle, kind: 'console' });
     return result.entries.some(entry => entry.text.includes('attach rejection fixture')) && result;
   }, 'console and rejection events');
+  assert.equal(consoleLogs.kind, 'console');
   assert.ok(consoleLogs.entries.some(entry => entry.level === 'warning' && entry.text.includes('attach diagnostic warning')));
   assert.ok(consoleLogs.entries.some(entry => entry.source === 'exception' && entry.text.includes('attach uncaught fixture')));
   const networkLogs = await until(async () => {
-    const result = await call('network_logs', { ...handle, url_contains: '/api/' });
+    const result = await call('logs', { ...handle, kind: 'network', url_contains: '/api/' });
     return result.entries.some(entry => entry.event === 'failed') &&
       result.entries.some(entry => entry.event === 'finished' && entry.url?.endsWith('/api/ok')) && result;
   }, 'network failure');
+  assert.equal(networkLogs.kind, 'network');
   assert.ok(networkLogs.entries.some(entry => entry.event === 'redirect' && entry.status === 302));
   assert.ok(networkLogs.entries.some(entry => entry.event === 'response' && entry.status === 404));
   assert.ok(networkLogs.entries.some(entry => entry.event === 'finished' && entry.url.endsWith('/api/ok')));
-  const firstLog = await call('network_logs', { ...handle, limit: 1 });
+  const firstLog = await call('logs', { ...handle, kind: 'network', limit: 1 });
   assert.equal(firstLog.entries.length, 1);
-  assert.ok((await call('network_logs', { ...handle, after_seq: firstLog.next_seq })).entries.every(entry => entry.seq > firstLog.next_seq));
+  assert.ok((await call('logs', { ...handle, kind: 'network', after_seq: firstLog.next_seq })).entries.every(entry => entry.seq > firstLog.next_seq));
   checks.push('console previews/uncaught error/rejection and network redirect/HTTP error/failure/pagination');
   assert.equal((await rawCall('evaluate', { ...handle, expression: 'alert("evaluation modal")' })).isError, true);
-  assert.ok((await call('console_logs', handle)).entries.length);
+  assert.ok((await call('logs', { ...handle, kind: 'console' })).entries.length);
   await call('handle_dialog', { ...handle, accept: true });
   await call('navigate', { ...handle, url: `${url}?diagnostics-reset` });
-  assert.ok((await call('console_logs', handle)).entries.some(entry => entry.text.includes('attach diagnostic warning')));
-  assert.ok((await call('network_logs', handle)).entries.some(entry => entry.event === 'redirect'));
+  assert.ok((await call('logs', { ...handle, kind: 'console' })).entries.some(entry => entry.text.includes('attach diagnostic warning')));
+  assert.ok((await call('logs', { ...handle, kind: 'network' })).entries.some(entry => entry.event === 'redirect'));
   checks.push('evaluation dialog and diagnostic retention across navigation');
   const snapshot = () => call('snapshot', handle);
   const ref = async label => {
@@ -289,8 +318,8 @@ try {
   await until(async () => (await frameState('child'))?.files.length === 1, 'OOPIF chooser upload');
   await call('click', { ...handle, ref: await childRef('button', 'Nested button') });
   await until(async () => (await frameState('nested'))?.clicks === 1, 'nested OOPIF click');
-  assert.ok((await call('console_logs', handle)).entries.some(e => e.session_id && e.text.includes('child click')));
-  assert.ok((await call('network_logs', handle)).entries.some(e => e.session_id && e.url?.includes('/api/ok')));
+  assert.ok((await call('logs', { ...handle, kind: 'console' })).entries.some(e => e.session_id && e.text.includes('child click')));
+  assert.ok((await call('logs', { ...handle, kind: 'network' })).entries.some(e => e.session_id && e.url?.includes('/api/ok')));
   // External subframe navigation must expire only its subtree, without consuming main refs.
   if (!values.connected) {
     await evaluate(`document.querySelector('iframe').src = 'http://localhost:${fixture.address().port}/frame?reload'`);
@@ -298,6 +327,7 @@ try {
     await evaluate(`setTimeout(()=>document.querySelector('iframe').src += '&again', 500)`);
     const stable = await childRef('button', 'Main frame button');
     await new Promise(resolve => setTimeout(resolve, 800));
+    await call('activate_tab', handle);
     await call('click', { ...handle, ref: stable });
   }
   await evaluate(`(()=>{const cover=document.createElement('button');cover.id='cover';cover.textContent='Cover';cover.style='position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647';cover.onclick=()=>window.coverClicks=(window.coverClicks||0)+1;document.body.append(cover)})()`);
