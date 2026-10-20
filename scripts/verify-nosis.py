@@ -34,7 +34,9 @@ def main():
     from agent_core.media import MAX_IMAGE_BYTES
 
     run_id = uuid.uuid4().hex[:10]
-    work = ROOT / '.local' / 'nosis-validation' / run_id
+    # Run outside the BrowserBridge package tree so npm exec cannot satisfy a
+    # registry package spec using the current source checkout.
+    work = args.nosis_root.resolve() / '.nosis' / 'browser-bridge-validation' / run_id
     work.mkdir(parents=True)
     fixture_text = 'Bridge Nosis local upload 测试\n'
     file = work / '中文 upload.txt'

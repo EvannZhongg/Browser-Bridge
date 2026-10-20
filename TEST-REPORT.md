@@ -1,5 +1,11 @@
 # BrowserBridge 验证报告
 
+**2026-10-20：正式 npm 发布与 Nosis npx 验证**
+
+`@evan_zhong/browser-bridge@0.3.2` 由已推送提交 `8883425` 发布，公开 registry 已提供该版本；tarball SHA-512 与发布产物一致。本机 Nosis 配置备份后改为 `npx.cmd --yes --package=@evan_zhong/browser-bridge@0.3.2 browser-bridge mcp`，保留配对目录和 `approval: always`。
+
+从 Nosis 工作树运行真实 `McpClientManager`，避免 npx 使用 BrowserBridge 当前源码。Chrome / Edge 均发现并调用全部 17 个工具，成功调用分别为 31 / 32 次；截图、上传、原生/DOM 填写、标签管理与错误恢复通过。原始报告记录 npx 启动参数，详见 [Nosis 接入记录](NOSIS-INTEGRATION.md)。这不包含真实模型请求或前端审批交互。
+
 **2026-10-20：0.3.2 原生标签栏标记与点击反馈**
 
 控制状态改为绿色「🤖 被控」原生标签分组，需要 `tabGroups` 权限。移除页面常驻徽标及原先的 3 秒刷新任务；保留原生点击后约 1.2 秒的箭头、光圈，节点随后移除。点击反馈依然在隔离世界中生成，未注册 document-start 脚本，默认截图隐藏反馈，`include_indicators: true` 可保留它。

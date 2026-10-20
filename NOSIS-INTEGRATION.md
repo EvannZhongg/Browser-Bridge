@@ -1,5 +1,30 @@
 # Nosis 接入诊断与工具数据传递分析
 
+**2026-10-20：0.3.2 registry / npx 实测**
+
+正式包名为 [`@evan_zhong/browser-bridge`](https://www.npmjs.com/package/@evan_zhong/browser-bridge)，版本 `0.3.2`，发布对应 Git 提交 `8883425aee0ebaa60ba4ebe1141b43fd5667e1cf`。公开 registry 已返回该版本，tarball 完整性与本地发布产物一致。发布后短暂出现处理中的占位版本，因此以公开 registry 能实际读取 `0.3.2`、并能在仓库外安装为准。
+
+当前本机 Nosis 通过 `agent_runtime.config.default_config_directory()` 使用用户目录 `~/.nosis/agent_config.json`，其 `mcp.servers.browser_bridge` 已备份并切换为：
+
+```json
+{
+  "command": "npx.cmd",
+  "args": ["--yes", "--package=@evan_zhong/browser-bridge@0.3.2", "browser-bridge", "mcp"],
+  "env": {"BROWSER_BRIDGE_HOME": "F:\\BrowserBridge\\.local\\runtime"},
+  "startup_timeout_seconds": 60,
+  "call_timeout_seconds": 60,
+  "tools": {"approval": "always"}
+}
+```
+
+这是本机 Windows 配置；通用配置使用 `npx`，不硬编码配对目录。原配对目录、审批策略及其他服务器配置保持不变，首次 npx 下载的启动预算设为 60 秒。Chrome / Edge 扩展与 Hub 均为 `0.3.2`。
+
+`scripts/verify-nosis.py` 使用 `F:/Nosis` 自己的 Python 与当前 `McpClientManager`，从 Nosis 工作树的忽略目录创建测试 workspace，避免 `npm exec` 从 BrowserBridge 源码目录满足包名而造成假通过。已确认命令优先解析至 npm `_npx` 缓存中的 bin。Chrome / Edge 分别完成 31 / 32 次成功工具调用，覆盖全部 17 个工具，并验证原生/DOM 填写、上传、标签新建/激活/关闭、截图附件及 Provider image_url、错误后继续使用连接。模态动作和失效句柄的三项错误是预期的负向用例。
+
+原始结果位于忽略目录 `test-results/nosis-contract-chrome.json`、`nosis-contract-edge.json`，包含真实 npx 启动参数。本轮大文本样本没有复现以下历史记录中的 Artifact 分页限制；不据此推断其他大结果都已解决。没有调用真实模型 API，也未替代 Nosis 前端审批测试。Nosis 源码和默认配置模板未修改。
+
+**以下为 0.3.0 的历史诊断记录**
+
 日期：2026-10-20。Bridge 当前版本 0.3.0。Nosis 工作区正在将共享 Broker 改为 Core 的 McpClientManager；本轮配置和可选验证脚本直接对齐当前源码，没有加入旧接口兼容，也没有改动 Nosis 源码。
 
 **连接配置**
