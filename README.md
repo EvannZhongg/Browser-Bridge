@@ -4,6 +4,10 @@
 
 # BrowserAttach
 
+<p align="center">
+  <strong>简体中文</strong> · <a href="README.en.md">English</a>
+</p>
+
 让 MCP 客户端操作你已经打开、已经登录的 Chrome / Edge 标签页。BrowserAttach 通过本机配对扩展连接浏览器，保留现有登录状态，不需要启动远程调试端口或单独的自动化浏览器。
 
 [npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [使用指南](docs/USAGE.md) · [架构与设计](docs/ARCHITECTURE.md) · [验证报告](docs/TEST-REPORT.md) · [问题反馈](https://github.com/EvannZhongg/BrowserAttach/issues) · [贡献指南](CONTRIBUTING.md)
