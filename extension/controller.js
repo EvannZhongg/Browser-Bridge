@@ -12,6 +12,7 @@ import { createDiagnostics } from './diagnostics.js';
 import { createSessions } from './sessions.js';
 import { NAVIGATION_OBSERVATION_TIMEOUT_MS } from './limits.js';
 import { deadline } from './actionability.js';
+import { validateSteps } from './batch.js';
 
 export function createController(api, notify = () => {}) {
   const claims = new Map();
@@ -294,6 +295,24 @@ export function createController(api, notify = () => {}) {
       if (command !== 'release_tab') throw new Error('A JavaScript dialog is open. Observe browser_snapshot and use browser_handle_dialog.');
     }
     if (command === 'snapshot') return await snapshot(tabId, args);
+    if (command === 'batch') {
+      validateSteps(args.steps);
+      const budget = deadline(args.timeout_ms ?? 15000), results = [];
+      const claim = claims.get(tabId), documentVersion = documents.get(tabId);
+      for (const [index, step] of args.steps.entries()) {
+        try {
+          if (claims.get(tabId) !== claim) throw new Error('Tab control ended during batch; observe before continuing');
+          if (documents.get(tabId) !== documentVersion) throw new Error('Document changed during batch; observe before continuing');
+          httpUrl((await budget.run(() => api.tabs.get(tabId))).url);
+          const { action: command, ...inputArgs } = step;
+          results.push(await action(tabId, command, { ...inputArgs, budget }));
+        } catch (error) {
+          return { completed: false, results, failed_step: index, error: error.message,
+            application_result: 'not_checked', observe_again: true };
+        }
+      }
+      return { completed: true, results, application_result: 'not_checked', observe_again: true };
+    }
     if (command === 'evaluate') {
       if (args.cursor == null) snapshots.delete(tabId);
       return await evaluations.read(tabId, args);
@@ -356,9 +375,9 @@ export function createController(api, notify = () => {}) {
     if (command === 'click' || command === 'fill') inputMode(args);
     if (command === 'click' || command === 'fill') targetOptions(args, { coordinates: command === 'click' && inputMode(args) !== 'dom' });
     if (command === 'click') clickOptions(args);
-    if (['click', 'fill', 'press_key', 'scroll'].includes(command)) args = { ...args, budget: deadline(args.timeout_ms) };
+    if (['click', 'fill', 'press_key', 'scroll'].includes(command)) args = { ...args, budget: args.budget || deadline(args.timeout_ms) };
     // Check before any renderer preparation or ref invalidation. A rejected
-    // background native click is known not to have dispatched, unlike a lost
+    // inactive native click is known not to have dispatched, unlike a lost
     // receipt after input. DOM mode remains an explicit separate operation.
     if (command === 'click' && inputMode(args) === 'native') await mouse.assertReady(tabId, args.budget);
     // Reusable selectors permit many actions without a snapshot. Release the
@@ -525,6 +544,9 @@ export function createController(api, notify = () => {}) {
       if (command === 'release_tab') return await action(tabId, command, args);
       httpUrl((await api.tabs.get(tabId)).url);
       const result = await action(tabId, command, args);
+      // A batch can stop because its tab closed. Preserve the partial results
+      // instead of losing them to a metadata lookup on the vanished tab.
+      if (command === 'batch') return { ...result, tab_id: tabId };
       const tab = await api.tabs.get(tabId);
       const chooser = fileChoosers.get(tabId);
       return { ...result, ...(chooser ? { file_chooser: { pending: true, mode: chooser.mode, frame_id: chooser.frame_id,

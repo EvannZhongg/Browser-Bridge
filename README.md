@@ -14,7 +14,7 @@
 - 读取可访问性树、字段值和支持的编辑器模型，通过当前快照引用或严格 CSS/XPath 定位点击与填写。
 - 导航、打开或关闭标签页，处理 JavaScript 对话框，上传本机文件并截图。
 - 在主页面执行 JavaScript 表达式，读取接管后的控制台、页面异常和网络生命周期日志。
-- 使用标准 stdio MCP，共提供 19 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
+- 使用标准 stdio MCP，共提供 20 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
 
 ## 环境要求
 
@@ -41,7 +41,7 @@ browser-attach setup
 也可以不全局安装：
 
 ```sh
-npx --yes --package=@evan_zhong/browser-attach@0.7.0 browser-attach setup
+npx --yes --package=@evan_zhong/browser-attach@0.8.0 browser-attach setup
 ```
 
 ### 2. 配置 MCP 客户端
@@ -53,7 +53,7 @@ npx --yes --package=@evan_zhong/browser-attach@0.7.0 browser-attach setup
   "mcpServers": {
     "browser_attach": {
       "command": "npx",
-      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.7.0", "browser-attach", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.8.0", "browser-attach", "mcp"]
     }
   }
 }
@@ -83,6 +83,7 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 | `browser_open_tab` / `browser_activate_tab` / `browser_close_tab` | 显式管理标签页 |
 | `browser_snapshot` / `browser_read_text` | AX 快照、元素引用和正文 |
 | `browser_click` / `browser_fill` / `browser_press_key` / `browser_scroll` | 页面输入 |
+| `browser_batch` | 单队列顺序执行 1–20 步 click/fill/press_key，失败即停并返回部分结果 |
 | `browser_navigate` | HTTP(S) 导航与加载等待 |
 | `browser_handle_dialog` | alert、confirm、prompt |
 | `browser_upload_file` | 原生文件 input 或拦截的文件选择器 |

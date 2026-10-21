@@ -14,14 +14,14 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
           const tab = await getTab(tabId);
           if (!tab.active || tab.discarded || tab.frozen) throw new Error(`tab not active or renderer suspended (active=${tab.active}, discarded=${!!tab.discarded}, frozen=${!!tab.frozen})`);
           const window = await getWindow(tab.windowId);
-          if (!window.focused || window.state === 'minimized') throw new Error(`browser window not focused/renderable (focused=${window.focused}, state=${window.state})`);
+          if (window.state === 'minimized') throw new Error('browser window is minimized');
           const state = value(await cdp(tabId, 'Runtime.evaluate', {
             expression: '({visibility_state: document.visibilityState, has_focus: document.hasFocus()})', returnByValue: true,
           }));
-          if (state?.visibility_state !== 'visible' || typeof state.has_focus !== 'boolean') throw new Error(`page not visible or readiness unavailable (visibility_state=${state?.visibility_state}, has_focus=${state?.has_focus})`);
-          // hasFocus can be false after a focused iframe navigates, even in an
-          // active visible page which accepts native mouse input. Report it,
-          // but use the browser window's focus as the precondition.
+          if (typeof state?.visibility_state !== 'string' || typeof state.has_focus !== 'boolean') throw new Error('page readiness unavailable');
+          // Occlusion can make an active renderer report hidden without
+          // preventing CDP input. Focus/visibility are diagnostics; the isolated
+          // event guard below verifies delivery to the intended element.
           return { ...state, window_focused: window.focused };
         })(),
         new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(`readiness check did not respond within ${timeout} ms`)), timeout); }),
@@ -93,10 +93,24 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       target = child; view = childView;
       hitNode = await send('DOM.getNodeForLocation', { x: Math.floor(point.x + view.scroll_x), y: Math.floor(point.y + view.scroll_y), includeUserAgentShadowDOM: true });
     }
-    const { backendNodeId, frameId } = hitNode;
-    const hit = await send('DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
+    let { backendNodeId } = hitNode;
+    const { frameId } = hitNode;
+    let hit = await send('DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
+    const pseudo = hit.object.className === 'CSSPseudoElement';
+    if (pseudo) {
+      // Pseudo-elements are event targets through their originating element,
+      // but their Runtime wrappers are not Elements and have no matches().
+      const normalized = await send('Runtime.callFunctionOn', { objectId: hit.object.objectId,
+        functionDeclaration: 'function() { if (this.element?.nodeType !== 1) throw new Error("Pseudo-element has no originating element; no input was dispatched."); return this.element; }', objectGroup: 'browser-attach' });
+      value(normalized);
+      if (!normalized.result?.objectId) throw new Error('Pseudo-element could not be resolved; no input was dispatched.');
+      hit = { object: normalized.result };
+      const { node: origin } = await send('DOM.describeNode', { objectId: hit.object.objectId });
+      backendNodeId = origin.backendNodeId;
+    }
     const hitTarget = value(await send('Runtime.callFunctionOn', { objectId: hit.object.objectId,
       functionDeclaration: describeHit.toString(), returnByValue: true }));
+    if (pseudo) hitTarget.pseudo_element = true;
     if (node) {
       const unblocked = value(await send('Runtime.callFunctionOn', {
         objectId: node.objectId, functionDeclaration: 'function(hit) { for (let e = hit; e; e = e.parentNode || e.host) if (e === this) return true; return false; }',

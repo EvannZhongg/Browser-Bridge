@@ -39,6 +39,7 @@ async function fixture(t, options) {
       if (data.command === 'open_tab') result = { opened: true, tab_id: 11, active: data.arguments.active ?? false };
       if (data.command === 'release_owner') released.add(data.owner);
       if (data.command === 'snapshot') result = { snapshot: '[s1:1] button "Test"' };
+      if (data.command === 'batch') result = { completed: false, results: [{ value_verified: true }], failed_step: 1, error: 'Outcome is unknown' };
       if (data.command === 'screenshot') result = { data: PNG, capture: { css_width: 1, css_height: 1,
         image_origin_css: { x: 0, y: 0 }, viewport: { scroll_x: 0, scroll_y: 0 } } };
       ws.send(JSON.stringify({ id: data.id, result }));
@@ -135,7 +136,7 @@ test('unknown outcome disconnects the client and releases its claims without rep
   assert.equal(f.requests.filter(item => item.command === 'read_text').length, 1);
 });
 
-test('real stdio MCP exposes 19 tools including unified logs, single JSON content, PNG image, and validated upload', async t => {
+test('real stdio MCP exposes 20 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
   const f = await fixture(t), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
@@ -145,7 +146,7 @@ test('real stdio MCP exposes 19 tools including unified logs, single JSON conten
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 19);
+  assert.equal(tools.length, 20);
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const logSchema = tools.find(tool => tool.name === 'browser_logs').inputSchema;
   assert.deepEqual(logSchema.properties.kind.enum, ['console', 'network']);
@@ -165,6 +166,15 @@ test('real stdio MCP exposes 19 tools including unified logs, single JSON conten
   await call('list_tabs', { browser_id: browser.id });
   const result = await call('claim_tab', { browser_id: browser.id, tab_id: 9, expected_title: 'Demo', expected_url: f.tabs[0].url });
   const handle = JSON.parse(result.content[0].text).tab_handle;
+  for (const nth of [-1, 0.5]) assert.equal((await call('fill', { tab_handle: handle, selector: 'input', nth, text: 'x' })).isError, true);
+  assert.equal((await call('fill', { tab_handle: handle, ref: 'a', nth: 1, text: 'x' })).isError, true);
+  const batch = await call('batch', { tab_handle: handle, steps: [{ action: 'fill', selector: 'input', nth: 1, text: 'x' }, { action: 'press_key', key: 'Tab' }] });
+  assert.equal(batch.isError, true); assert.equal(JSON.parse(batch.content[0].text).failed_step, 1);
+  const batchCount = f.requests.filter(r => r.command === 'batch').length;
+  for (const steps of [[], [{ action: 'fill', ref: 'old', text: 'x' }], [{ action: 'evaluate', expression: '1' }], Array(21).fill({ action: 'press_key', key: 'Tab' })]) {
+    assert.equal((await call('batch', { tab_handle: handle, steps })).isError, true);
+  }
+  assert.equal(f.requests.filter(r => r.command === 'batch').length, batchCount);
   for (const [name, query] of [['evaluate', { expression: 'document.title' }], ['logs', { kind: 'console' }], ['logs', { kind: 'network' }]]) {
     const args = { tab_handle: handle, ...query };
     assert.ok(!(await call(name, args)).isError);

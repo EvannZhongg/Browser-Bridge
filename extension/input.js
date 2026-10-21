@@ -111,7 +111,7 @@ export function createInput(cdp, value, sessions) {
     const matches = value(await send('Runtime.callFunctionOn', { objectId: node.objectId, returnByValue: true,
       functionDeclaration: verifyFill.toString(), arguments: [{ value: args.text }] }));
     if (matches !== true) throw new Error(`Fill did not retain the requested text. Input may have been swallowed, focus may have moved, or the page may have reformatted it. Outcome is unknown. ${BUSY}`);
-    return { filled: true, method: mode, value_verified: true, ...(mode === 'dom' ? { events_trusted: false } : {}), observe_again: true };
+    return { filled: true, method: mode, value_verified: true, ...(mode === 'dom' ? { events_trusted: false } : {}), application_result: 'not_checked', observe_again: true };
   }
 
   async function domClick(tabId, node, args) {

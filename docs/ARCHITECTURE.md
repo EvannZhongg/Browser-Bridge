@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.7.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.8.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -20,10 +20,11 @@ MCP 客户端
 | `src/setup.mjs` | 生成配对密钥、复制稳定扩展目录、写 Nosis 配置 |
 | `src/hub.mjs` | 浏览器与会话注册、独占 claim、每标签串行队列、超时 |
 | `src/client.mjs` | MCP 进程到 Hub 的 WebSocket 客户端，按需拉起 Hub |
-| `src/mcp.mjs` | 19 个工具的 schema、结果与图片封装 |
+| `src/mcp.mjs` | 20 个工具的 schema、结果与图片封装 |
 | `extension/controller.js` | 操作实现；传输层从不暴露原始 CDP |
 | `extension/sessions.js` | 扁平 debugger session 与 frame/OOPIF 归属 |
 | `extension/{click,input,actionability}.js` | 原生/DOM 输入、可操作性等待与送达校验 |
+| `extension/batch.js` | 有限输入序列的参数预检；执行复用 controller 的单步流程与标签队列 |
 | `extension/{snapshot,navigation,evaluate,diagnostics}.js` | 观察、导航、有界求值结果缓存与分页、日志缓冲 |
 | `extension/{locator,text}.js` | 严格 CSS/XPath 定位、DOM/字段/支持的编辑器模型读取 |
 | `extension/visuals.js`、`click-visuals.js` | 无标题红色原生标签组、临时点击反馈 |
@@ -51,7 +52,7 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 
 ## 观察模型
 
-- **AX 渲染**：从 `Accessibility.getFullAXTree` 读取，移除 `InlineTextBox`，合并纯文本列表项与段落名称，丢弃 `generic` / `none` 且无名称无状态的节点，只保留少量状态属性。每行 `[token:n] role "name"`，`token` 是本次观察的随机前缀。
+- **AX 渲染**：从 `Accessibility.getFullAXTree` 读取，移除 `InlineTextBox`，合并纯文本列表项与段落名称，丢弃 `generic` / `none` 且无名称无状态的节点，只保留少量状态属性和浏览器提供的 value、invalid。每行 `[token:n] role "name"`，`token` 是本次观察的随机前缀；这些字段不证明应用已保存。
 - **ref 解析**：ref 只保存 `backendNodeId` 与所属 frame/session；动作时重新 `DOM.resolveNode`。因此 ref 在文档或 frame 变化后自然失效，不会误点到重新排布后的同名元素。
 - **双预算**：`max_nodes` 限制节点数，`max_chars` 限制每行序列化后的累计字符数；两者独立，任一耗尽都会返回 `next_cursor`。
 - **续读**：续读沿用同一份 `state`（`entries`、`refs`、`nextOffset`），所以 refs 在分页过程中保持有效。单个节点放不进预算时直接报错要求提高预算，避免静默截断尾部。
@@ -70,10 +71,11 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 ```
 
 - **只重试准备**：等待阶段可以反复轮询，但一旦派发就不再重试。超时分为"未派发"和"已派发、结果未知"两种错误文本。
-- **原生点击就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求活动、可见、未暂停的 tab 与已聚焦且未最小化的窗口。不满足时以 TAB_NOT_READY 明确报告未派发，并提示 activate_tab → snapshot → click。click 不主动激活；仅显式 activate_tab 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
-- **焦点信号边界**：document.hasFocus() 在 iframe 导航后可能为 false，不能单独用作不可交互证据。窗口焦点由 browser API 确认，页面焦点作为 page_state 诊断。前置条件采用保守策略，会拒绝部分原先可成功的后台点击；不是试图用状态检查证明派发后的结果。
-- **命中提示**：保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。语义候选不会被用于替换点击目标。
-- **送达不等于业务完成**：`target_verified` / `delivery_verified` / `value_verified` 分别证明可信事件命中、keydown 送达、字段文本写入；点击与按键另返回 `application_result: "not_checked"`，`fill` 只表示写入校验通过。
+- **原生点击就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求活动、未暂停的 tab 与未最小化的窗口。不满足时以 TAB_NOT_READY 明确报告当前点击未派发，并提示 activate_tab → snapshot → click。click 不主动激活；仅显式 activate_tab 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
+- **焦点信号边界**：OS 窗口失焦、遮挡或 document.visibilityState=hidden 不一定阻止 CDP 输入；document.hasFocus() 在 iframe 导航后也可能为 false。这些值作为 page_state 诊断，不独立拒绝点击。实际送达仍由隔离世界的可信事件回执校验；没有回执时不自动重放。
+- **命中提示**：普通命中保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。CSSPseudoElement 先解析为事件所属的 originating element，提示标记 pseudo_element=true，并使用该元素安装事件校验。语义候选不会被用于替换点击目标。
+- **送达不等于业务完成**：`target_verified` / `delivery_verified` / `value_verified` 分别证明可信事件命中、keydown 送达、字段文本写入；点击、按键、fill 和 batch 返回 `application_result: "not_checked"`。fill 不证明 React 状态、选项提交、blur 校验或保存完成。
+- **有限多步输入**：batch 在现有标签队列内执行 1–20 步 click/fill/press_key，共享至多 30 秒预算；不增加后台任务、循环、脚本引擎或保留旧 refs。所有参数先验证，selector 每步重解析，尚未出现的目标只在准备阶段等待；歧义立即报错。首个失败、主文档变化或接管结束后停止，返回此前结果与失败索引；不回滚、不重放、不自动激活或切换输入模式。
 - **OOPIF 坐标**：点击从顶层派发。逐层用 `DOM.getBoxModel` 把坐标换算到祖先文档，并用 `DOM.getNodeForLocation` 确认该位置确实落在 frame owner 上，防止祖先页面的遮挡被跳过。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
 - **不做通用 CDP 透传**：`browser_evaluate` 是页面表达式 API，不是 CDP 通道；没有暴露任意 domain/method 的工具。
@@ -99,7 +101,7 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 
 | 能力 | 决策 | 原因 |
 |---|---|---|
-| 定位方式 | AX ref + 独立严格 CSS/XPath selector | ref 保持观察身份，selector 每次重解析；不从旧快照猜测同名目标，不加入旧 ref 兼容层 |
+| 定位方式 | AX ref + CSS/XPath selector，可显式 nth | ref 保持观察身份，selector 每次重解析；省略 nth 仍严格要求唯一；索引是调用者明确选择，不猜测同名目标 |
 | 动作重试 | 只重试派发前的准备 | 网页操作可能提交真实数据，重复派发不可接受 |
 | DOM 模式 | 需要显式 `mode: "dom"` | 非可信事件、无用户激活，不能当作原生输入的透明替代 |
 | hover / drag | 未提供 | 需求明确前不为每种鼠标事件增加工具；可用 `evaluate` 或原生点击覆盖部分场景 |

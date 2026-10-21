@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.7.0**：Node.js 22+、Chrome / Edge 125+、19 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.8.0**：Node.js 22+、Chrome / Edge 125+、20 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -43,6 +43,7 @@
 | `browser_click` | `ref` / `selector` / `x`+`y`、`coordinate_space`、`button`、`click_count`、`modifiers`、`mode`、`timeout_ms` | 原生可信点击或显式 DOM 点击 |
 | `browser_fill` | `ref` / `selector`, `text`, `mode`, `timeout_ms` | 文本 / textarea / contenteditable，写入后核验文本 |
 | `browser_press_key` | `key`, `timeout_ms` | 单键或组合键，核验可信 keydown 送达 |
+| `browser_batch` | `steps`, `timeout_ms=15000` | 单队列内顺序执行 1–20 步 click/fill/press_key，失败即停并返回部分结果 |
 | `browser_scroll` | `delta_y`, `delta_x`, `x`, `y`, `mode`, `timeout_ms` | 容器 `scrollBy` 或原生 wheel |
 
 ### 页面、文件与诊断
@@ -62,7 +63,7 @@
 
 `browser_snapshot` 返回 `snapshot` 文本（每行 `[token:n] role "name" 状态`）、`snapshot_id`、`node_count`、`total_node_count`、`truncated`、`truncation_reason`（`node_limit` / `text_budget`）、`next_cursor`、`viewport`、`omitted_frames`，以及当前 `title` / `url`。
 
-- 渲染时移除 `InlineTextBox`，合并纯文本列表项与段落名称，只保留 `disabled`、`focused`、`expanded`、`checked`、`selected`、`required`、`level` 等状态；`[token:n]` 即后续动作使用的 `ref`。
+- 渲染时移除 `InlineTextBox`，合并纯文本列表项与段落名称，保留 `disabled`、`focused`、`expanded`、`checked`、`selected`、`required`、`invalid`、`level` 等状态，以及浏览器提供的 `value`；`[token:n]` 即后续动作使用的 `ref`。未提供 invalid/selected 等属性不代表有效或已提交；value 也可能只是下拉框的过滤文本。
 - `max_nodes` 为 1–3000（默认 600）；`max_chars` 为 1–2000000（默认 24000），按行序列化长度累计，与节点数是两个独立预算。
 - `truncated: true` 时把 `next_cursor` 传回同一个工具继续读取同一份观察，refs 在续读期间保持有效；也可以调整预算。单个超长节点放不下时会明确报出所需预算，不静默丢尾部。
 - 覆盖主 frame、同进程 iframe 与递归 OOPIF；读取失败、读取期间变化或附着失败的 frame 列入 `omitted_frames`。
@@ -90,7 +91,8 @@
 | 参数 | 取值 | 说明 |
 |---|---|---|
 | `ref` / `selector` / `x`,`y` | 三选一 | ref 来自最新快照；selector 每次重解析 |
-| `selector_type` / `frame_id` | `css`（默认）或 `xpath` / 快照中的 frame ID | 仅 selector 使用；默认主 frame，必须恰好匹配一个元素 |
+| `selector_type` / `frame_id` | `css`（默认）或 `xpath` / 快照中的 frame ID | 仅 selector 使用；默认主 frame |
+| `nth` | 从 0 开始的整数 | 仅 selector 使用；显式选择当前匹配的第 N 项，省略则要求唯一 |
 | `coordinate_space` | `viewport`（默认）/ `document` | 仅坐标点击使用；document 自动滚动顶层文档后换算到视口 |
 | `button` | `left`（默认）/ `middle` / `right` | |
 | `click_count` | `1`（默认）/ `2` | 双击按顺序重复 down/up |
@@ -99,15 +101,17 @@
 
 原生模式按序派发 move → down → up，显式设置 `buttons` 与修饰键，并在隔离世界安装命中校验：成功返回 `target_verified: true`、`application_result: "not_checked"`。左键单击 / 双击分别校验 `click` / `dblclick`，中键校验 `auxclick`，右键校验 `contextmenu`。目标被遮挡、在 hover 后移动或派发中变化时会明确报错并阻止不匹配事件；已送达的前序事件可能已有副作用，不能撤销或自动重试。
 
-原生 click 在准备前、派发前分别检查顶层 tab 的 active/discarded/frozen、窗口 focused/minimized、`document.visibilityState` 和 `document.hasFocus()`；每次检查最多 500 ms，且受总输入截止时间限制。后台、不可见、暂停或窗口未聚焦时快速返回 `TAB_NOT_READY` 和 `No input was dispatched`，不等待完整的点击回执超时，也不自动调用 bringToFront。按错误提示调用 `browser_activate_tab`（默认 focus_window=true），重新 snapshot 后再 click；若系统不允许程序切换焦点，需要手动恢复/聚焦浏览器窗口。
+原生 click 在准备前、派发前分别检查顶层 tab 的 active/discarded/frozen、窗口是否最小化，并读取 `document.visibilityState` 和 `document.hasFocus()`；每次检查最多 500 ms，且受总输入截止时间限制。未选中的标签、暂停的页面或最小化窗口快速返回 `TAB_NOT_READY` 和 `No input was dispatched`，不自动调用 bringToFront。可显式调用 `browser_activate_tab`（默认 focus_window=true），重新 snapshot 后再 click。
 
-`hasFocus()` 仅作为诊断信息：聚焦的 iframe 导航后，主页面可能仍可交互但返回 false，因此不能单独以此拒绝。窗口焦点使用浏览器 API 确认，成功结果的 `page_state` 包含 visibility_state、has_focus、window_focused。此处采用保守前置条件，不再承诺原生后台点击；部分 Chromium 环境原本能接收后台输入，也会被提前拒绝。显式 DOM 模式仍可用于响应正常的后台 HTML 控件，且不会自动从原生模式降级。
+成功结果的 `page_state` 包含 visibility_state、has_focus、window_focused。这些信号仅作诊断：活动标签所在窗口即使未处于 OS 前台，或者因遮挡报告 hidden，仍可尝试一次原生点击，并验证可信事件送达。不能据此保证任意后台页面都能交互；没有可信回执时仍报告未知结果，不重放、不自动切换 DOM 模式。
 
 原生 ref/selector 点击已自动滚入视口；viewport 坐标保留严格视口边界。document 坐标针对顶层文档，嵌套滚动容器和动态布局优先用 selector/ref。`hit_target` 返回实际命中的 tag、最多 300 字符 text、role、disabled、clickable_hint，并由 clickable_target 给出最近的可点击候选祖先（含自身）的 tag/role/text。查找跨越 Shadow host 和 slot，例如 span 在 button 内时保留 tag=span，同时返回 clickable_hint=true、clickable_target.tag=button；disabled 同时观察祖先的禁用/inert/aria-disabled 状态。
 
 hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证明元素不可点击，也不能覆盖所有事件代理。它不会替换真正的鼠标命中节点或改变派发目标。坐标点击无法推断调用者的业务意图，DOM/网络变化也不能证明业务成功，需按具体任务观察。
 
-`selector` 可复用，但不是永久元素身份。每次解析使用当前 DOM，零个或多个匹配会报错；解析后目标被替换仍会安全失败，不自动重放。CSS/XPath 不穿透 Shadow DOM，那里继续使用 AX ref；iframe 用明确 `frame_id`。例如 `browser_click({tab_handle, selector:"#save"})` 或 `browser_fill({tab_handle, selector:"//input[@name='title']", selector_type:"xpath", text:"新标题", mode:"dom"})`。
+`selector` 可复用，但不是永久元素身份。输入准备阶段会等待匹配出现，受同一 timeout_ms 限制；省略 nth 时多个匹配立即报错。显式 nth 按当前文档顺序选择，尚未出现该索引时等待；行顺序变化后须重新确认目标。解析后元素被替换会安全失败，不自动重放。CSS/XPath 不穿透 Shadow DOM，那里继续使用 AX ref；iframe 用明确 `frame_id`。例如 `browser_fill({tab_handle, selector:'input[placeholder="公司名称"]', nth:1, text:"第二段经历", mode:"native"})`；XPath 同样支持 nth。
+
+坐标命中 CSS 伪元素时，以其 originating element 做描述和事件校验，`hit_target.pseudo_element=true`。截图坐标仍按截图元数据换算；优先用 ref/selector 避免布局漂移。
 
 `mode: "dom"` 只对 HTML 元素调用一次 `HTMLElement.click()`，返回 `method: "dom"`、`events_trusted: false`：没有 pointer 事件、没有用户激活，也不支持修饰键或坐标。自绘控件、拖拽、依赖 pointerdown 的功能仍需原生输入。两种模式都不会自动互相降级。
 
@@ -119,8 +123,23 @@ hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证�
 
 - `native`（默认）：聚焦、选中后发送原生 `insertText`。
 - `dom`：用原型上的原生 value setter（contenteditable 用 `textContent`）写入，派发非可信 `input` / `change`，不主动聚焦；可通知 React/Vue 受控字段，不能保证所有自定义编辑器的内部状态。
-- 两种模式都核对字段最终文本，成功返回 `value_verified: true`；被吞、失焦或页面同步格式化导致不匹配时报错，且不回显字段内容。
-- 不会按 Enter；需要提交时单独调用 `browser_press_key`。
+- 两种模式都核对字段最终文本，成功返回 `value_verified: true`、`application_result: "not_checked"`；被吞、失焦或页面同步格式化导致不匹配时报错，且不回显字段内容。这不证明框架状态、选项提交、后续重渲染保留或业务保存。
+- 不会自动 blur 或按 Enter。需要失焦校验时显式 press_key Tab 或点击其他明确目标；自定义年/月/城市选择器输入通常只是过滤，还需点击具体选项。Enter 的语义由站点决定。校验文案可能滞后，应同时观察选中项和字段值；添加行前先确认已提交选项，不能只看输入框里的文本。
+
+### browser_batch
+
+同一 tab_handle 内一次传入 1–20 个明确步骤，action 仅支持 click/fill/press_key；click/fill 必须使用 selector，可带 selector_type、frame_id、nth 和 mode（默认 native）。click 还支持 button/click_count/modifiers。不能使用 refs 或坐标；不会跨输入保留旧元素身份。
+
+```json
+{"tab_handle":"...","steps":[
+  {"action":"fill","selector":"input[placeholder=公司名称]","nth":1,"text":"公司名称"},
+  {"action":"press_key","key":"Tab"}
+]}
+```
+
+timeout_ms 默认 15000，范围 100–30000，是整批准备、派发和校验的总预算。所有参数先预检，每一步复用原有输入流程，尚未渲染的选项可在准备阶段等待；不会自动猜选项或增加交互。步骤间不插入其他同标签命令。成功返回 completed=true、results；首个失败返回 MCP isError=true 以及 completed=false、results（此前完成结果）、failed_step（从 0 开始）、error。发生主文档变化、断开接管或弹窗也会停止。整批不具备事务或回滚语义，不要重放已完成步骤；失败步骤可能已产生副作用，先观察。
+
+用 batch 合并已知的“打开 → 原生输入过滤 → 点击具体选项”路径；不确定下一目标时先结束本批，snapshot/evaluate 观察后再继续。evaluate 中的 JavaScript 不能制造可信输入事件。
 
 ### browser_press_key
 

@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8"><title>Attach issue probe</title>
+<style>
+body { margin:40px; font:16px sans-serif } input,button { margin:6px; padding:8px }
+#previous { position:relative; margin-left:80px }
+#previous::before { content:'«'; position:absolute; left:-30px; top:0; width:30px; height:100%; display:grid; place-items:center; background:#ddd }
+.menu { max-height:140px; overflow:auto } .menu button { display:block }
+</style>
+<div id="root"></div><script src="/react.js"></script><script src="/react-dom.js"></script>
+<script>
+const h=React.createElement;
+window.formEvents=[];
+function App(){
+ const [rows,setRows]=React.useState([{company:''}]),[generation,remount]=React.useState(0);
+ const [error,setError]=React.useState('必填项未填写');
+ const [year,setYear]=React.useState(null),[month,setMonth]=React.useState(null);
+ const [open,setOpen]=React.useState(null),[filter,setFilter]=React.useState(''),[options,setOptions]=React.useState(false);
+ const [previous,setPrevious]=React.useState(0);
+ React.useEffect(()=>{
+  if(!open){setOptions(false);return}
+  // Rendering the options asynchronously exercises selector preparation waits.
+  const timer=setTimeout(()=>setOptions(true),60);return ()=>clearTimeout(timer);
+ },[open]);
+ window.formState={rows,year,month,previous};
+ const choose=(kind,value)=>{
+  if(kind==='year'){setYear(value);setMonth(1)}else setMonth(value);
+  setOpen(null);setFilter('');
+ };
+ const selector=kind=>h('div',{},
+  h('input',{id:kind,placeholder:kind==='year'?'年':'月',value:open===kind?filter:String((kind==='year'?year:month)??''),
+   onClick:()=>{setOpen(open===kind?null:kind);setFilter('')},onChange:e=>setFilter(e.target.value),
+   onKeyDown:e=>{if(e.key==='Enter'){setOpen(null);setMonth(1)}}}),
+  open===kind&&options?h('div',{className:'menu'},
+   (kind==='year'?Array.from({length:201},(_,i)=>2126-i):Array.from({length:12},(_,i)=>i+1))
+    .filter(value=>String(value).includes(filter)).map(value=>h('button',{key:value,type:'button',className:kind+'-option','data-value':value,onClick:()=>choose(kind,value)},value))):null);
+ return h('div',{},h('div',{key:generation},rows.map((row,index)=>h('input',{key:index,placeholder:'公司名称',value:row.company,
+  onChange:e=>{const value=e.target.value;window.formEvents.push({trusted:e.nativeEvent.isTrusted,type:e.type});setRows(old=>old.map((r,i)=>i===index?{company:value}:r))},
+  onBlur:()=>{window.formEvents.push({type:'blur'});setError('')}}))),
+  h('span',{id:'error'},error),h('button',{id:'add',onClick:()=>{setRows(old=>[...old,{company:''}]);remount(old=>old+1)}},'+添加'),
+  selector('year'),selector('month'),h('button',{id:'previous',onClick:()=>setPrevious(old=>old+1)},'上一页'));
+}
+ReactDOM.createRoot(document.querySelector('#root')).render(h(App));
+</script>

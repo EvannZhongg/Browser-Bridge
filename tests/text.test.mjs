@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { extractText } from '../extension/text.js';
 import { queryElement } from '../extension/locator.js';
+import { renderAX } from '../extension/snapshot.js';
+
+test('snapshots preserve AX value and invalid/selection signals without inferring validation or commit', () => {
+  const entries = renderAX([
+    { nodeId: '1', backendDOMNodeId: 1, role: { value: 'combobox' }, name: { value: '年份' }, value: { value: '2026' },
+      properties: [{ name: 'invalid', value: { value: 'true' } }, { name: 'expanded', value: { value: true } }] },
+    { nodeId: '2', backendDOMNodeId: 2, role: { value: 'textbox' }, name: { value: '公司名称' }, value: { value: '' },
+      properties: [{ name: 'invalid', value: { value: 'false' } }] },
+    { nodeId: '3', backendDOMNodeId: 3, role: { value: 'option' }, name: { value: '2026' }, properties: [{ name: 'selected', value: { value: true } }] },
+  ], 'snapshot', new Map(), 'main');
+  assert.match(entries[0].line, /invalid="true".*expanded=true.*value="2026"/);
+  assert.match(entries[1].line, /invalid="false".*value=""/);
+  assert.match(entries[2].line, /selected=true/);
+});
 
 test('strict CSS and XPath reject zero, multiple and non-element matches', () => {
   const element = { nodeType: 1 };

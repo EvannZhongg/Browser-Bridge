@@ -23,9 +23,11 @@ export function renderAX(nodes, token, refs, frameId, sessionId) {
       const parts = (node.childIds || []).map(id => plainText(byId.get(id)));
       if (parts.length && !parts.includes(null)) { name = parts.filter(Boolean).join(' '); merged = true; }
     }
-    const attributes = (node.properties || []).filter(prop =>
-      ['disabled', 'focused', 'expanded', 'checked', 'selected', 'required', 'level'].includes(prop.name)
-    ).map(prop => `${prop.name}=${JSON.stringify(prop.value?.value)}`).join(' ');
+    const states = (node.properties || []).filter(prop =>
+      ['disabled', 'focused', 'expanded', 'checked', 'selected', 'required', 'invalid', 'level'].includes(prop.name)
+    ).map(prop => `${prop.name}=${JSON.stringify(prop.value?.value)}`);
+    if (node.value?.value != null) states.push(`value=${JSON.stringify(node.value.value)}`);
+    const attributes = states.join(' ');
     const skip = node.ignored || (['none', 'generic'].includes(role) && !name && !attributes) ||
       (role === 'StaticText' && name === parentName);
     let nextDepth = depth;

@@ -79,7 +79,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     try:
         client.start()
         definitions = client.wait_ready()
-        assert len(definitions) == 19, statuses
+        assert len(definitions) == 20, statuses
         tools = ToolCatalog(definitions).select(client.tool_names, context)
 
         def call(method, arguments=None, allow_error=False):

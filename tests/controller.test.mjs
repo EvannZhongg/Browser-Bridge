@@ -61,6 +61,8 @@ function fixture() {
           { nodeId: '2', backendDOMNodeId: 12, role: { value: 'button' }, name: { value: 'Submit' } },
           { nodeId: '3', backendDOMNodeId: 13, role: { value: 'textbox' }, name: { value: 'Name' } },
         ] };
+        if (method === 'Runtime.evaluate' && args.expression.startsWith('(function queryElement')) return { result: { objectId: 'selector-node' } };
+        if (method === 'DOM.describeNode' && args.objectId === 'selector-node') return { node: { backendNodeId: 12 } };
         if (method === 'DOM.describeNode' && args.objectId === 'focused') return { node: {} };
         if (method === 'Runtime.evaluate' && args.expression.includes('function activeElement')) return { result: { objectId: 'focused' } };
         if (method === 'DOM.describeNode') return { node: { frameId: 'remote', attributes: ['src', 'https://frame.test/'] } };
@@ -108,15 +110,22 @@ test('background native click fails before renderer work, keeps refs and can rec
   assert.equal((await f.exec('click', { ref })).target_verified, true);
 });
 
-test('hidden, unfocused or suspended native click sends no input and never brings the page forward', async () => {
+test('active occluded and unfocused native click verifies delivery without bringing the page forward', async () => {
   for (const state of [{ visibility_state: 'hidden', has_focus: false }, { visibility_state: 'visible', has_focus: false }]) {
     const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
-    if (state.visibility_state === 'visible') f.api.windows.get = async () => ({ focused: false, state: 'normal' });
+    f.api.windows.get = async () => ({ focused: false, state: 'maximized' });
     f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
       ? { result: { value: state } } : send(target, method, args);
-    await assert.rejects(f.exec('click', { x: 10, y: 10 }), /TAB_NOT_READY.*No input was dispatched/);
-    assert.ok(!f.calls.some(call => call.method.startsWith('Input.') || ['Page.bringToFront', 'tabs.update', 'windows.update'].includes(call.method)));
+    const result = await f.exec('click', { x: 10, y: 10 });
+    assert.equal(result.target_verified, true);
+    assert.equal(result.page_state.visibility_state, state.visibility_state);
+    assert.equal(result.page_state.window_focused, false);
+    assert.ok(!f.calls.some(call => ['Page.bringToFront', 'tabs.update', 'windows.update'].includes(call.method)));
   }
+  const f = fixture(); await f.claim(); f.calls.length = 0;
+  f.api.windows.get = async () => ({ focused: false, state: 'minimized' });
+  await assert.rejects(f.exec('click', { x: 10, y: 10 }), /TAB_NOT_READY.*minimized/);
+  assert.equal(f.calls.length, 0);
   for (const property of ['discarded', 'frozen']) {
     const f = fixture(); await f.claim(); f.tabs.get(9)[property] = true; f.calls.length = 0;
     await assert.rejects(f.exec('click', { selector: '#submit' }), /TAB_NOT_READY.*renderer suspended/);
@@ -140,12 +149,12 @@ test('an unresponsive click preflight fails in 500ms without consuming the input
   assert.ok((await f.exec('snapshot')).snapshot);
 });
 
-test('focus lost during native preparation is caught by the final preflight without dispatch or fallback', async () => {
+test('window minimized during native preparation is caught by the final preflight without dispatch or fallback', async () => {
   const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand; let checks = 0;
-  f.api.windows.get = async () => ({ focused: ++checks === 1, state: 'normal' });
+  f.api.windows.get = async () => ({ focused: false, state: ++checks === 1 ? 'normal' : 'minimized' });
   f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
     ? { result: { value: { visibility_state: 'visible', has_focus: true } } } : send(target, method, args);
-  await assert.rejects(f.exec('click', { x: 10, y: 10 }), /TAB_NOT_READY.*window not focused/);
+  await assert.rejects(f.exec('click', { x: 10, y: 10 }), /TAB_NOT_READY.*minimized/);
   assert.equal(checks, 2);
   assert.ok(!f.calls.some(call => call.method.startsWith('Input.') || call.args?.functionDeclaration?.includes('function clickElement')));
 });
@@ -171,7 +180,7 @@ test('selectors resolve afresh per action, route isolated frame nodes and refuse
   f.api.debugger.sendCommand = async (target, method, args) => {
     if (method === 'Runtime.evaluate' && args.expression.includes('function queryElement')) {
       resolutions++;
-      if (args.expression.endsWith('("button","css")')) return { exceptionDetails: { text: 'Selector must match exactly one element; matched 2' } };
+      if (args.expression.endsWith('("button","css",undefined,true)')) return { exceptionDetails: { text: 'Selector must match exactly one element; matched 2' } };
       return { result: { objectId: 'selector-node' } };
     }
     if (method === 'DOM.describeNode' && args.objectId === 'selector-node') return { node: { backendNodeId: 12 } };
@@ -199,6 +208,95 @@ test('document coordinate click scrolls once and converts back to viewport befor
   assert.deepEqual(result.clicked, { x: 100, y: 300 });
   assert.equal(f.calls.filter(call => call.args?.expression?.startsWith('scrollTo(')).length, 1);
   assert.ok(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').every(call => call.args.y === 300));
+});
+
+test('coordinate pseudo-element hits normalize to their originating element for hints and event guards', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'DOM.resolveNode' && args.backendNodeId === 12) return { object: { objectId: 'pseudo', className: 'CSSPseudoElement' } };
+    if (method === 'Runtime.callFunctionOn' && args.objectId === 'pseudo') {
+      const result = vm.runInNewContext(`(${args.functionDeclaration})`).call({ element: { nodeType: 1 } });
+      assert.equal(result.nodeType, 1);
+      return { result: { objectId: 'origin' } };
+    }
+    if (method === 'DOM.describeNode' && args.objectId === 'origin') return { node: { backendNodeId: 99 } };
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function describeHit')) {
+      assert.equal(args.objectId, 'origin'); return { result: { value: { tag: 'button', clickable_hint: true } } };
+    }
+    return send(target, method, args);
+  };
+  const result = await f.exec('click', { x: 10, y: 10 });
+  assert.equal(result.target_verified, true); assert.equal(result.hit_target.pseudo_element, true);
+  assert.ok(f.calls.some(call => call.method === 'DOM.resolveNode' && call.args.executionContextId === 42 && call.args.backendNodeId === 99));
+});
+
+test('batch uses one queue, fresh selector resolution and explicit native Tab for blur', async () => {
+  const f = fixture(); await f.claim(); f.calls.length = 0;
+  const batch = f.exec('batch', { steps: [
+    { action: 'click', selector: '#open' }, { action: 'fill', selector: 'input', nth: 1, text: '2026' },
+    { action: 'press_key', key: 'Tab' }, { action: 'click', selector: '.option' },
+  ] });
+  const later = f.exec('press_key', { key: 'Escape' });
+  const result = await batch; await later;
+  assert.equal(result.completed, true); assert.equal(result.results.length, 4);
+  assert.equal(result.results[1].application_result, 'not_checked');
+  const actions = f.calls.filter(c => c.method === 'Input.insertText' || c.method === 'Input.dispatchMouseEvent' && c.args.type === 'mouseReleased' || c.method === 'Input.dispatchKeyEvent' && c.args.type === 'rawKeyDown');
+  assert.deepEqual(actions.map(c => c.args.text || c.args.key || 'click'), ['click', '2026', 'Tab', 'click', 'Escape']);
+  const queries = f.calls.filter(c => c.method === 'Runtime.evaluate' && c.args.expression.includes('function queryElement'));
+  assert.equal(queries.length, 3); assert.ok(queries[1].args.expression.endsWith('("input","css",1,true)'));
+});
+
+test('batch validates all steps first; on a dispatched failure it returns prior results and never continues or replays', async () => {
+  const f = fixture(); await f.claim(); f.calls.length = 0;
+  await assert.rejects(f.exec('batch', { steps: [{ action: 'click', selector: '#open' }, { action: 'press_key', key: 'F99' }] }), /Unsupported key/);
+  assert.equal(f.calls.length, 0);
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function verifyFill')) return { result: { value: false } };
+    return send(target, method, args);
+  };
+  const result = await f.exec('batch', { steps: [
+    { action: 'click', selector: '#open' }, { action: 'fill', selector: '#edit', text: 'lost' }, { action: 'press_key', key: 'Enter' },
+  ] });
+  assert.equal(result.completed, false); assert.equal(result.failed_step, 1); assert.equal(result.results.length, 1);
+  assert.match(result.error, /Outcome is unknown/);
+  assert.equal(f.calls.filter(c => c.method === 'Input.insertText').length, 1);
+  assert.ok(!f.calls.some(c => c.method === 'Input.dispatchKeyEvent'));
+  assert.ok((await f.exec('snapshot')).snapshot);
+});
+
+test('batch shares one deadline and a late reply cannot start a subsequent step', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand; let finish;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Input.insertText') return await new Promise(resolve => { finish = resolve; });
+    return send(target, method, args);
+  };
+  const result = await f.exec('batch', { timeout_ms: 100, steps: [
+    { action: 'fill', selector: '#edit', text: 'once' }, { action: 'press_key', key: 'Enter' },
+  ] });
+  assert.equal(result.failed_step, 0); assert.match(result.error, /Outcome is unknown/);
+  finish({}); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!f.calls.some(c => c.method === 'Input.dispatchKeyEvent'));
+  assert.ok((await f.exec('snapshot')).snapshot);
+});
+
+test('batch stops at navigation, detach, closure and dialogs instead of applying later selectors to a changed page', async () => {
+  for (const change of ['navigation', 'detach', 'close', 'dialog']) {
+    const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      const result = await send(target, method, args);
+      if (method === 'Input.insertText') {
+        if (change === 'navigation') f.api.debugger.onEvent.emit(target, 'Page.frameNavigated', { frame: { id: 'main' } });
+        if (change === 'detach') f.api.debugger.onDetach.emit(target);
+        if (change === 'close') await f.api.tabs.remove(9);
+        if (change === 'dialog') f.api.debugger.onEvent.emit(target, 'Page.javascriptDialogOpening', { type: 'alert', message: 'Stop' });
+      }
+      return result;
+    };
+    const result = await f.exec('batch', { steps: [{ action: 'fill', selector: '#edit', text: 'once' }, { action: 'press_key', key: 'Enter' }] });
+    assert.equal(result.completed, false);
+    assert.ok(!f.calls.some(c => c.method === 'Input.dispatchKeyEvent'));
+  }
 });
 
 test('navigation retries transient observation once, never replays navigation or arbitrary observation failures', async () => {

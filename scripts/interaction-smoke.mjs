@@ -13,7 +13,7 @@ import { setup } from '../src/setup.mjs';
 import { startHub } from '../src/hub.mjs';
 import { AttachClient } from '../src/client.mjs';
 
-const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, headless: { type: 'boolean', default: false }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, headless: { type: 'boolean', default: false }, forms: { type: 'boolean', default: false }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');
 const dir = await mkdtemp(join(tmpdir(), 'attach-interaction-'));
 const rows = Array.from({ length: 200 }, (_, i) => `<li>Row ${i+1}: alpha beta gamma delta epsilon</li>`).join('');
@@ -25,12 +25,18 @@ const fixture = `<!doctype html><meta charset="utf-8"><title>Attach issue probe<
 <div id="state"></div><ul>${rows}</ul>
 <script>window.__count=0;window.__events=[];for(const type of ['pointermove','pointerdown','pointerup','click'])document.addEventListener(type,e=>{const r=document.querySelector('#go').getBoundingClientRect();window.__events.push({type,target:e.target.id,x:e.clientX,y:e.clientY,trusted:e.isTrusted,rect:{x:r.x,y:r.y,width:r.width,height:r.height}})},true);</script>`;
 const sockets = new Set();
+const reactSources = values.forms ? await Promise.all([
+ 'https://unpkg.com/react@18.3.1/umd/react.development.js',
+ 'https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js',
+].map(async url => { const r = await fetch(url); if (!r.ok) throw new Error(`React fixture dependency: ${r.status}`); return r.text(); })) : [];
+const formFixture = values.forms ? await readFile(join(ROOT, 'tests/fixtures/controlled-form.html'), 'utf8') : '';
 const server = http.createServer((req, res) => {
+  if (req.url === '/react.js' || req.url === '/react-dom.js') { res.setHeader('content-type', 'text/javascript'); res.end(reactSources[req.url === '/react.js' ? 0 : 1]); return; }
   if (req.url.startsWith('/slow.js')) { setTimeout(() => { res.setHeader('content-type','application/javascript');res.end('window.slowScriptReady=true;'); }, 1000); return; }
   res.setHeader('content-type','text/html; charset=utf-8');
   if (req.url.startsWith('/ad')) { res.end('<!doctype html><title>Ad frame</title><button>Ad control</button>'); return; }
   if (req.url.startsWith('/slow')) { res.end('<!doctype html><title>Slow probe</title><script src="/slow.js"></script><button id="ready">Ready</button>'); return; }
-  res.end(fixture);
+  res.end(values.forms ? formFixture : fixture);
 });
 server.on('connection', socket => { sockets.add(socket);socket.on('close',()=>sockets.delete(socket)); });
 await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
@@ -73,7 +79,50 @@ try {
  const focus = () => evaluate(`chrome.windows.getAll({populate:true}).then(w=>w.map(x=>({id:x.id,focused:x.focused,state:x.state,active:x.tabs.filter(t=>t.active).map(t=>t.id)})).sort((a,b)=>a.id-b.id))`);
  await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);await pause(250);
  const operationsFocus=await focus();
- if (values['tab-indicators']) {
+ if (values.forms) {
+  await client.call('activate_tab',h);
+  const fill = (selector, text, mode='native', nth) => client.call('fill',{...h,selector,text,mode,...(nth==null?{}:{nth})});
+  const click = selector => client.call('click',{...h,selector});
+  const inspect = () => page('({state:window.formState,events:window.formEvents,error:document.querySelector("#error").textContent})');
+  assert.equal((await fill('input[placeholder="公司名称"]','DOM company','dom',0)).application_result,'not_checked');
+  assert.equal((await inspect()).state.rows[0].company,'DOM company','native setter + untrusted input can update an ordinary React controlled field');
+  await click('#add');
+  assert.equal(await page('document.querySelector("input").value'),'DOM company','React state survives remount');
+  const beforeAmbiguity=await inspect();
+  await assert.rejects(fill('input[placeholder="公司名称"]','ambiguous'),/matched 2/);
+  assert.deepEqual((await inspect()).state,beforeAmbiguity.state);
+  const batch=await client.call('batch',{...h,steps:[
+   {action:'fill',selector:'input[placeholder="公司名称"]',nth:1,text:'Native company'},
+   {action:'press_key',key:'Tab'},
+   {action:'click',selector:'#year'},
+   {action:'fill',selector:'#year',text:'2026'},
+   {action:'click',selector:'.year-option[data-value="2026"]'},
+   {action:'click',selector:'#month'},
+   {action:'fill',selector:'#month',text:'9'},
+   {action:'click',selector:'.month-option[data-value="9"]'},
+  ]});
+  assert.equal(batch.completed,true,JSON.stringify(batch));
+  const saved=await inspect();
+  assert.equal(saved.state.rows[1].company,'Native company');assert.equal(saved.state.year,2026);assert.equal(saved.state.month,9);assert.equal(saved.error,'');
+  await click('#add');assert.equal((await inspect()).state.month,9);assert.equal(await page('document.querySelectorAll("input[placeholder=公司名称]")[1].value'),'Native company');
+  // Typing a filter is deliberately different from selecting the option.
+  await click('#year');await fill('#year','2025','dom');
+  assert.equal((await inspect()).state.year,2026);
+  await client.call('press_key',{...h,key:'Tab'});await click('#add');
+  assert.equal((await inspect()).state.year,2026);
+  const rect=await page('(()=>{const r=document.querySelector("#previous").getBoundingClientRect();return {x:r.x-15,y:r.y+r.height/2}})()');
+  const pseudo=await client.call('click',{...h,...rect});
+  assert.equal(pseudo.target_verified,true);assert.equal(pseudo.hit_target.pseudo_element,true);assert.equal((await inspect()).state.previous,1);
+  const blocker=await evaluate(`chrome.windows.create({url:${JSON.stringify(base+'/cover')},focused:true})`);
+  let occludedState;
+  try {
+   const result=await click('#add'); assert.equal(result.target_verified,true);
+   occludedState=result.page_state;
+   if(!values.headless){assert.equal(result.page_state.window_focused,false);assert.equal((await focus()).find(w=>w.id===blocker.id).focused,true);}
+  } finally {await evaluate(`chrome.windows.remove(${blocker.id})`);}
+  results.cases.push({scenario:'controlled_form',react:'18.3.1',dom_state_survives_remount:true,native_batch_steps:batch.results.length,filter_is_not_selection:true,blur_verified:true,pseudo_verified:true,occluded_page_state:occludedState});
+  console.log(JSON.stringify(results.cases.at(-1)));
+ } else if (values['tab-indicators']) {
   const nativeTab=await evaluate(`chrome.tabs.get(${tab.id})`);
   const marker=await evaluate(`chrome.tabGroups.get(${nativeTab.groupId})`);
   assert.equal(marker.title,'');assert.equal(marker.color,'red');assert.equal(marker.collapsed,false);
@@ -274,8 +323,7 @@ try {
   else await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);
   await pause(350);
   const before=await focus();
-  const ready=await page('({visible:document.visibilityState==="visible",has_focus:document.hasFocus()})');
-  const expectNativeReady=scenario==='foreground_ref'||(scenario==='occluded_window_ref'&&before.find(w=>w.id===tab.windowId).focused&&ready.visible);
+  const expectNativeReady=scenario==='foreground_ref'||scenario==='occluded_window_ref';
   for(let run=1;run<=3;run++){
    await page('window.__count=0;window.__events=[];true');
    const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
@@ -350,6 +398,6 @@ try {
  if(claim)await client?.call('release_tab',{tab_handle:claim.tab_handle}).catch(()=>{});
  await client?.close();ws?.close();browser.kill();await hub.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  await mkdir(join(ROOT,'test-results'),{recursive:true});
-  await writeFile(join(ROOT,'test-results',`${values['tab-indicators']?'tab-indicators':values['input-capture']?'input-capture':values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));
+  await writeFile(join(ROOT,'test-results',`${values.forms?'forms':values['tab-indicators']?'tab-indicators':values['input-capture']?'input-capture':values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));
  await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{});
 }

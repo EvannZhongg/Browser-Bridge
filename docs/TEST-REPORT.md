@@ -1,5 +1,23 @@
 # 验证报告
 
+当前版本 **0.8.0**（2026-10-21）。本次针对重复表单、焦点门控和多步输入的验证：
+
+- `npm test`：118 项通过，包含 AX value/invalid/selected 观察、显式 nth、动态 selector 等待、伪元素点击归属、batch 串行/总预算/部分失败/文档变化/断连/关闭/弹窗后停止。
+- `npm run test:package`：仓库外含空格路径安装并运行，发现 20 个工具，40 个发布文件，包含 batch.js 且不含配对密钥。
+- Chromium 156 和 Edge 155 有界面运行 `--forms`：真实 React 18.3.1 对照页验证原生 setter + 非可信 input 能更新普通受控文本框并在“添加”重建后保留；确认年/月过滤文本不同于选项提交；连续 8 步 native batch、Tab blur、异步选项出现、重复字段 nth、坐标命中 CSSPseudoElement 全部通过。
+- 同一对照页的双窗口验证：目标 tab 保持 active，但其窗口 focused=false，点击可信送达且未抢焦点。两种浏览器本轮报告的 visibility_state 均为 visible；hidden 信号放行另有单元测试，不声称本轮复现了 OS 遮挡后的 hidden。
+- Chromium 156 完整交互脚本通过；Chromium 156 和 Edge 155 完整 stdio MCP 浏览器集成各 191 个调用，覆盖 OOPIF、上传、日志、键盘与滚动。
+- 广联达生产页只做结构读取：有重复日期/年/月控件，日期框只读；读取时 active=false、visibility=hidden。未改动字段、重现新增行丢失或提交申请，因此对该站特定校验与 React 状态原因保留限制。
+- 未重跑 Nosis GUI；客户端需要重新发现 20 个工具。以下旧报告保留其验证版本，不代表本轮重跑。
+
+新增表单复跑命令（仅本地 fixture 与临时 profile）：
+
+`node scripts/interaction-smoke.mjs --forms --executable /path/to/chromium --family chromium`
+
+该可选 smoke 测试下载固定 React 18.3.1 UMD 测试依赖；运行产品及单元测试不增加依赖。--headless 可验证表单流程，但不用于证明 OS 窗口焦点行为。原始结果保存在被忽略的 test-results/forms-*.json。
+
+## 历史验证：0.7.0
+
 当前版本 **0.7.0**（2026-10-21）。设计取舍与日志模型见 [架构说明](ARCHITECTURE.md)。
 
 ## 自动测试
@@ -61,9 +79,9 @@
 ```sh
 npm test
 npm run test:package
-npm run test:live -- --executable /path/to/chromium --family chromium
-npm run test:interaction -- --executable /path/to/chromium --family chromium
-npm run test:interaction -- --tab-indicators --executable /path/to/chromium --family chromium
+node scripts/live-smoke.mjs --executable /path/to/chromium --family chromium
+node scripts/interaction-smoke.mjs --executable /path/to/chromium --family chromium
+node scripts/interaction-smoke.mjs --tab-indicators --executable /path/to/chromium --family chromium
 ```
 
 真实浏览器测试需要一个允许命令行加载扩展的 Chromium / Edge 可执行文件，并只操作临时 profile 与本地 fixture。原始结果保存在被忽略的 `test-results/` 目录（`unit-*.txt`、`package-*.txt`、`live-*.txt`、`npm-live-*.json`、`nosis-*.json`）。

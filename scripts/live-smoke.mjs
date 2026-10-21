@@ -111,7 +111,7 @@ try {
   mcp = new Client({ name: 'live-test', version: '1' });
   await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp }));
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 19);
+  assert.equal(tools.length, 20);
   assert.ok(tools.some(tool => tool.name === 'browser_logs'));
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const rawCall = async (method, args = {}) => {
