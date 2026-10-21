@@ -442,7 +442,7 @@ export function createController(api, notify = () => {}) {
             cdp(tabId, 'Page.captureScreenshot', { format: 'png', fromSurface: true,
               captureBeyondViewport: true, optimizeForSpeed: true, clip: captureClip }),
             new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(
-              'Screenshot did not finish within 5 seconds. An inactive or occluded Chromium page may not render. Use browser_claimed_tab with action=activate before requesting another screenshot, or use DOM/AX.'
+              'Screenshot did not finish within 5 seconds. An inactive or occluded Chromium page may not render. Use browser_activate_tab before requesting another screenshot, or use DOM/AX.'
             )), 5000); }),
           ]);
         } finally { clearTimeout(timer); }

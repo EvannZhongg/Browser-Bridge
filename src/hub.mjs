@@ -64,7 +64,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
       }
       const key = keyFor(browser.id, args.tab_id), tab = observed.get(key);
       if (!tab || (args.expected_url != null && tab.url !== args.expected_url) || (args.expected_title != null && tab.title !== args.expected_title))
-        throw new Error("Claim requires a tab_id from this session's latest browser_tabs action=list result; optional expected_url/title must match exactly");
+        throw new Error("Claim requires a tab_id from this session's latest browser_list_tabs result; optional expected_url/title must match exactly");
       return queued(key, async () => {
         const existing = tabClaims.get(key);
         if (existing) {

@@ -72,7 +72,7 @@ try {
  const {sessionId}=await cdp('Target.attachToTarget',{targetId:worker.targetId,flatten:true});
  const evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},sessionId);if(r.exceptionDetails)throw new Error(r.exceptionDetails.text);return r.result.value;};
  const tab=await evaluate(`chrome.tabs.create({url:${JSON.stringify(base+'/probe')},active:true})`);
- const info=await until(async()=>(await client.call('tabs',{action:'list',browser_id:browserInfo.browser_id})).tabs
+ const info=await until(async()=>(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs
   .find(t=>t.tab_id===tab.id&&t.url===base+'/probe'&&t.title==='Attach issue probe'),'Fixture tab not loaded');
  // Leave the existing startup settling interval after readiness, not before it.
  await pause(350);
@@ -85,7 +85,7 @@ try {
  await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);await pause(250);
  const operationsFocus=await focus();
  if (values.extended) {
-  await client.call('claimed_tab',{action:'activate',...h});const call=(method,args={})=>client.call(method,{...h,...args});
+  await client.call('activate_tab',h);const call=(method,args={})=>client.call(method,{...h,...args});
   await call('fill',{selector:'#edit',text:'seed'});assert.equal(await page('window.keys.filter(e=>e.type==="keydown").length'),0);
   await page('window.keys=[];true');
   const typed=await call('type',{selector:'#edit',text:'A中+',delay_ms:30});
@@ -138,7 +138,7 @@ try {
   const accepted=await call('navigate',{url:base+'/accepted',dialog_policy:'accept',include_snapshot:false,timeout_ms:5000});assert.ok(accepted.dialogs.some(d=>d.type==='beforeunload'&&d.accepted));assert.equal(await page('location.pathname'),'/accepted');
   results.cases.push({scenario:'beforeunload_policy',cancelled,accepted});
  } else if (values.primitives) {
-  await client.call('claimed_tab',{action:'activate',...h});
+  await client.call('activate_tab',h);
   const call=(method,args={})=>client.call(method,{...h,...args});
   const menuSnap=await call('snapshot'),menuRef=menuSnap.snapshot.match(/\[([^\]]+)\] button "Menu"/)[1];
   await call('hover',{ref:menuRef});
@@ -192,7 +192,7 @@ try {
   assert.ok(await page('scrollY>1000'));assert.ok((await page('window.events')).some(e=>e.type==='drop'&&e.target==='far'&&e.trusted));
   results.cases.push({scenario:'html5_offscreen',result:far});
  } else if (values.forms) {
-  await client.call('claimed_tab',{action:'activate',...h});
+  await client.call('activate_tab',h);
   const fill = (selector, text, mode='native', nth) => client.call('fill',{...h,selector,text,mode,...(nth==null?{}:{nth})});
   const click = selector => client.call('click',{...h,selector});
   const inspect = () => page('({state:window.formState,events:window.formEvents,error:document.querySelector("#error").textContent})');
@@ -242,17 +242,17 @@ try {
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach-click]").length'),0);
   const snap=await client.call('snapshot',h),ref=snap.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
   await assert.rejects(client.call('click',{...h,ref}),/TAB_NOT_READY.*No input was dispatched/);
-  await client.call('claimed_tab',{action:'activate',...h});
+  await client.call('activate_tab',h);
   assert.equal((await client.call('click',{...h,ref})).target_verified,true);
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
   await until(()=>page('document.querySelectorAll("[data-local-browser-attach-click]").length===1'),'transient click visual');
-  await client.call('claimed_tab',{action:'activate',...h,focus_window:false});
+  await client.call('activate_tab',{...h,focus_window:false});
   const shot=await client.call('screenshot',h);
   assert.equal(shot.capture.agent_indicators_included,false);
   await client.call('navigate',{...h,url:base+'/slow'});
   assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,marker.id);
   assert.equal(await page('document.querySelectorAll("[data-local-browser-attach]").length'),0);
-  await client.call('claimed_tab',{action:'release',...h});claim=null;
+  await client.call('release_tab',h);claim=null;
   assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,-1);
   results.cases.push({scenario:'native_marker_without_page_overlay',marker,screenshot_clean:true,navigation_preserved:true,release_removed:true});
 
@@ -260,13 +260,13 @@ try {
   await evaluate(`chrome.tabGroups.update(${original},{title:'User research',color:'blue',collapsed:false})`);
   await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);
   const claimAgain=async()=>{
-   const current=(await client.call('tabs',{action:'list',browser_id:browserInfo.browser_id})).tabs.find(t=>t.tab_id===tab.id);
+   const current=(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs.find(t=>t.tab_id===tab.id);
    claim=await client.call('claim_tab',{browser_id:browserInfo.browser_id,tab_id:tab.id,expected_url:current.url,expected_title:current.title});
    assert.equal(claim.visual_warning,undefined);return {tab_handle:claim.tab_handle};
   };
   const groupedHandle=await claimAgain();
   assert.notEqual((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,original);
-  await client.call('claimed_tab',{action:'release',...groupedHandle});claim=null;
+  await client.call('release_tab',groupedHandle);claim=null;
   assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).groupId,original);
   assert.equal((await evaluate(`chrome.tabGroups.get(${original})`)).title,'User research');
   assert.equal((await evaluate(`chrome.tabs.get(${cover.id})`)).active,true);
@@ -278,7 +278,7 @@ try {
   await assert.rejects(client.call('snapshot',disconnectedHandle),/expired/);claim=null;
   results.cases.push({scenario:'session_disconnect_restores_group',restored:true});
  } else if (values['input-capture']) {
-  await client.call('claimed_tab',{action:'activate',...h});
+  await client.call('activate_tab',h);
   const refFor = (snapshot, role, label) => snapshot.snapshot.match(new RegExp(`\\[([^\\]]+)\\] ${role} "${label}"`))[1];
   const inputRef = async () => refFor(await client.call('snapshot',h),'textbox','Name');
   const buttonRef = async () => refFor(await client.call('snapshot',h),'button','Go');
@@ -353,7 +353,7 @@ try {
    assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,false);
    results.cases.push({scenario:coordinates?'background_coordinate':'background_ref',ms:Math.round(performance.now()-start),not_dispatched:true});
   }
-  await client.call('claimed_tab',{action:'activate',...h});
+  await client.call('activate_tab',h);
   await page(`window.__adLoads=0;const ad=document.createElement('iframe');ad.id='ad';ad.style='position:fixed;left:600px;top:20px;width:200px;height:100px';ad.onload=()=>window.__adLoads++;ad.src='/ad';document.body.append(ad);true`);
   await until(()=>page('window.__adLoads>0'),'initial iframe load');
   const snap = await client.call('snapshot',h), mainRef = refFor(snap);
@@ -365,7 +365,7 @@ try {
   for(let i=0;i<20;i++) assert.match((await client.call('snapshot',h)).snapshot,/button "Go"/);
   await page(`clearInterval(window.__adTimer);document.querySelector('#ad').remove();true`);
   results.cases.push({scenario:'snapshot_during_iframe_refresh',snapshots:20});
-  await client.call('claimed_tab',{action:'activate',...h});
+  await client.call('activate_tab', h);
   assert.equal((await evaluate(`chrome.tabs.get(${tab.id})`)).active,true);
   await page(`const style=document.createElement('style');style.textContent='@keyframes drift{from{transform:translateX(-5px)}to{transform:translateX(5px)}}#go{animation:drift 0.7s linear infinite alternate}';document.head.append(style);true`);
   for(let i=0;i<3;i++) {
@@ -385,17 +385,17 @@ try {
    }
    results.cases.push({scenario:'infinite_css_animation',run:i+1,ms:Math.round(performance.now()-start),target_verified:!!result,error});
   }
-  const opened=await client.call('tabs',{action:'open',browser_id:browserInfo.browser_id,url:base+'/ad',active:false});
-  await until(async()=>{const tabs=(await client.call('tabs',{action:'list',browser_id:browserInfo.browser_id})).tabs;return tabs.find(t=>t.tab_id===opened.tab_id&&t.title==='Ad frame')},'opened tab loaded');
-  const tabs=(await client.call('tabs',{action:'list',browser_id:browserInfo.browser_id})).tabs,created=tabs.find(t=>t.tab_id===opened.tab_id);
+  const opened=await client.call('open_tab',{browser_id:browserInfo.browser_id,url:base+'/ad',active:false});
+  await until(async()=>{const tabs=(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs;return tabs.find(t=>t.tab_id===opened.tab_id&&t.title==='Ad frame')},'opened tab loaded');
+  const tabs=(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs,created=tabs.find(t=>t.tab_id===opened.tab_id);
   const createdClaim=await client.call('claim_tab',{browser_id:browserInfo.browser_id,tab_id:created.tab_id,expected_url:created.url,expected_title:created.title});
   const ch={tab_handle:createdClaim.tab_handle};
-  await client.call('claimed_tab',{action:'activate',...ch});
+  await client.call('activate_tab',ch);
   assert.equal((await evaluate(`chrome.tabs.get(${created.tab_id})`)).active,true);
   assert.equal((await evaluate(`chrome.windows.get(${created.window_id})`)).focused,true);
-  assert.equal((await client.call('claimed_tab',{action:'close',...ch})).closed,true);
+  assert.equal((await client.call('close_tab',ch)).closed,true);
   await assert.rejects(client.call('snapshot',ch),/expired/);
-  assert.ok(!(await client.call('tabs',{action:'list',browser_id:browserInfo.browser_id})).tabs.some(t=>t.tab_id===created.tab_id));
+  assert.ok(!(await client.call('list_tabs',{browser_id:browserInfo.browser_id})).tabs.some(t=>t.tab_id===created.tab_id));
   results.cases.push({scenario:'open_activate_close_tab',handle_expired:true});
   console.log(JSON.stringify(results.cases));
  } else {
@@ -425,7 +425,7 @@ try {
  const firstRef=part.snapshot.match(/\[([^\]]+)\] button "Go"/)[1];
  while(part.next_cursor){part=await client.call('snapshot',{...h,cursor:part.next_cursor,max_nodes:10,max_chars:1000});combined+='\n'+part.snapshot;pages++;}
  assert.equal((combined.match(/Row \d+:/g)||[]).length,200);
- await client.call('claimed_tab',{action:'activate',...h});
+ await client.call('activate_tab',h);
  await client.call('click',{...h,ref:firstRef});
  results.snapshots.push({pages,all_200_rows:true,first_page_ref_survived:true});
  for(const scenario of ['foreground_ref','background_ref','background_coordinate','occluded_window_ref']){
@@ -433,7 +433,7 @@ try {
   if(scenario==='occluded_window_ref'){
    await evaluate(`chrome.tabs.update(${tab.id},{active:true})`);
    coverWindow=await evaluate(`chrome.windows.create({url:${JSON.stringify(base+'/cover-window')},focused:true,width:${values.headless?800:1100},height:${values.headless?600:900},left:0,top:0})`);
-  }else if(scenario==='foreground_ref') await client.call('claimed_tab',{action:'activate',...h});
+  }else if(scenario==='foreground_ref') await client.call('activate_tab',h);
   else await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);
   await pause(350);
   const before=await focus();
@@ -461,7 +461,7 @@ try {
   }
   if(coverWindow)await evaluate(`chrome.windows.remove(${coverWindow.id})`);
  }
- await client.call('claimed_tab',{action:'activate',...h});
+ await client.call('activate_tab',h);
  for(const zoom of [0.8,1.25]){
   await evaluate(`chrome.tabs.setZoom(${tab.id},${zoom})`);await pause(200);
   await page('window.__count=0;window.__events=[];true');
@@ -507,9 +507,9 @@ try {
  results.browser=browserInfo.user_agent;results.extension_version=browserInfo.extension_version;
  console.log(JSON.stringify({extended:values.extended?results.cases:undefined,primitives:values.primitives?results.cases:undefined,tab_indicators:values['tab-indicators']?results.cases:undefined,input_capture:values['input-capture']?results.cases:undefined,snapshots:results.snapshots,background_operations:results.background_operations,
   hover:results.cases.find(c=>c.scenario==='hover_shift_30px'),navigation:results.navigation}));
- if(claim)await client.call('claimed_tab',{action:'release',tab_handle:claim.tab_handle});claim=null;
+ if(claim)await client.call('release_tab',{tab_handle:claim.tab_handle});claim=null;
 } finally {
- if(claim)await client?.call('claimed_tab',{action:'release',tab_handle:claim.tab_handle}).catch(()=>{});
+ if(claim)await client?.call('release_tab',{tab_handle:claim.tab_handle}).catch(()=>{});
  await client?.close();ws?.close();browser.kill();await hub.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  await mkdir(join(ROOT,'test-results'),{recursive:true});
   await writeFile(join(ROOT,'test-results',`${values.extended?'extended':values.primitives?'primitives':values.forms?'forms':values['tab-indicators']?'tab-indicators':values['input-capture']?'input-capture':values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));

@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.11.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.10.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -20,7 +20,7 @@ MCP 客户端
 | `src/setup.mjs` | 生成配对密钥、复制稳定扩展目录、写 Nosis 配置 |
 | `src/hub.mjs` | 浏览器与会话注册、独占 claim、每标签串行队列、超时 |
 | `src/client.mjs` | MCP 进程到 Hub 的 WebSocket 客户端，按需拉起 Hub |
-| `src/mcp.mjs` | 22 个工具的 schema、结果与图片封装 |
+| `src/mcp.mjs` | 25 个工具的 schema、结果与图片封装 |
 | `extension/controller.js` | 操作实现；传输层从不暴露原始 CDP |
 | `extension/sessions.js` | 扁平 debugger session 与 frame/OOPIF 归属 |
 | `extension/{click,input,actionability,scroll}.js` | 原生/DOM 输入、逐字按键、可操作性、容器滚动与有界查找 |
@@ -42,15 +42,15 @@ Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopbac
 
 ## 控制模型
 
-1. **发现**：`browser_tabs` 的 `action=list` 结果被 Hub 记为本次连接的观察快照。
-2. **校验身份**：`browser_claim_tab` 必须使用本连接列出的 tab_id；可选 expected_url / expected_title 在 Hub 与扩展侧逐字符校验。省略标题校验可容忍标题漂移；省略全部校验表示明确按 ID 接管，返回当前身份。
+1. **发现**：`list_tabs` 的结果被 Hub 记为本次连接的观察快照。
+2. **校验身份**：`claim_tab` 必须使用本连接列出的 tab_id；可选 expected_url / expected_title 在 Hub 与扩展侧逐字符校验。省略标题校验可容忍标题漂移；省略全部校验表示明确按 ID 接管，返回当前身份。
 3. **独占**：Hub 为每个 `(browser_id, tab_id)` 维护唯一 owner；同一标签第二次 claim 会返回已有的 `tab_handle`（同 owner）或报错（其他 owner）。
 4. **句柄**：`tab_handle` 是 Hub 生成的随机 UUID，只在当前 MCP 连接内有效；跨连接不共享。
 5. **串行**：Hub 与扩展都对每个标签维护 Promise 队列，动作不会并发穿插。
 6. **超时**：Hub 单次浏览器操作 60 秒，客户端等待 65 秒。Hub 超时会关闭该客户端连接并释放它的 claim，错误文本明确提示"结果可能未知"。
-7. **清理**：`browser_claimed_tab` 的 `action=release` 先移除可视标记，再 `debugger.detach`，最后才忘记 claim——detach 失败不会静默把标签交给别人。断连、标签关闭、浏览器重启、用户停止调试都会清理状态。
+7. **清理**：`release_tab` 先移除可视标记，再 `debugger.detach`，最后才忘记 claim——detach 失败不会静默把标签交给别人。断连、标签关闭、浏览器重启、用户停止调试都会清理状态。
 
-工具面按 claim 前后分两层：`browser_tabs`（`action=list|open`）负责发现与创建，`browser_claim_tab` 是显式接管桥，`browser_claimed_tab`（`action=activate|release|close`）操作已接管标签。claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；需要前台渲染时显式调用 `browser_claimed_tab` 的 `action=activate`。
+claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；需要前台渲染时显式调用 `activate_tab`。
 
 ## 观察模型
 
@@ -74,7 +74,7 @@ Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopbac
 
 - **type 与 fill**：fill 替换文字，type 保留选区，逐字符复用原生按键与 keydown 回执；字符之间可延迟，不把 insertText 伪装成键盘序列。浏览器处理 keypress/input 及 preventDefault，非 ASCII 不模拟系统 IME。
 - **只重试准备**：等待阶段可以反复轮询，但一旦派发就不再重试。超时分为"未派发"和"已派发、结果未知"两种错误文本。
-- **原生指针就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求活动、未暂停的 tab 与未最小化的窗口。不满足时以 TAB_NOT_READY 明确报告当前指针输入未派发，并提示 browser_claimed_tab action=activate → snapshot → click。click 不主动激活；仅显式 browser_claimed_tab action=activate 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
+- **原生指针就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求活动、未暂停的 tab 与未最小化的窗口。不满足时以 TAB_NOT_READY 明确报告当前指针输入未派发，并提示 activate_tab → snapshot → click。click 不主动激活；仅显式 activate_tab 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
 - **焦点信号边界**：OS 窗口失焦、遮挡或 document.visibilityState=hidden 不一定阻止 CDP 输入；document.hasFocus() 在 iframe 导航后也可能为 false。这些值作为 page_state 诊断，不独立拒绝点击。实际送达仍由隔离世界的可信事件回执校验；没有回执时不自动重放。
 - **送达预算**：原生 click/hover/press_key 的派发及可信回执另有 1250 ms 上限，清理最多 250 ms；系统菜单捕获输入时快速释放队列，仍报告结果未知并提示 Esc，不自动重放。
 - **hover 与 drag**：hover 复用点击准备与隔离校验，仅派发一次 mouseMoved，清理不移走指针。drag 显式区分 pointer 与 HTML5；后者从真实 dragstart 截获 DragData，再用 CDP 派发 dragover/drop，校验可信 dragstart/drop/dragend。目的节点在按住后滚入视口；所有步骤共用标签队列和总预算，失败时只取消/释放本次手势。

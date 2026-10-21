@@ -136,7 +136,7 @@ test('unknown outcome disconnects the client and releases its claims without rep
   assert.equal(f.requests.filter(item => item.command === 'read_text').length, 1);
 });
 
-test('real stdio MCP exposes 22 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
+test('real stdio MCP exposes 25 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
   const f = await fixture(t), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
@@ -146,7 +146,7 @@ test('real stdio MCP exposes 22 tools including ordered batch, unified logs, sin
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 22);
+  assert.equal(tools.length, 25);
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const logSchema = tools.find(tool => tool.name === 'browser_logs').inputSchema;
   assert.deepEqual(logSchema.properties.kind.enum, ['console', 'network']);
@@ -158,21 +158,12 @@ test('real stdio MCP exposes 22 tools including ordered batch, unified logs, sin
   }
   const scrollSchema = tools.find(tool => tool.name === 'browser_scroll').inputSchema.properties;
   assert.deepEqual(scrollSchema.mode.enum, ['dom', 'wheel']); assert.equal(scrollSchema.mode.default, 'dom');
-  const tabsSchema = tools.find(tool => tool.name === 'browser_tabs').inputSchema;
-  assert.deepEqual(tabsSchema.properties.action.enum, ['list', 'open']);
-  assert.deepEqual(tabsSchema.required, ['action', 'browser_id']);
-  assert.equal(tabsSchema.properties.active.default, false);
-  const claimedTabSchema = tools.find(tool => tool.name === 'browser_claimed_tab').inputSchema;
-  assert.deepEqual(claimedTabSchema.properties.action.enum, ['activate', 'release', 'close']);
-  assert.deepEqual(claimedTabSchema.required, ['action', 'tab_handle']);
-  assert.equal(claimedTabSchema.properties.focus_window.default, true);
-  for (const name of ['tabs', 'claim_tab', 'claimed_tab', 'upload_file', 'evaluate', 'logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
-  assert.ok(!tools.some(tool => ['browser_list_tabs', 'browser_open_tab', 'browser_activate_tab', 'browser_release_tab', 'browser_close_tab'].includes(tool.name)));
+  for (const name of ['upload_file', 'open_tab', 'activate_tab', 'close_tab', 'evaluate', 'logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
   const call = (name, args = {}) => mcp.callTool({ name: `browser_${name}`, arguments: args });
   const browsers = await call('list_browsers');
   assert.equal(browsers.structuredContent, undefined); assert.equal(browsers.content.length, 1);
   assert.equal(JSON.parse(browsers.content[0].text).browsers[0].browser_id, browser.id);
-  await call('tabs', { action: 'list', browser_id: browser.id });
+  await call('list_tabs', { browser_id: browser.id });
   const result = await call('claim_tab', { browser_id: browser.id, tab_id: 9, expected_title: 'Demo', expected_url: f.tabs[0].url });
   const handle = JSON.parse(result.content[0].text).tab_handle;
   for (const nth of [-1, 0.5]) assert.equal((await call('fill', { tab_handle: handle, selector: 'input', nth, text: 'x' })).isError, true);
@@ -240,21 +231,11 @@ test('real stdio MCP exposes 22 tools including ordered batch, unified logs, sin
   const error = await call('read_text', { tab_handle: 'expired' });
   assert.equal(error.isError, true);
   assert.match(error.content[0].text, /^Tab handle/);
-  const missingUrl = await call('tabs', { action: 'open', browser_id: browser.id });
-  assert.equal(missingUrl.isError, true);
-  assert.match(missingUrl.content[0].text, /url is required/);
-  const listWithUrl = await call('tabs', { action: 'list', browser_id: browser.id, url: 'https://example.com/' });
-  assert.equal(listWithUrl.isError, true);
-  assert.match(listWithUrl.content[0].text, /url is only valid/);
-  await call('tabs', { action: 'list', browser_id: browser.id });
-  const other = JSON.parse((await call('claim_tab', { browser_id: browser.id, tab_id: 10 })).content[0].text);
-  assert.ok(!(await call('claimed_tab', { action: 'release', tab_handle: other.tab_handle })).isError);
-  assert.ok(f.requests.some(item => item.command === 'release_tab'));
-  assert.ok(!(await call('tabs', { action: 'open', browser_id: browser.id, url: 'https://example.com/' })).isError);
+  assert.ok(!(await call('open_tab', { browser_id: browser.id, url: 'https://example.com/' })).isError);
   assert.equal(f.requests.find(item => item.command === 'open_tab').arguments.active, false);
-  assert.ok(!(await call('claimed_tab', { action: 'activate', tab_handle: handle })).isError);
+  assert.ok(!(await call('activate_tab', { tab_handle: handle })).isError);
   assert.equal(f.requests.find(item => item.command === 'activate_tab').arguments.focus_window, true);
-  assert.ok(!(await call('claimed_tab', { action: 'close', tab_handle: handle })).isError);
+  assert.ok(!(await call('close_tab', { tab_handle: handle })).isError);
   assert.equal((await call('snapshot', { tab_handle: handle })).isError, true);
   await mcp.close();
 });

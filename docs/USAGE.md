@@ -1,19 +1,19 @@
 # BrowserAttach 使用指南
 
-适用于 **0.11.0**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.10.0**：Node.js 22+、Chrome / Edge 125+、25 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
 ## 基本流程
 
 1. `browser_list_browsers` 取得 `browser_id`、浏览器族、版本和能力表。
-2. `browser_tabs({action:"list", browser_id})` 取得目标标签的 `tab_id`、精确标题 / URL 与控制状态。
+2. `browser_list_tabs(browser_id)` 取得目标标签的 `tab_id`、精确标题 / URL 与控制状态。
 3. `browser_claim_tab(...)` 独占接管，拿到本连接的 `tab_handle`。
 4. `browser_snapshot(tab_handle)` 读取语义树与元素 `ref`。
 5. 使用 ref 或 selector 执行动作；原节点仍存在时 ref 可复用，需要新信息时再观察。
-6. `browser_claimed_tab({action:"release", tab_handle})` 释放控制，页面保持打开。
+6. `browser_release_tab(tab_handle)` 释放控制，页面保持打开。
 
-`tab_id` 必须来自本连接最近一次 `browser_tabs` 的 `action=list`。`expected_url` / `expected_title` 是可选的精确校验；提供时须与列表及接管时的实际标签逐字符一致。标题易变时只传 `expected_url`，或明确按 `tab_id` 接管并检查返回的当前身份。同一标签只允许一个 owner，`tab_handle` 不能跨连接使用。
+`tab_id` 必须来自本连接最近一次 `list_tabs`。`expected_url` / `expected_title` 是可选的精确校验；提供时须与列表及接管时的实际标签逐字符一致。标题易变时只传 `expected_url`，或明确按 `tab_id` 接管并检查返回的当前身份。同一标签只允许一个 owner，`tab_handle` 不能跨连接使用。
 
 ## 工具速查
 
@@ -22,9 +22,12 @@
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
 | `browser_list_browsers` | — | 已连接的浏览器配置、`browser_id`、能力表 |
-| `browser_tabs` | `action=list\|open`, `browser_id`, `url`（open）, `active=false`（open） | `list` 返回 `tab_id`、标题、URL、`active`、`group_id`、`controllable`、控制状态；`open` 仅 HTTP(S)，默认后台打开并返回 `tab_id`，加载后用 `action=list` 刷新并 `browser_claim_tab` |
+| `browser_list_tabs` | `browser_id` | `tab_id`、标题、URL、`active`、`group_id`、`controllable`、控制状态 |
+| `browser_open_tab` | `browser_id`, `url`, `active=false` | 仅 HTTP(S)；默认后台打开，返回 `tab_id`，加载后 list + claim |
 | `browser_claim_tab` | `browser_id`, `tab_id`, 可选 `expected_url` / `expected_title` | 按列出的 ID 接管，可显式加身份校验 |
-| `browser_claimed_tab` | `action=activate\|release\|close`, `tab_handle`, `focus_window=true`（activate） | `activate` 显式选中标签并聚焦窗口；`release` 解除调试并释放控制；`close` 关闭标签并作废句柄，可能丢失未保存状态 |
+| `browser_release_tab` | `tab_handle` | 解除调试并释放控制，不关闭页面 |
+| `browser_activate_tab` | `tab_handle`, `focus_window=true` | 显式选中标签并聚焦窗口；`false` 只选中标签 |
+| `browser_close_tab` | `tab_handle` | 关闭标签并作废句柄，可能丢失未保存状态 |
 
 ### 观察
 
@@ -78,7 +81,7 @@
 | 新的 `browser_snapshot` | 旧 refs 失效 |
 | 主文档导航、同文档导航、文档更新 | 全部 refs 与 cursor 失效 |
 | 子 frame 导航或移除 | 仅该子树 refs 失效，其余保留 |
-| `browser_claimed_tab` 的 `action=release` / `action=close` / 断连 | 全部失效 |
+| `release_tab` / `close_tab` / 断连 | 全部失效 |
 
 ref 每次用 frame/session + backendNodeId 重新解析，并以局部 AX 查询核对原 role/name；语义改变时要求新快照，不依赖旧坐标，也不以相似名称查找替代。节点脱离文档时失败；重新插入的同一节点可继续使用。
 
@@ -117,7 +120,7 @@ ref 每次用 frame/session + backendNodeId 重新解析，并以局部 AX 查�
 
 原生模式按序派发 move → down → up，显式设置 `buttons` 与修饰键，并在隔离世界安装命中校验：成功返回 `target_verified: true`、`application_result: "not_checked"`。左键单击 / 双击分别校验 `click` / `dblclick`，中键校验 `auxclick`，右键校验 `contextmenu`。目标被遮挡、在 hover 后移动或派发中变化时会明确报错并阻止不匹配事件；已送达的前序事件可能已有副作用，不能撤销或自动重试。
 
-原生 click 在准备前、派发前分别检查顶层 tab 的 active/discarded/frozen、窗口是否最小化，并读取 `document.visibilityState` 和 `document.hasFocus()`；每次检查最多 500 ms，且受总输入截止时间限制。未选中的标签、暂停的页面或最小化窗口快速返回 `TAB_NOT_READY` 和 `No input was dispatched`，不自动调用 bringToFront。可显式调用 `browser_claimed_tab`（`action=activate`，默认 focus_window=true），重新 snapshot 后再 click。
+原生 click 在准备前、派发前分别检查顶层 tab 的 active/discarded/frozen、窗口是否最小化，并读取 `document.visibilityState` 和 `document.hasFocus()`；每次检查最多 500 ms，且受总输入截止时间限制。未选中的标签、暂停的页面或最小化窗口快速返回 `TAB_NOT_READY` 和 `No input was dispatched`，不自动调用 bringToFront。可显式调用 `browser_activate_tab`（默认 focus_window=true），重新 snapshot 后再 click。
 
 成功结果的 `page_state` 包含 visibility_state、has_focus、window_focused。这些信号仅作诊断：活动标签所在窗口即使未处于 OS 前台，或者因遮挡报告 hidden，仍可尝试一次原生点击，并验证可信事件送达。不能据此保证任意后台页面都能交互；没有可信回执时仍报告未知结果，不重放、不自动切换 DOM 模式。
 
@@ -269,11 +272,11 @@ until 是显式 DOM 滚动搜索，不与 wheel 组合；省略 delta_y 时每�
 
 batch 遇到已自动处理的 alert/confirm 可以继续下一步；默认 ask 仍会停止。beforeunload=accept 继续等待导航，dismiss 返回 navigated=false、cancelled_by_dialog=true；浏览器若未弹出 beforeunload，工具不能强制它出现。主文档实际变化后 batch 仍按原规则停止，避免在新文档执行后续步骤。
 
-页面弹出未自动处理的 JavaScript 对话框时，`browser_snapshot` 会返回 `dialog` 对象，其他动作（除 `browser_claimed_tab` 的 `action=release`）被拒绝；用 `browser_handle_dialog` 接受或取消，`prompt_text` 只在 prompt 时使用。对话框打开期间仍可读取控制台和网络日志。
+页面弹出未自动处理的 JavaScript 对话框时，`browser_snapshot` 会返回 `dialog` 对象，其他动作（除 `release_tab`）被拒绝；用 `browser_handle_dialog` 接受或取消，`prompt_text` 只在 prompt 时使用。对话框打开期间仍可读取控制台和网络日志。
 
 handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`。`default_button=null`，协议不提供浏览器默认按钮焦点。beforeunload 只有实际弹出时才能观察，浏览器可能因缺少用户激活而抑制它。DOM 值写入不证明应用已保存或 dirty=false；不存在跨框架可靠的通用 dirty 检测，导航前按任务检查保存标志或业务接口。
 
-`browser_screenshot` 返回 PNG 与 `capture` 元数据：`scope`（`viewport` / `full_page`）、`viewport`、`css_width`、`css_height`、`image_origin_css`、`image_to_viewport_css`。像素到视口坐标的换算为 `css = 像素 × scale + offset`。超时为 5 秒；被遮挡或非活动的 Chromium 页面可能暂停渲染，此时先 `browser_claimed_tab`（`action=activate`），或改用 AX / 正文。整页截图超过 4000 万像素会被拒绝；整页图中的视口外位置需要先滚动。
+`browser_screenshot` 返回 PNG 与 `capture` 元数据：`scope`（`viewport` / `full_page`）、`viewport`、`css_width`、`css_height`、`image_origin_css`、`image_to_viewport_css`。像素到视口坐标的换算为 `css = 像素 × scale + offset`。超时为 5 秒；被遮挡或非活动的 Chromium 页面可能暂停渲染，此时先 `browser_activate_tab`，或改用 AX / 正文。整页截图超过 4000 万像素会被拒绝；整页图中的视口外位置需要先滚动。
 
 元素截图传 ref 或严格 selector（可用 frame），与 full_page 互斥。截取当前渲染 border box 的外接矩形，不要求元素启用、不移动焦点；OOPIF 坐标逐层换算，保留页面遮挡，截图不是元素抠图。无渲染 box、负文档坐标、透视 frame 或超过 4000 万像素时报错。capture.scope=element，image_origin_css 是该元素的真实文档位置，沿用已有像素到视口换算。可分别请求元素和 full_page 获取视觉证据，不增加另一个截图/图片比较工具。
 
