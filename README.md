@@ -15,7 +15,7 @@
 - 原生指针悬停、分步拖拽、条件等待；无需打开系统弹层即可选择 HTML 下拉选项。
 - 导航与历史前进/后退、打开或关闭标签页，处理 JavaScript 对话框，上传本机文件并截取整页或单个元素。
 - 在主页面执行 JavaScript 表达式，读取接管后的控制台、页面异常和网络生命周期日志；需要校验 XHR/fetch 时显式开启有界、脱敏的请求/响应详情。
-- 使用标准 stdio MCP，共提供 25 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
+- 使用标准 stdio MCP，共提供 22 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
 
 ## 环境要求
 
@@ -42,7 +42,7 @@ browser-attach setup
 也可以不全局安装：
 
 ```sh
-npx --yes --package=@evan_zhong/browser-attach@0.10.0 browser-attach setup
+npx --yes --package=@evan_zhong/browser-attach@latest browser-attach setup
 ```
 
 ### 2. 配置 MCP 客户端
@@ -54,7 +54,7 @@ npx --yes --package=@evan_zhong/browser-attach@0.10.0 browser-attach setup
   "mcpServers": {
     "browser_attach": {
       "command": "npx",
-      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.10.0", "browser-attach", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-attach@latest", "browser-attach", "mcp"]
     }
   }
 }
@@ -62,26 +62,29 @@ npx --yes --package=@evan_zhong/browser-attach@0.10.0 browser-attach setup
 
 Windows 客户端若要求完整命令扩展名，使用 `npx.cmd`。已全局安装时，也可以配置 `"command": "browser-attach", "args": ["mcp"]`。重启 MCP 客户端后发现工具。
 
+`@latest` 会在启动时解析 npm 最新版本。MCP 包与已加载扩展必须为同一版本；升级后重新运行 `browser-attach setup` 并在扩展页重新加载扩展，否则 Hub 会拒绝旧扩展连接。
+
 Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置，详见 [Nosis 集成](docs/NOSIS-INTEGRATION.md)。
 
 ### 3. 开始操作
 
-1. `browser_list_browsers` → `browser_list_tabs`，确认浏览器、标签页标题和 URL。
-2. `browser_claim_tab`，用 `list_tabs` 的 `tab_id` 接管（可选 `expected_url` / `expected_title` 精确校验），取得本连接的 `tab_handle`。
+1. `browser_list_browsers` → `browser_tabs`（`action=list`），确认浏览器、标签页标题和 URL。
+2. `browser_claim_tab`，用列表中的 `tab_id` 接管（可选 `expected_url` / `expected_title` 精确校验），取得本连接的 `tab_handle`。
 3. `browser_snapshot` 取得元素 `ref`，再执行点击、填写或其他动作。
-4. 动作后重新观察，结束时调用 `browser_release_tab`。
+4. 动作后重新观察，结束时调用 `browser_claimed_tab`（`action=release`）。
 
 标题易变时，claim 可省略 `expected_title`；`expected_url` 也可选。点击/填写可改用每次重新解析的 `selector`。原生元素点击自动滚动；整页坐标点击使用 `coordinate_space: "document"`。求值结果使用 `cursor` 续读缓存，不会重新运行脚本。设计取舍见 [架构说明](docs/ARCHITECTURE.md#设计取舍)。
 
-接管和普通输入不会主动激活标签或窗口；需要前台渲染时显式调用 `browser_activate_tab`。操作结果未知时先重新观察，避免重复提交。完整参数、分页、上传与输入语义见 [使用指南](docs/USAGE.md)。
+接管和普通输入不会主动激活标签或窗口；需要前台渲染时显式调用 `browser_claimed_tab`（`action=activate`）。操作结果未知时先重新观察，避免重复提交。完整参数、分页、上传与输入语义见 [使用指南](docs/USAGE.md)。
 
 ## 工具
 
 | 工具 | 用途 |
 | --- | --- |
-| `browser_list_browsers` / `browser_list_tabs` | 发现浏览器配置、标签身份及控制状态 |
-| `browser_claim_tab` / `browser_release_tab` | 独占接管与释放 |
-| `browser_open_tab` / `browser_activate_tab` / `browser_close_tab` | 显式管理标签页 |
+| `browser_list_browsers` | 发现浏览器配置与能力 |
+| `browser_tabs`（`action=list\|open`） | 列出标签身份及控制状态，或后台打开 HTTP(S) 标签 |
+| `browser_claim_tab` | 按列出的 `tab_id` 独占接管 |
+| `browser_claimed_tab`（`action=activate\|release\|close`） | 激活/聚焦、释放或关闭已接管标签 |
 | `browser_snapshot` / `browser_read_text` | AX 快照、元素引用和正文 |
 | `browser_wait` | 只读等待元素、文本、URL 或网络空闲 |
 | `browser_click` / `browser_hover` / `browser_drag` / `browser_select_option` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_scroll` | 原生/DOM 输入、指针悬停与拖拽、下拉选择、逐字输入与滚动 |
@@ -129,7 +132,7 @@ MCP 客户端 → Node.js stdio MCP → 127.0.0.1 Hub
 
 浏览器扩展具有调试权限，客户端操作可使用现有网站登录态；只应将其接入你信任的 MCP 客户端。网页内容不应被视为用户授权。配对密钥和生成的 `config.generated.js` 不应提交或发布，打包检查会拒绝包含该文件的包。
 
-目前仅支持 Chrome / Edge 的 HTTP(S) 页面。下载管理、网络拦截和 Firefox / WebKit 尚不支持。跨进程 iframe 使用递归 session 路由，覆盖快照、输入、上传和日志；透视变换的 iframe 点击会明确拒绝。原生指针输入要求活动且未暂停的标签及未最小化窗口，焦点和文档可见性只作诊断；不就绪时快速返回未派发及 activate_tab 提示；不会自动抢焦点。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
+目前仅支持 Chrome / Edge 的 HTTP(S) 页面。下载管理、网络拦截和 Firefox / WebKit 尚不支持。跨进程 iframe 使用递归 session 路由，覆盖快照、输入、上传和日志；透视变换的 iframe 点击会明确拒绝。原生指针输入要求活动且未暂停的标签及未最小化窗口，焦点和文档可见性只作诊断；不就绪时快速返回未派发及 browser_claimed_tab action=activate 提示；不会自动抢焦点。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
 
 ## 本地开发
 

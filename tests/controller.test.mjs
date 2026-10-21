@@ -104,7 +104,7 @@ test('background native click fails before renderer work, keeps refs and can rec
   f.tabs.get(9).active = false;
   f.calls.length = 0;
   await assert.rejects(f.exec('click', { ref, timeout_ms: 30000 }), error => {
-    assert.match(error.message, /TAB_NOT_READY.*tab not active.*browser_activate_tab.*No input was dispatched/);
+    assert.match(error.message, /TAB_NOT_READY.*tab not active.*browser_claimed_tab.*action=activate.*No input was dispatched/);
     assert.doesNotMatch(error.message, /unknown/i); return true;
   });
   assert.equal(f.calls.length, 0);
