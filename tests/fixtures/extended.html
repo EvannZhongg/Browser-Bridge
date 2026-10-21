@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>Attach issue probe</title>
+<style>#list{height:240px;width:250px;overflow:auto;border:1px solid}#space{height:10000px;position:relative}#rows{position:absolute;left:0;right:0}#rows button{display:block;height:20px;width:100%}iframe{width:350px;height:170px}#capture{position:absolute;left:20px;top:1400px;width:160px;height:80px;background:rgb(255,0,0)}</style>
+<input id="edit" aria-label="Type input"><button id="increment" onclick="window.count++">Increment</button>
+<button id="alert" onclick="alert('Continue alert')">Alert</button><button id="confirm" onclick="window.confirmed=confirm('Continue confirm')">Confirm</button>
+<button id="chooseclosed" onclick="window.closedInput.click()">Choose closed file</button><button id="unreceipt">Unverified effect</button><span id="mark">Before</span>
+<select id="select"><option value="a">Alpha</option><option value="b">Beta</option></select>
+<div id="list"><div id="space"><div id="rows"></div></div></div>
+<iframe title="Outer" src="/outer"></iframe><div id="capture">Element evidence</div><div id="shadow"></div>
+<script>
+window.count=0;window.keys=[];
+for(const type of ['keydown','keypress','input','keyup'])document.querySelector('#edit').addEventListener(type,e=>{window.keys.push({type,key:e.key,trusted:e.isTrusted,time:performance.now()});if(type==='keydown'&&e.key==='#')e.preventDefault()});
+const list=document.querySelector('#list'),rows=document.querySelector('#rows');
+function render(){const first=Math.min(488,Math.floor(list.scrollTop/20));rows.style.top=(first*20)+'px';rows.innerHTML=Array.from({length:12},(_,i)=>'<button>Row '+String(first+i).padStart(4,'0')+'</button>').join('');for(const b of rows.children)b.onclick=()=>window.selectedRow=b.textContent}
+list.addEventListener('scroll',render);render();
+const root=document.querySelector('#shadow').attachShadow({mode:'closed'});const input=document.createElement('input');input.type='file';input.multiple=true;input.hidden=true;root.append(input);window.closedInput=input;window.uploadEvents=[];for(const type of ["input","change"])input.addEventListener(type,e=>window.uploadEvents.push({type,trusted:e.isTrusted}));
+window.addEventListener('click',e=>{if(e.target.id==='unreceipt'){document.querySelector('#mark').textContent='Effect observed';e.stopImmediatePropagation()}},true);
+</script>

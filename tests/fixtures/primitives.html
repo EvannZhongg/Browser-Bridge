@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>Attach issue probe</title>
+<style>
+body{margin:0;font:16px sans-serif}#menu{position:absolute;left:40px;top:30px;width:200px;padding:10px;background:#ddd}
+#child{display:none;margin-top:10px}#menu.open #child{display:block}
+#drag{position:absolute;left:320px;top:40px;width:100px;height:80px;background:orange}
+#drop{position:absolute;left:550px;top:40px;width:200px;height:120px;background:lightblue}
+#slider{position:absolute;left:320px;top:230px;width:250px;height:50px;background:#ccc;touch-action:none}
+#select{position:absolute;left:40px;top:230px}#edit{position:absolute;left:40px;top:280px}
+#far{position:absolute;left:400px;top:1800px;width:250px;height:100px;background:lightgreen}
+</style>
+<div id="menu" role="button" aria-label="Menu">Menu<button id="child">Child</button></div>
+<div id="drag" draggable="true">Drag source</div><div id="drop">Drop target</div>
+<div id="slider">Pointer slider</div><div id="far">Offscreen target</div>
+<select id="select"><option value="a">Alpha</option><option value="b">Beta</option><option value="c" disabled>Disabled</option></select>
+<input id="edit" aria-label="Edit"><button id="disabled" disabled>Disabled button</button><button id="hidden" style="display:none">Hidden button</button>
+<script>
+window.events=[];window.enters=0;window.leaves=0;window.childClicks=0;window.pointerMoves=0;window.selectedEvents=[];
+const menu=document.querySelector('#menu');let closing;
+menu.addEventListener('mouseenter',()=>{clearTimeout(closing);window.enters++;menu.classList.add('open')});
+menu.addEventListener('mouseleave',()=>{window.leaves++;closing=setTimeout(()=>menu.classList.remove('open'),300)});
+document.querySelector('#child').onclick=()=>window.childClicks++;
+for(const type of ['mousedown','mousemove','mouseup','dragstart','dragover','drop','dragend'])document.addEventListener(type,e=>{window.events.push({type,target:e.target.id,trusted:e.isTrusted});if(['dragover','drop'].includes(type))e.preventDefault();if(type==='dragstart')e.dataTransfer.setData('text/plain','real payload')},true);
+for(const type of ['input','change'])document.querySelector('#select').addEventListener(type,e=>window.selectedEvents.push({type,trusted:e.isTrusted}));
+const slider=document.querySelector('#slider');slider.onpointerdown=e=>slider.setPointerCapture(e.pointerId);slider.onpointermove=e=>{if(e.buttons===1)window.pointerMoves++};
+</script>

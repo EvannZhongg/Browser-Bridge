@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.8.0**：Node.js 22+、Chrome / Edge 125+、20 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.10.0**：Node.js 22+、Chrome / Edge 125+、25 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -10,7 +10,7 @@
 2. `browser_list_tabs(browser_id)` 取得目标标签的 `tab_id`、精确标题 / URL 与控制状态。
 3. `browser_claim_tab(...)` 独占接管，拿到本连接的 `tab_handle`。
 4. `browser_snapshot(tab_handle)` 读取语义树与元素 `ref`。
-5. 用当前 ref 执行**一次**动作，动作后重新观察。
+5. 使用 ref 或 selector 执行动作；原节点仍存在时 ref 可复用，需要新信息时再观察。
 6. `browser_release_tab(tab_handle)` 释放控制，页面保持打开。
 
 `tab_id` 必须来自本连接最近一次 `list_tabs`。`expected_url` / `expected_title` 是可选的精确校验；提供时须与列表及接管时的实际标签逐字符一致。标题易变时只传 `expected_url`，或明确按 `tab_id` 接管并检查返回的当前身份。同一标签只允许一个 owner，`tab_handle` 不能跨连接使用。
@@ -34,6 +34,7 @@
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
 | `browser_snapshot` | `max_nodes=600`, `max_chars=24000`, `cursor` | AX 语义树、元素 ref、frame 覆盖、待处理文件选择器 |
+| `browser_wait` | `condition`, `selector`, `expected` / `previous`, `idle_ms=500`, `timeout_ms=5000` | 只读等待元素、文本、URL 或被动网络空闲 |
 | `browser_read_text` | `mode`, `selector`, `offset=0`, `max_chars=20000` | 主 frame 的 DOM、字段值或支持的编辑器模型 |
 
 ### 输入
@@ -41,21 +42,25 @@
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
 | `browser_click` | `ref` / `selector` / `x`+`y`、`coordinate_space`、`button`、`click_count`、`modifiers`、`mode`、`timeout_ms` | 原生可信点击或显式 DOM 点击 |
+| `browser_hover` | `ref` / `selector` / `x`+`y`, `coordinate_space`, `timeout_ms` | 只移动并保留原生指针，核验可信 mousemove |
+| `browser_drag` | `source`, `destination`, `mode=pointer`, `steps=20`, `timeout_ms` | 原生指针或 HTML5 拖拽，目的节点自动滚入视口 |
+| `browser_select_option` | `ref` / `selector`，`label` / `value` / `index` 三选一 | 设置一个 HTML select 选项，明确事件非可信 |
+| `browser_type` | `ref` / `selector`, `text`, `delay_ms=0`, `timeout_ms` | 保留现有文本与选区，逐字符可信按键输入 |
 | `browser_fill` | `ref` / `selector`, `text`, `mode`, `timeout_ms` | 文本 / textarea / contenteditable，写入后核验文本 |
 | `browser_press_key` | `key`, `timeout_ms` | 单键或组合键，核验可信 keydown 送达 |
-| `browser_batch` | `steps`, `timeout_ms=15000` | 单队列内顺序执行 1–20 步 click/fill/press_key，失败即停并返回部分结果 |
-| `browser_scroll` | `delta_y`, `delta_x`, `x`, `y`, `mode`, `timeout_ms` | 容器 `scrollBy` 或原生 wheel |
+| `browser_batch` | `steps`, `timeout_ms=15000` | 单队列内顺序执行 1–20 步 click/fill/type/press_key/hover/scroll/select_option/wait，失败即停并返回部分结果 |
+| `browser_scroll` | 可选目标、`delta_y`、`until.text`、`max_steps` | 容器/坐标滚动；有界查找文本并返回新 ref |
 
 ### 页面、文件与诊断
 
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
-| `browser_navigate` | `url`, `wait_until=domcontentloaded`, `timeout_ms=15000`, `include_snapshot=true` | 等待并返回新文档标题、URL、快照 |
+| `browser_navigate` | `url` / `direction=back/forward`, `wait_until=domcontentloaded`, `timeout_ms=15000`, `include_snapshot=true` | 等待并返回新文档标题、URL、快照 |
 | `browser_handle_dialog` | `accept`, `prompt_text` | alert / confirm / prompt |
 | `browser_upload_file` | `files`, `ref`（可省略） | 原生 file input、隐藏 input 或已拦截的选择器 |
-| `browser_screenshot` | `full_page=false`, `include_indicators=false` | PNG + 像素到视口 CSS 的映射 |
-| `browser_evaluate` | `expression`, `timeout_ms=10000`, `max_chars=20000` | 主 frame 表达式求值，可等待 Promise |
-| `browser_logs` | 必填 `kind=console/network`, `after_seq`, `limit`, `max_chars`, `level` / `url_contains` | 统一读取控制台、异常或网络日志；过滤条件按 kind 区分 |
+| `browser_screenshot` | `full_page=false`, `include_indicators=false` | viewport/full_page/元素 PNG + 坐标映射 |
+| `browser_evaluate` | `expression`, `timeout_ms=10000`, `max_chars=20000` | 表达式/函数求值，等待 Promise；可选元素 ref |
+| `browser_logs` | 必填 `kind=console/network`, `after_seq`, `limit`, `max_chars`, `level` / `url_contains` | 统一读取日志；network 可显式 capture 有界脱敏的 XHR/fetch 详情 |
 
 普通结果是一份紧凑 JSON 文本；截图另外返回标准图片内容。失败通过 MCP `isError` 返回，错误文本即原因。
 
@@ -72,19 +77,33 @@
 
 | 事件 | 影响 |
 |---|---|
-| `click` / `fill` / `press_key` / `scroll` / `upload_file` / `evaluate`（新表达式） | 全部 refs 与 cursor 失效；`evaluate` 的 `cursor` 续读不失效 |
+| 输入 / `evaluate`（新表达式） | 快照 cursor 失效；原节点 refs 可继续解析；`evaluate` 的缓存续读不失效 |
 | 新的 `browser_snapshot` | 旧 refs 失效 |
 | 主文档导航、同文档导航、文档更新 | 全部 refs 与 cursor 失效 |
 | 子 frame 导航或移除 | 仅该子树 refs 失效，其余保留 |
 | `release_tab` / `close_tab` / 断连 | 全部失效 |
 
-`browser_read_text` 读取主 frame，`max_chars` 为 1–100000（默认 20000）。`mode=visible` 使用 innerText；`text_content` 使用 textContent；`value` 要求用 selector 唯一选中 input、textarea 或 contenteditable；`editor` 要求 selector 对应支持的 Monaco 或 CodeMirror 5 实例并读取完整模型。Monaco 必须在页面暴露 `monaco.editor.getEditors()`，CodeMirror 5 必须在选中节点暴露实例。未知编辑器明确报错，使用站点专用 evaluate 适配；不猜测模块内部状态。
+ref 每次用 frame/session + backendNodeId 重新解析，并以局部 AX 查询核对原 role/name；语义改变时要求新快照，不依赖旧坐标，也不以相似名称查找替代。节点脱离文档时失败；重新插入的同一节点可继续使用。
+
+`browser_read_text` 默认读取主 frame，`max_chars` 为 1–100000（默认 20000）。`mode=visible` 使用 innerText；`text_content` 使用 textContent；`value` 要求用 selector 唯一选中 input、textarea 或 contenteditable；`editor` 要求 selector 对应支持的 Monaco 或 CodeMirror 5 实例并读取完整模型。Monaco 必须在页面暴露 `monaco.editor.getEditors()`，CodeMirror 5 必须在选中节点暴露实例。未知编辑器明确报错，使用站点专用 evaluate 适配；不猜测模块内部状态。
+
+整页摘要/检索直接调用 `browser_read_text({tab_handle})`，不传 selector 即是 document.body.innerText；正文可用 next_offset 分段续读。可见正文包含页面当前渲染文本，不包含未加载的虚拟行、默认模式下的子 frame 或所有 Shadow DOM 内容，所以 complete_source=false 是覆盖边界，不代表分页丢失。
 
 返回 `source`、`complete_source`、`total_chars`、`returned_chars`、`truncated`、`next_offset`。DOM 和 contenteditable 无法保证包含虚拟化内容，`complete_source=false`；字段 value / 支持的模型为 true。`next_offset` 用于下一次实时读取，内容变化可能导致重复或遗漏；需要一致结果时用 evaluate 一次提取并续读缓存。
 
+### 可复用的 frame 寻址
+
+除 frame_id 外，selector、read_text 和 evaluate 可传 frame；二者互斥。URL/title 精确匹配子 frame，多个匹配立即报错。path 是逐层 CSS iframe 选择器，每层须唯一；每次调用重解析，frame 被重新创建后仍可使用同一路径。未出现的 frame 只在准备预算内等待，歧义不重试。
+
+```json
+{"tab_handle":"...","selector":"input","frame":{"path":["iframe[title='Outer']","iframe[title='Inner']"]},"text":"填写内容"}
+```
+
+也可传 `frame: {url:'https://example.com/form'}` 或 `frame: {title:'表单页面'}`；path 可再与 URL/title 组合校验最终 frame。ref 自带 frame/session，不能另传 frame。路径 CSS 不穿透 Shadow DOM；可操作 AX ref 和拦截的 file chooser 仍覆盖闭合 Shadow DOM。
+
 ## 输入：可操作性与两种模式
 
-`click`、`fill`、`press_key` 共用一套等待逻辑：可见、启用、非 `inert`、几何位置连续稳定；`fill` 还要求可编辑且非只读，`press_key` 会从当前焦点逐层进入 OOPIF 找到接收方。`timeout_ms` 默认 5000、范围 100–30000，**一个截止时间**覆盖准备、派发与校验；准备阶段只轮询、不派发，派发只发生一次。
+`click`、`fill`、`press_key` 共用一套等待逻辑：可见、启用、非 `inert`、几何位置连续稳定；`fill` 还要求可编辑且非只读，`press_key` 会从当前焦点逐层进入 OOPIF 找到接收方。`timeout_ms` 默认 5000、范围 100–30000，**一个截止时间**覆盖准备、派发与校验；准备阶段只轮询、不派发，派发只发生一次。原生 click/hover/press_key 派发与可信回执最多另等 1250 ms，清理最多 250 ms；这属于送达上限，长 timeout_ms 仍可用于等待目标出现。
 
 ### browser_click
 
@@ -117,6 +136,52 @@ hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证�
 
 跨进程 iframe 会逐层检查父页面遮挡并换算坐标，最终从顶层派发；返回的 `clicked` 始终是顶层视口 CSS 坐标。透视变换的 iframe 会被明确拒绝。
 
+### browser_hover / browser_drag
+
+hover 接受与原生 click 相同的目标，执行一次 mouseMoved，不派发 down/up/click。工具清理不移动指针；后续直接 click 子项，不需要先移回父菜单。输入不移动系统鼠标，也不隐式激活标签。
+
+```json
+{"tab_handle":"...","selector":"#menu"}
+```
+
+随后调用 `browser_click({tab_handle, selector:'#menu .child'})`。需要等待菜单出现时可组合 browser_wait。
+
+drag 的 source / destination 各自接受 ref、严格 selector（可带 frame_id/nth）或 x/y（可带 coordinate_space）。mode 必须按页面交互选择，默认 pointer；steps 默认 20，范围 2–100，每步间隔约 16 ms。
+
+```json
+{"tab_handle":"...","source":{"selector":"#card"},"destination":{"selector":"#column"},"mode":"html5","steps":20}
+```
+
+pointer 发送 mousePressed → 多步 mouseMoved → mouseReleased；HTML5 模式先通过真实按下/移动触发 dragstart 并截获其 DragData，再派发 dragEnter/dragOver/drop，核验可信 dragstart/drop/dragend。不会凭空构造拖拽数据，不自动切换模式。目的元素在按住后调用已有滚入视口逻辑，包含嵌套容器，然后重新命中检查；这是目标驱动的滚动，不是持续的视口边缘滚动任务。固定坐标始终受视口边界约束，视口外坐标用 document 或改用元素目标。
+
+成功返回 events_trusted=true、delivery_verified=true、application_result=not_checked；不保证应用已保存排序。任一步失败、主文档/相关 frame 变化或接管结束即停止，尝试取消/释放本次手势；不回滚、不重放。HTML5 CDP 路径仍受浏览器和站点原生拖拽支持限制。
+
+### browser_select_option
+
+ref/selector 必须指向 HTML select。label/value 为精确匹配，index 从 0 开始，三者只传一个；重复 label/value 报错，使用明确 index 消歧。禁用 select/option/optgroup 被拒绝。设置一个选项；multiple 控件也只保留这个选项。
+
+```json
+{"tab_handle":"...","selector":"select[name=city]","label":"上海"}
+```
+
+不打开系统弹层、不主动聚焦，使用原型 selectedIndex setter 后派发合成 input/change，并核对选项身份及最终索引。返回 method=dom、events_trusted=false、value_verified=true，不能满足网站的 isTrusted/用户激活要求。native click 命中 select、其 UA shadow 节点或关联 label 时在派发前提示使用 select_option。系统弹层已经打开时按 Esc 关闭；工具不接管操作系统 UI。
+
+### browser_wait
+
+condition 支持 attached（出现）、visible（非隐藏且有尺寸）、actionable（可见/启用/非 inert/稳定/命中无阻挡）、text（textContent 含 expected，或与 previous 不同）、url（主 frame URL 含 expected）、network_idle。元素条件使用严格 selector，可带 selector_type/frame_id/nth；歧义立即报错。visible 不要求启用；actionable 不自动滚动，元素须在视口内，并复用 native click 的 frame/祖先遮挡检查。
+
+```json
+{"tab_handle":"...","selector":"#toast","condition":"text","expected":"保存成功","timeout_ms":5000}
+```
+
+url 需要 expected 子串；text 传 expected 子串，或传 previous 等待任意文本变化，两者只选一个。previous 必须是完整的旧 textContent，可先用 read_text 的 text_content 模式或 evaluate 读取。SPA 可组合 url 与目标元素条件。工具只读轮询，timeout_ms 为 100–30000；失败说明所等条件与最后观察状态：
+
+- `Wait for attached selector="#missing" ... current={"satisfied":false,"state":"absent"}`
+- `Wait for visible selector="#hidden" ... current={"ready":false,"reason":"hidden or zero size","satisfied":false}`
+- `Wait for actionable selector="#disabled" ... current={"ready":false,"reason":"disabled","satisfied":false}`
+
+network_idle 复用 claim 后的被动网络请求表，等待 inflight=0 且连续 idle_ms（默认 500，范围 100–10000）无请求活动，涵盖已接管页面与 iframe。它不能证明 claim 前的请求、独立 worker 或 WebSocket 消息空闲；长轮询请求会阻止满足条件。活跃表曾超过 500 项时 tracking_overflow=true，无法证明空闲而不会报告成功。页面通常仍需等待业务元素或标志。
+
 ### browser_fill
 
 支持文本类 `input`（text / search / email / password / tel / url）、`textarea` 与 `contenteditable`；传当前 ref 或严格 selector。
@@ -126,9 +191,19 @@ hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证�
 - 两种模式都核对字段最终文本，成功返回 `value_verified: true`、`application_result: "not_checked"`；被吞、失焦或页面同步格式化导致不匹配时报错，且不回显字段内容。这不证明框架状态、选项提交、后续重渲染保留或业务保存。
 - 不会自动 blur 或按 Enter。需要失焦校验时显式 press_key Tab 或点击其他明确目标；自定义年/月/城市选择器输入通常只是过滤，还需点击具体选项。Enter 的语义由站点决定。校验文案可能滞后，应同时观察选中项和字段值；添加行前先确认已提交选项，不能只看输入框里的文本。
 
+### browser_type
+
+fill 是替换文本，原生路径用 insertText，不制造逐字 keydown。自动补全/搜索框监听按键时用 type：只聚焦，不清空、不全选，在当前选区逐个 Unicode 字符派发原生 keyDown（含文本）/keyUp，由浏览器产生 keypress/input。页面 preventDefault 可阻止后续默认输入；不会为补事件再调用 insertText。ASCII 使用 US 键位，非 ASCII 的 code 为空，不模拟系统 IME 组合输入。
+
+```json
+{"tab_handle":"...","selector":"input[role=combobox]","text":"上海","delay_ms":50}
+```
+
+delay_ms 为 0–1000，是字符之间的最小额外间隔，准备与协议开销会增加实际耗时；整串 text 最多 10000 个 UTF-16 单位，仍受同一 30 秒以内的总预算约束。换行/Tab/控制字符用显式 press_key。检查原字段连接与焦点，观察到失焦或替换后停止；失败报告已核验字符数，当前字符仍可能已送达，不能重放整串。delivery_verified 证明 keydown，不证明站点接受文本或保存。
+
 ### browser_batch
 
-同一 tab_handle 内一次传入 1–20 个明确步骤，action 仅支持 click/fill/press_key；click/fill 必须使用 selector，可带 selector_type、frame_id、nth 和 mode（默认 native）。click 还支持 button/click_count/modifiers。不能使用 refs 或坐标；不会跨输入保留旧元素身份。
+同一 tab_handle 内一次传入 1–20 个明确步骤，action 支持 click/fill/type/press_key/hover/scroll/select_option/wait；元素动作必须使用 selector，可带 selector_type、frame_id、nth 和 mode（默认 native）。click 还支持 button/click_count/modifiers。batch 只接受 selector，不接受 refs 或坐标；每步重新查询目标。
 
 ```json
 {"tab_handle":"...","steps":[
@@ -137,7 +212,9 @@ hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证�
 ]}
 ```
 
-timeout_ms 默认 15000，范围 100–30000，是整批准备、派发和校验的总预算。所有参数先预检，每一步复用原有输入流程，尚未渲染的选项可在准备阶段等待；不会自动猜选项或增加交互。步骤间不插入其他同标签命令。成功返回 completed=true、results；首个失败返回 MCP isError=true 以及 completed=false、results（此前完成结果）、failed_step（从 0 开始）、error。发生主文档变化、断开接管或弹窗也会停止。整批不具备事务或回滚语义，不要重放已完成步骤；失败步骤可能已产生副作用，先观察。
+timeout_ms 默认 15000，范围 100–30000，是整批准备、派发和校验的总预算。每步可设 timeout_ms（100–30000），它与剩余总预算取更早的截止时间，失败后不会继续下一步。所有参数先预检，每一步复用原有输入流程，尚未渲染的选项可在准备阶段等待；不会自动猜选项或增加交互。步骤间不插入其他同标签命令。成功返回 completed=true、results；首个失败返回 MCP isError=true 以及 completed=false、results（此前完成结果）、failed_step（从 0 开始）、error。发生主文档变化、断开接管或弹窗也会停止。整批不具备事务或回滚语义，不要重放已完成步骤；失败步骤可能已产生副作用，先观察。
+
+失败还返回 started_at、next_unattempted_step（无后续步骤时为 null）、retry_failed_step_safe。start_at 是显式的从 0 开始的续跑索引：重新提交同一 steps 并选择要执行的索引，前面的步骤只做参数验证，不再派发。未派发/只读等待失败可报告 retry_failed_step_safe=true；已派发或无法确认时为 false。先观察失败步骤是否生效，再决定重试该步还是跳到 next_unattempted_step；工具不自动选择、重试、回滚或保存后台任务。整批/每步均可指定 dialog_policy；各步骤返回自己的 dialogs，整批返回汇总。
 
 用 batch 合并已知的“打开 → 原生输入过滤 → 点击具体选项”路径；不确定下一目标时先结束本批，snapshot/evaluate 观察后再继续。evaluate 中的 JavaScript 不能制造可信输入事件。
 
@@ -157,7 +234,21 @@ timeout_ms 默认 15000，范围 100–30000，是整批准备、派发和校验
 - `mode: "wheel"` 从顶层派发原生 wheel，由浏览器路由到容器或 OOPIF，遵守祖先页面遮挡；返回 `method: "native_wheel"`、`dispatched: true`，仅表示 CDP 已确认派发，不保证处理器执行或页面移动。
 - DOM 模式返回 `scrolled`、`before` / `after`、`scope`（`document` 或 `element`）。
 
+容器目标可传 ref/selector 与 frame；DOM 模式直接对这个容器 scrollBy，wheel 模式复用命中与 frame 换算后派发原生 wheel。无目标时保留原来的坐标/视口中心行为。
+
+虚拟列表无需 evaluate 计算坐标，可在同一个标签队列和总预算内滚动查找，并返回找到元素的 ref：
+
+```json
+{"tab_handle":"...","selector":"#list","until":{"text":"Row 0487","selector":"button"},"delta_y":200,"max_steps":100,"timeout_ms":15000}
+```
+
+until 是显式 DOM 滚动搜索，不与 wheel 组合；省略 delta_y 时每次滚约 0.8 个容器高度。max_steps 默认 100、范围 1–500。搜索容器内渲染且有尺寸的最深匹配元素，文本为子串；重复匹配报错，使用 until.selector 消歧。每次滚动后有界轮询，导航、相关 frame 变化、边界、步数或超时即停止，不自动点击；返回 found/ref/frame_id/scroll_steps。滚动本身会改变页面状态，即使未找到也可能已触发加载。它不承诺读到服务端未提供的数据，也不把虚拟列表未渲染行当作已存在。batch 的 scroll 步骤使用同一实现。
+
 ### 结果未知时
+
+不确定的输入/求值/导航错误会附带一次有界 Post-action observation：dialog/dialogs、navigation_observed、frame_navigation_observed、current_url、frame_id、dom_changed。DOM 信号由操作前在目标 frame 安装的临时 MutationObserver 提供，读取最多 300 ms、清理最多 100 ms；不读取整棵快照或重放动作。节点属性值、服务端状态及其他 frame 的变化未必触发该 DOM 信号。
+
+观察到对话框、导航或 DOM 变动可报告 observable_effects；no_effect_confirmed 仅表示未确认效果，不表示未送达或未发生。delivery 仍为 unknown，业务成功仍需任务自己的标志或网络证据。确定的准备失败则保留“未派发”。
 
 派发之后的超时会释放工具队列，但动作可能已经送达或稍后生效。此时先观察页面（快照、截图、日志），不要自动重放，也不要为了补一次而切换模式。
 
@@ -165,7 +256,7 @@ timeout_ms 默认 15000，范围 100–30000，是整批准备、派发和校验
 
 ## 导航、对话框与截图
 
-`browser_navigate` 只接受不带凭据的 HTTP(S) URL。
+`browser_navigate` 传 url 或 direction=back/forward，二者只选一个；URL 和历史目的地都必须是不带凭据的 HTTP(S) 页面。历史使用 Page.navigateToHistoryEntry，并等待对应主 frame 的提交/生命周期；同文档历史和 BFCache 恢复无需等待新的 DOMContentLoaded。无历史条目时在派发前失败。
 
 | 参数 | 默认 | 范围 / 说明 |
 |---|---|---|
@@ -177,21 +268,29 @@ timeout_ms 默认 15000，范围 100–30000，是整批准备、派发和校验
 
 观察遇到文档变化、执行上下文销毁等瞬时错误时，内部只重读一次，共享同一 10 秒预算；不会重新导航。权限错误和预算耗尽不重试。
 
-页面弹出 JavaScript 对话框时，`browser_snapshot` 会返回 `dialog` 对象，其他动作（除 `release_tab`）被拒绝；用 `browser_handle_dialog` 接受或取消，`prompt_text` 只在 prompt 时使用。对话框打开期间仍可读取控制台和网络日志。
+输入、evaluate、navigate、wait 与 batch 可指定 dialog_policy=ask/accept/dismiss，默认 ask。accept/dismiss 在操作期间自动调用已有 JS 对话框接口，返回 dialogs 中的原消息、类型、accepted、handled；prompt 自动 accept 使用原默认文本。每个操作最多自动处理 10 个对话框，之后回到等待人工处理，不自动无限确认。它只覆盖页面 JS 对话框，不接管系统权限/文件 UI。
+
+batch 遇到已自动处理的 alert/confirm 可以继续下一步；默认 ask 仍会停止。beforeunload=accept 继续等待导航，dismiss 返回 navigated=false、cancelled_by_dialog=true；浏览器若未弹出 beforeunload，工具不能强制它出现。主文档实际变化后 batch 仍按原规则停止，避免在新文档执行后续步骤。
+
+页面弹出未自动处理的 JavaScript 对话框时，`browser_snapshot` 会返回 `dialog` 对象，其他动作（除 `release_tab`）被拒绝；用 `browser_handle_dialog` 接受或取消，`prompt_text` 只在 prompt 时使用。对话框打开期间仍可读取控制台和网络日志。
 
 handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`。`default_button=null`，协议不提供浏览器默认按钮焦点。beforeunload 只有实际弹出时才能观察，浏览器可能因缺少用户激活而抑制它。DOM 值写入不证明应用已保存或 dirty=false；不存在跨框架可靠的通用 dirty 检测，导航前按任务检查保存标志或业务接口。
 
 `browser_screenshot` 返回 PNG 与 `capture` 元数据：`scope`（`viewport` / `full_page`）、`viewport`、`css_width`、`css_height`、`image_origin_css`、`image_to_viewport_css`。像素到视口坐标的换算为 `css = 像素 × scale + offset`。超时为 5 秒；被遮挡或非活动的 Chromium 页面可能暂停渲染，此时先 `browser_activate_tab`，或改用 AX / 正文。整页截图超过 4000 万像素会被拒绝；整页图中的视口外位置需要先滚动。
 
+元素截图传 ref 或严格 selector（可用 frame），与 full_page 互斥。截取当前渲染 border box 的外接矩形，不要求元素启用、不移动焦点；OOPIF 坐标逐层换算，保留页面遮挡，截图不是元素抠图。无渲染 box、负文档坐标、透视 frame 或超过 4000 万像素时报错。capture.scope=element，image_origin_css 是该元素的真实文档位置，沿用已有像素到视口换算。可分别请求元素和 full_page 获取视觉证据，不增加另一个截图/图片比较工具。
+
 默认截图隐藏约 1.2 秒的原生点击反馈；`include_indicators: true` 可保留。截图本身不会激活标签或窗口。
 
 ## 文件上传
 
-方式一，直接使用新快照中文件 input 或其关联 label 的 ref：
+方式一，使用文件 input / 关联 label 的 ref 或严格 selector（可带 frame）；files 数组已支持多文件，files: [] 清空：
 
 ```json
 {"tab_handle":"...","ref":"<最新快照中的文件输入框 ref>","files":["C:/Users/example/Documents/report.pdf"]}
 ```
+
+开放 Shadow DOM 可用 evaluate 显式返回元素 ref，闭合 Shadow DOM 中隐藏且没有 AX ref 的文件 input 优先通过真实上传按钮触发已拦截的 chooser；不用穿透 CSS 或开启系统文件框。清空派发合成 input/change，返回 events_trusted=false；非空 DOM.setFileInputFiles 的事件为原生，返回 events_trusted=true。这些字段不证明服务端已上传。
 
 方式二，隐藏 input 或自定义上传按钮：
 
@@ -213,7 +312,7 @@ handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`�
 {"tab_handle":"...","expression":"({title: document.title, count: document.querySelectorAll('a').length})"}
 ```
 
-`expression` 最多 100000 字符，需要多条语句时使用 `(() => { ...; return result; })()`，异步使用 `(async () => { ... })()` 或直接返回 Promise。表达式在主 frame 的页面世界执行一次，可访问页面变量、DOM 和当前登录态，可产生写操作，但不授予用户激活；函数值不会被自动调用。
+`expression` 最多 100000 字符，需要多条语句时使用 `(() => { ...; return result; })()`，异步使用 `(async () => { ... })()` 或直接返回 Promise。表达式默认在主 frame 的页面世界执行一次，可用 frame_id/frame 指定子 frame，可访问页面变量、DOM 和当前登录态，可产生写操作，但不授予用户激活；返回函数时自动调用一次并等待其 Promise；不会递归调用函数返回的另一个函数。
 
 - `timeout_ms` 默认 10000、范围 100–30000；CDP 同步执行时间与 Promise 等待共用该预算。超时会释放工具队列，但不保证取消已调度的异步代码或网络请求。
 - `max_chars` 默认 20000、范围 1–100000，限制每页 value 的 JSON 字符预算（不含元数据）。
@@ -221,7 +320,15 @@ handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`�
 - 数组按完整项、对象按完整键值对、字符串按片段分页，返回 `result_kind`、`has_more`、`next_cursor`。下一页只传 `cursor`，不能再传 expression；续读只读缓存，不执行页面脚本，也不使当前 AX refs 失效。输入不改变已捕获结果；新求值、主文档导航/更新、释放或断连清空缓存。
 - 单项放不下时返回 `budget_too_small`、`required_chars`、`next_cursor`，可提高预算续读，不必重新执行。单个嵌套值超过 100000 字符时应在表达式中提取更小的字段；分页不递归拆解嵌套对象。
 - 特殊值用 `$type` 标记：`undefined`、`bigint`、`number`（NaN / Infinity / -0）、`date`、`error`、`function`、`symbol`、`accessor`、`circular_or_repeated`、`truncated`。Map、Set、DOM 等实例只遍历可枚举属性，需要稳定结果时返回普通对象或字符串。
-- 执行新表达式后 refs 全部失效；报错或超时前可能已修改页面，先观察，不要自动重放。
+- 执行新表达式后快照分页失效；仍连接的原节点 refs 可复用，文档/frame 变化仍使相关 refs 失效；报错或超时前可能已修改页面，先观察，不要自动重放。
+
+需要可操作元素时显式指定 result_type=element：
+
+```json
+{"tab_handle":"...","expression":"() => document.querySelector('#target')","result_type":"element"}
+```
+
+只接受所选 frame 的单个、仍连接的 DOM Element，不接受数组/JSON/null/Document，也不跨 frame 隐式猜测归属。返回 ref/frame_id/AX role/name，后续复用现有输入和上传工具；其文档/frame/session/语义失效规则与快照 refs 一致。每份当前观察最多追加 500 个元素 refs，新快照清空。原始 Runtime objectId 不暴露给客户端，生成 ref 后立即释放包装对象。result_type=json 为默认，分页只续读缓存，不执行函数；element 结果没有 JSON cursor。子 frame 求值的缓存也在该 frame 导航/移除时失效。
 
 异步 IIFE 已能表达多步 JavaScript 流程，例如 `(async()=>{const r=await fetch('/api/state');return await r.json()})()`；它不能调用 MCP 原生输入工具。最多 30 秒，没有后台 job 或超时后的结果续接。长工作流按可观察检查点拆分；游标仅续读成功捕获的结果。超时不等于取消异步副作用。
 
@@ -239,7 +346,9 @@ handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`�
 - 网络：`url_contains`（最多 2000 字符）过滤 URL，事件为 `request` / `redirect` / `response` / `finished` / `failed` / `cache`。按 `session_id`、`request_id` 和重定向 `hop` 关联；404 属于 `response`，连接失败属于 `failed`。timestamp 是 CDP 单调时钟秒，`request` 另带 Unix 秒的 `wall_time`。
 - 每次 claim 自动开启 Runtime / Log / Network 观察；过滤启用时会重放 claim 之后的历史控制台消息，已发生的网络请求无法追溯。导航不清空日志，`release`、detach、关闭或断连清理，不写入磁盘。
 - 每类最多保留 500 条、1,048,576 个 JSON 字符，活跃请求关联表最多 500 项。淘汰时 `data_loss: true` 并由 `dropped_through_seq` 标识缺口；关联表溢出可能让完成事件缺少 URL / hop，但仍保留 `request_id`。单条字段超长时尾部显示 `…[truncated]`；单条放不进读取预算时返回 `truncated: true` 的预览并推进游标。
-- 网络不保存 headers、请求体或响应体，也不修改缓存、service worker 或拦截请求；URL 与控制台内容仍可能包含网站数据。
+- 默认不保存 headers/正文。需要校验 XHR/fetch 时先调用 logs(kind=network, capture={enabled:true,max_body_bytes:65536})，再触发请求；随后读取 request/response/body 事件中的 method/status、headers、request_body/response_body。正文对象包含 text/format/bytes/truncated。url_contains 只过滤读取，不限制 capture 范围。capture.enabled=false 关闭后续捕获；之前的有界记录留到正常淘汰或 release，不落盘。
+- Authorization、Proxy-Authorization、Cookie、Set-Cookie 默认且始终脱敏；JSON/form 的 password/token/authorization/cookie 等命名字段也会替换。普通业务文本仍可能含数据，脱敏不保证清除任意格式的个人信息。单正文上限 1024–262144 字节，默认 65536；浏览器每个 debugger session 总缓存 2 MiB，保留原日志 500 条/1 MiB 上限，最多 8 个并行正文读取。已知解压后超过上限的响应不读取，二进制正文省略；缓存不足、捕获前已发出、跨导航丢失或超过并发限额会明示 unavailable，不能当作空正文。大量正文请调低捕获上限，并在读取时提高 max_chars（最大 100000），否则沿用预算预览而非完整正文。
+- 正文捕获不修改缓存策略、service worker 或拦截/重放请求；URL 与控制台内容仍可能包含网站数据。
 - 覆盖主 target、同进程 frame 与递归附着的 OOPIF，日志带 `session_id`（主 session 为 null），解析出上下文时带 `frame_id`。独立 worker / service worker 与 WebSocket 消息不在覆盖范围。
 
 ## 标签栏控制标记
@@ -253,7 +362,7 @@ handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`�
 ## 限制与排查
 
 - 仅支持 Chrome / Edge 的 HTTP(S) 页面；不含 `chrome://`、扩展页与本地文件。最低浏览器版本 125。
-- 不支持下拉专用选择、hover / drag、下载管理、网络拦截、测试运行器、Firefox / WebKit；独立 worker 与 WebSocket 消息不可见。
+- 不支持操作系统原生 UI 接管、下载管理、网络拦截、测试运行器、Firefox / WebKit；独立 worker 与 WebSocket 消息不可见。
 - 标签拖动或浏览器原生菜单可能捕获原生输入，CDP 返回成功不等于页面收到事件；结束该交互后再依赖原生输入。不要用 `Input.setIgnoreInputEvents(false)` 强行解除用户的菜单 / 拖动状态。
 - 后台操作要求浏览器运行且页面未冻结；网站自己弹窗或权限 UI 仍可能改变焦点。
 - `target_verified`、`delivery_verified`、`value_verified` 只证明事件送达或文本写入，不证明提交、付款、服务端上传等业务完成。

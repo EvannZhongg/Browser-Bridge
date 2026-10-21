@@ -10,7 +10,7 @@ export async function readText(cdp, value, tabId, args) {
   if (mode === 'value' || mode === 'editor') {
     if (!args.selector) throw new Error(`${mode} requires selector to identify exactly one field/editor`);
   }
-  return value(await cdp(tabId, 'Runtime.evaluate', { returnByValue: true,
+  return value(await cdp(tabId, 'Runtime.evaluate', { returnByValue: true, ...(args.context_id != null ? { contextId: args.context_id } : {}),
     expression: `(${extractText.toString()})(${JSON.stringify({ selector: args.selector, selector_type: args.selector_type, mode, offset, max_chars: max })},${queryElement.toString()})` }));
 }
 

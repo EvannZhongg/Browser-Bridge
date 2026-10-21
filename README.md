@@ -11,10 +11,11 @@
 ## 能做什么
 
 - 发现多个浏览器配置，精确选择并独占接管标签页，完成后释放。
-- 读取可访问性树、字段值和支持的编辑器模型，通过当前快照引用或严格 CSS/XPath 定位点击与填写。
-- 导航、打开或关闭标签页，处理 JavaScript 对话框，上传本机文件并截图。
-- 在主页面执行 JavaScript 表达式，读取接管后的控制台、页面异常和网络生命周期日志。
-- 使用标准 stdio MCP，共提供 20 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
+- 读取可访问性树、字段值和支持的编辑器模型，通过当前快照引用或严格 CSS/XPath 定位点击、替换填写和逐字输入。
+- 原生指针悬停、分步拖拽、条件等待；无需打开系统弹层即可选择 HTML 下拉选项。
+- 导航与历史前进/后退、打开或关闭标签页，处理 JavaScript 对话框，上传本机文件并截取整页或单个元素。
+- 在主页面执行 JavaScript 表达式，读取接管后的控制台、页面异常和网络生命周期日志；需要校验 XHR/fetch 时显式开启有界、脱敏的请求/响应详情。
+- 使用标准 stdio MCP，共提供 25 个工具。Hub 仅监听本机 loopback，通过随机密钥配对扩展。
 
 ## 环境要求
 
@@ -41,7 +42,7 @@ browser-attach setup
 也可以不全局安装：
 
 ```sh
-npx --yes --package=@evan_zhong/browser-attach@0.8.0 browser-attach setup
+npx --yes --package=@evan_zhong/browser-attach@0.10.0 browser-attach setup
 ```
 
 ### 2. 配置 MCP 客户端
@@ -53,7 +54,7 @@ npx --yes --package=@evan_zhong/browser-attach@0.8.0 browser-attach setup
   "mcpServers": {
     "browser_attach": {
       "command": "npx",
-      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.8.0", "browser-attach", "mcp"]
+      "args": ["--yes", "--package=@evan_zhong/browser-attach@0.10.0", "browser-attach", "mcp"]
     }
   }
 }
@@ -70,7 +71,7 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 3. `browser_snapshot` 取得元素 `ref`，再执行点击、填写或其他动作。
 4. 动作后重新观察，结束时调用 `browser_release_tab`。
 
-标题易变时，claim 可省略 `expected_title`；`expected_url` 也可选。点击/填写可改用每次重新解析的 `selector`。原生元素点击自动滚动；整页坐标点击使用 `coordinate_space: "document"`。求值结果使用 `next_cursor` 续读缓存，不会重新运行脚本。设计取舍见 [架构说明](docs/ARCHITECTURE.md#设计取舍)。
+标题易变时，claim 可省略 `expected_title`；`expected_url` 也可选。点击/填写可改用每次重新解析的 `selector`。原生元素点击自动滚动；整页坐标点击使用 `coordinate_space: "document"`。求值结果使用 `cursor` 续读缓存，不会重新运行脚本。设计取舍见 [架构说明](docs/ARCHITECTURE.md#设计取舍)。
 
 接管和普通输入不会主动激活标签或窗口；需要前台渲染时显式调用 `browser_activate_tab`。操作结果未知时先重新观察，避免重复提交。完整参数、分页、上传与输入语义见 [使用指南](docs/USAGE.md)。
 
@@ -82,8 +83,9 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 | `browser_claim_tab` / `browser_release_tab` | 独占接管与释放 |
 | `browser_open_tab` / `browser_activate_tab` / `browser_close_tab` | 显式管理标签页 |
 | `browser_snapshot` / `browser_read_text` | AX 快照、元素引用和正文 |
-| `browser_click` / `browser_fill` / `browser_press_key` / `browser_scroll` | 页面输入 |
-| `browser_batch` | 单队列顺序执行 1–20 步 click/fill/press_key，失败即停并返回部分结果 |
+| `browser_wait` | 只读等待元素、文本、URL 或网络空闲 |
+| `browser_click` / `browser_hover` / `browser_drag` / `browser_select_option` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_scroll` | 原生/DOM 输入、指针悬停与拖拽、下拉选择、逐字输入与滚动 |
+| `browser_batch` | 单队列顺序执行 1–20 步 click/fill/type/press_key/hover/scroll/select_option/wait，失败即停并返回部分结果 |
 | `browser_navigate` | HTTP(S) 导航与加载等待 |
 | `browser_handle_dialog` | alert、confirm、prompt |
 | `browser_upload_file` | 原生文件 input 或拦截的文件选择器 |
@@ -121,13 +123,13 @@ MCP 客户端 → Node.js stdio MCP → 127.0.0.1 Hub
                               现有 HTTP(S) 标签页
 ```
 
-每个 MCP 连接拥有独立控制权，句柄不能跨连接使用。断连或停止调试会释放控制。客户端端点要求 Bearer 密钥并拒绝网页 Origin；扩展验证固定 Origin、密钥和版本。`browser_evaluate` 可以使用页面现有登录态读写数据，执行后 refs 失效；超时或报错前可能已产生作用，不应自动重放。未暴露通用 CDP 工具。
+每个 MCP 连接拥有独立控制权，句柄不能跨连接使用。断连或停止调试会释放控制。客户端端点要求 Bearer 密钥并拒绝网页 Origin；扩展验证固定 Origin、密钥和版本。`browser_evaluate` 可以使用页面现有登录态读写数据，执行后快照分页失效，原节点 refs 可继续解析；超时或报错前可能已产生作用，不应自动重放。未暴露通用 CDP 工具。
 
-日志从接管开始采集，跨导航保留，释放时清除；每类最多保留 500 条、1,048,576 个 JSON 字符，超限淘汰会报告 `data_loss`。网络工具仅记录元数据，不读取请求/响应正文或 headers，不改变缓存或拦截流量。完整参数及边界见[使用指南](docs/USAGE.md#诊断日志)。
+日志从接管开始采集，跨导航保留，释放时清除；每类最多保留 500 条、1,048,576 个 JSON 字符，超限淘汰会报告 `data_loss`。网络日志默认只记录生命周期元数据；显式 capture 才读取之后的 XHR/fetch 有界、脱敏 headers/正文，不改变缓存或拦截流量。完整参数及边界见[使用指南](docs/USAGE.md#诊断日志)。
 
 浏览器扩展具有调试权限，客户端操作可使用现有网站登录态；只应将其接入你信任的 MCP 客户端。网页内容不应被视为用户授权。配对密钥和生成的 `config.generated.js` 不应提交或发布，打包检查会拒绝包含该文件的包。
 
-目前仅支持 Chrome / Edge 的 HTTP(S) 页面。hover / drag、下载管理、网络拦截和 Firefox / WebKit 尚不支持。跨进程 iframe 使用递归 session 路由，覆盖快照、输入、上传和日志；透视变换的 iframe 点击会明确拒绝。原生 click 要求活动、可见且窗口已聚焦，否则快速返回未派发及 activate_tab 提示；不会自动抢焦点。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
+目前仅支持 Chrome / Edge 的 HTTP(S) 页面。下载管理、网络拦截和 Firefox / WebKit 尚不支持。跨进程 iframe 使用递归 session 路由，覆盖快照、输入、上传和日志；透视变换的 iframe 点击会明确拒绝。原生指针输入要求活动且未暂停的标签及未最小化窗口，焦点和文档可见性只作诊断；不就绪时快速返回未派发及 activate_tab 提示；不会自动抢焦点。后台截图可能因浏览器暂停渲染而超时；原生菜单和标签拖动也可能抑制输入。
 
 ## 本地开发
 

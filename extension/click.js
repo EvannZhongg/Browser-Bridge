@@ -1,11 +1,11 @@
-import { deadline, waitForTarget } from './actionability.js';
+import { deadline, waitForTarget, delivery } from './actionability.js';
 
 // Native mouse dispatch stays in protocol order without serial compositor acknowledgments.
 export function createClick(cdp, value, viewport, position, sessions, getTab, getWindow) {
   const pending = new Map();
   async function assertReady(tabId, budget) {
     const timeout = Math.min(500, budget.remaining());
-    const guidance = 'Call browser_activate_tab with this tab_handle, then browser_snapshot and retry browser_click. If focus is still unavailable, restore/focus the browser window. No input was dispatched.';
+    const guidance = 'Call browser_activate_tab with this tab_handle, then browser_snapshot and retry the requested pointer action. If focus is still unavailable, restore/focus the browser window. No input was dispatched.';
     let timer;
     try {
       if (timeout <= 0) throw new Error('input deadline expired before the readiness check');
@@ -27,7 +27,7 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
         new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(`readiness check did not respond within ${timeout} ms`)), timeout); }),
       ]);
     } catch (error) {
-      throw new Error(`TAB_NOT_READY: Native click not dispatched: ${error.message}. ${guidance}`);
+      throw new Error(`TAB_NOT_READY: Native pointer input not dispatched: ${error.message}. ${guidance}`);
     } finally { clearTimeout(timer); }
   }
   function event(tabId, method, params, sessionId) {
@@ -44,18 +44,17 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
     } catch (error) { operation.reject(error); }
   }
   function cancel(tabId) { pending.get(tabId)?.reject(new Error('Tab detached during click; outcome is unknown. Observe before retrying.')); }
-  async function click(tabId, node, args) {
+  async function prepare(tabId, node, args) {
     if (!!node === (args.x != null || args.y != null)) throw new Error('Provide either ref/selector or x/y');
     if (args.coordinate_space != null && !['viewport', 'document'].includes(args.coordinate_space)) throw new Error('coordinate_space must be viewport or document');
     if (node && args.coordinate_space != null) throw new Error('coordinate_space applies to coordinate clicks only');
-    const options = clickOptions(args);
     const budget = args.budget || deadline(args.timeout_ms);
     let target = node?.target || { tabId };
     const send = (method, params) => budget.run(() => cdp(target, method, params));
     let point, view;
     if (node) {
       await waitForTarget(cdp, value, target, node, budget);
-      await send('DOM.scrollIntoViewIfNeeded', { backendNodeId: node.backendNodeId });
+      if (args.scroll !== false) await send('DOM.scrollIntoViewIfNeeded', { backendNodeId: node.backendNodeId });
       await waitForTarget(cdp, value, target, node, budget);
       const { quads } = await send('DOM.getContentQuads', { backendNodeId: node.backendNodeId });
       view = await budget.run(() => viewport(target));
@@ -137,6 +136,14 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       boundaries.push({ target: parent.target, backendNodeId: owner.backendNodeId, frameId: ownerFrameId });
       current = parent.target; currentView = parentView;
     }
+    return { target, point: rootPoint, hitTarget, frameId: node?.frameId || frameId, backendNodeId: node?.backendNodeId || backendNodeId, boundaries };
+  }
+  async function click(tabId, node, args) {
+    const options = { ...clickOptions(args), hover: args.hover === true };
+    const budget = args.budget || deadline(args.timeout_ms);
+    const prepared = await prepare(tabId, node, { ...args, budget });
+    const { target, point: rootPoint, hitTarget, frameId, backendNodeId, boundaries } = prepared;
+    if (!options.hover && hitTarget.native_select) throw new Error("Native select popup is unsupported. No input was dispatched. Use browser_select_option by label/value/index; press Esc if a native popup is already open.");
     const name = `__attachClick_${crypto.randomUUID().replaceAll('-', '')}`;
     const guards = [], contexts = new Set();
     const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, contexts, resolve, reject }));
@@ -165,11 +172,12 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       budget.dispatch();
       const dispatch = params => budget.run(() => cdp(tabId, 'Input.dispatchMouseEvent', { ...params, ...rootPoint }));
       const commands = [dispatch({ type: 'mouseMoved', button: 'none', buttons: 0, modifiers: options.modifiers })];
-      for (let count = 1; count <= options.click_count; count++) {
+      for (let count = 1; !options.hover && count <= options.click_count; count++) {
         commands.push(dispatch({ type: 'mousePressed', button: options.button, buttons: options.buttons, clickCount: count, modifiers: options.modifiers }));
         commands.push(dispatch({ type: 'mouseReleased', button: options.button, buttons: 0, clickCount: count, modifiers: options.modifiers }));
       }
-      await budget.run(() => Promise.all([Promise.all(commands), receipt]));
+      await budget.run(() => delivery(Promise.all([Promise.all(commands), receipt])));
+      if (options.hover) return { hovered: rootPoint, hit_target: hitTarget, page_state: pageState, target_verified: true, events_trusted: true, application_result: 'not_checked', observe_again: true };
       return { clicked: rootPoint, hit_target: hitTarget, page_state: pageState, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
     } finally {
       pending.delete(tabId);
@@ -183,18 +191,20 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       finally { clearTimeout(cleanupTimer); }
     }
   }
-  return { assertReady, click, event, cancel };
+  return { assertReady, prepare, click, event, cancel };
 }
 
 export function describeHit() {
   const element = this.nodeType === 3 ? this.parentElement : this;
-  let clickable, disabled = false;
+  let clickable, disabled = false, nativeSelect = false;
   for (let parent = element; parent; parent = parent.assignedSlot || parent.parentElement || parent.getRootNode().host) {
+    if (parent.tagName === 'SELECT' || parent.tagName === 'LABEL' && parent.control?.tagName === 'SELECT') nativeSelect = true;
     if (!clickable && parent.matches('button,a[href],input,select,textarea,summary,[role="button"],[role="link"],[onclick]')) clickable = parent;
     if (parent.matches(':disabled,[inert],[aria-disabled="true"]')) disabled = true;
   }
   return { tag: element.tagName?.toLowerCase(), text: (element.innerText || element.textContent || '').slice(0, 300),
     role: element.getAttribute('role'), disabled, clickable_hint: !!clickable,
+    native_select: nativeSelect,
     clickable_target: clickable ? { tag: clickable.tagName.toLowerCase(), role: clickable.getAttribute('role'),
       text: (clickable.innerText || clickable.textContent || '').slice(0, 300) } : null };
 }
@@ -203,19 +213,19 @@ function installGuard(name, options, expiryMs, verifyDelivery) {
   const target = this.nodeType === 3 ? this.parentElement : this;
   const win = target.ownerDocument.defaultView, report = win[name];
   let rejected = false, completed = 0;
-  const types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'auxclick', 'contextmenu', 'dblclick'];
+  const types = options.hover ? ['mousemove'] : ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'auxclick', 'contextmenu', 'dblclick'];
   const listeners = [];
   function listener(event, expected) {
     if (!event.isTrusted) return;
     const element = target.nodeType === 3 ? target.parentElement : target;
     const modifiers = (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
-    const matched = event.button === options.domButton && modifiers === options.modifiers && !rejected && target.isConnected && !element.matches(':disabled') && !element.closest('[inert]') &&
+    const matched = (options.hover || event.button === options.domButton) && modifiers === options.modifiers && !rejected && target.isConnected && !element.matches(':disabled') && !element.closest('[inert]') &&
       event.composedPath().some(node => node === expected);
     if (!matched) {
       rejected = true; event.preventDefault(); event.stopImmediatePropagation();
       report(JSON.stringify({ matched: false }));
     } else {
-      const terminal = options.button === 'right' ? 'contextmenu' : options.button === 'middle' ? 'auxclick' : options.click_count === 2 ? 'dblclick' : 'click';
+      const terminal = options.hover ? 'mousemove' : options.button === 'right' ? 'contextmenu' : options.button === 'middle' ? 'auxclick' : options.click_count === 2 ? 'dblclick' : 'click';
       if (verifyDelivery && event.type === terminal && expected === target) {
         completed++;
         if (options.button === 'left' || completed === options.click_count) report(JSON.stringify({ matched: true }));

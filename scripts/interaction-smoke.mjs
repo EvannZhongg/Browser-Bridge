@@ -13,7 +13,7 @@ import { setup } from '../src/setup.mjs';
 import { startHub } from '../src/hub.mjs';
 import { AttachClient } from '../src/client.mjs';
 
-const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, headless: { type: 'boolean', default: false }, forms: { type: 'boolean', default: false }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, headless: { type: 'boolean', default: false }, primitives: { type: 'boolean', default: false }, extended: { type: 'boolean', default: false }, forms: { type: 'boolean', default: false }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');
 const dir = await mkdtemp(join(tmpdir(), 'attach-interaction-'));
 const rows = Array.from({ length: 200 }, (_, i) => `<li>Row ${i+1}: alpha beta gamma delta epsilon</li>`).join('');
@@ -29,14 +29,19 @@ const reactSources = values.forms ? await Promise.all([
  'https://unpkg.com/react@18.3.1/umd/react.development.js',
  'https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js',
 ].map(async url => { const r = await fetch(url); if (!r.ok) throw new Error(`React fixture dependency: ${r.status}`); return r.text(); })) : [];
+const extendedFixture = values.extended ? await readFile(join(ROOT, 'tests/fixtures/extended.html'), 'utf8') : '';
+const primitivesFixture = values.primitives ? await readFile(join(ROOT, 'tests/fixtures/primitives.html'), 'utf8') : '';
 const formFixture = values.forms ? await readFile(join(ROOT, 'tests/fixtures/controlled-form.html'), 'utf8') : '';
 const server = http.createServer((req, res) => {
   if (req.url === '/react.js' || req.url === '/react-dom.js') { res.setHeader('content-type', 'text/javascript'); res.end(reactSources[req.url === '/react.js' ? 0 : 1]); return; }
   if (req.url.startsWith('/slow.js')) { setTimeout(() => { res.setHeader('content-type','application/javascript');res.end('window.slowScriptReady=true;'); }, 1000); return; }
+  if (req.url.startsWith('/echo')) { let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{res.setHeader('content-type','application/json');res.setHeader('Set-Cookie','secret_cookie=hidden');res.end(JSON.stringify({ok:true,method:req.method,body:JSON.parse(body||'{}'),Authorization:'hidden response credential'}))});return; }
   res.setHeader('content-type','text/html; charset=utf-8');
+  if (req.url==='/outer') {res.end('<!doctype html><title>Outer document</title><iframe title="Inner" src="/inner"></iframe>');return;}
+  if (req.url==='/inner') {res.end('<!doctype html><title>Inner document</title><input aria-label="Inner input"><button onclick="window.count=(window.count||0)+1">Inner button</button>');return;}
   if (req.url.startsWith('/ad')) { res.end('<!doctype html><title>Ad frame</title><button>Ad control</button>'); return; }
   if (req.url.startsWith('/slow')) { res.end('<!doctype html><title>Slow probe</title><script src="/slow.js"></script><button id="ready">Ready</button>'); return; }
-  res.end(values.forms ? formFixture : fixture);
+  res.end(values.extended ? extendedFixture.replace('src="/outer"',`src="http://localhost:${server.address().port}/outer"`) : values.primitives ? primitivesFixture : values.forms ? formFixture : fixture);
 });
 server.on('connection', socket => { sockets.add(socket);socket.on('close',()=>sockets.delete(socket)); });
 await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
@@ -48,7 +53,7 @@ const profile=join(dir,'profile');await mkdir(profile);
 const browser=spawn(values.executable,[
  `--user-data-dir=${profile}`,`--disable-extensions-except=${paired.extensionDir}`,`--load-extension=${paired.extensionDir}`,
  '--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--enable-unsafe-extension-debugging','--window-size=1000,800','about:blank',
- ...(values.headless?['--headless=new']:[]),
+ ...(values.headless?['--headless=new']:[]), ...(values.extended?['--site-per-process']:[]),
 ],{windowsHide:true,stdio:'ignore'});
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(fn, description) { for(let i=0;i<100;i++){const value=await fn();if(value)return value;await pause(100)}throw new Error(description); }
@@ -79,7 +84,114 @@ try {
  const focus = () => evaluate(`chrome.windows.getAll({populate:true}).then(w=>w.map(x=>({id:x.id,focused:x.focused,state:x.state,active:x.tabs.filter(t=>t.active).map(t=>t.id)})).sort((a,b)=>a.id-b.id))`);
  await evaluate(`chrome.tabs.update(${cover.id},{active:true})`);await pause(250);
  const operationsFocus=await focus();
- if (values.forms) {
+ if (values.extended) {
+  await client.call('activate_tab',h);const call=(method,args={})=>client.call(method,{...h,...args});
+  await call('fill',{selector:'#edit',text:'seed'});assert.equal(await page('window.keys.filter(e=>e.type==="keydown").length'),0);
+  await page('window.keys=[];true');
+  const typed=await call('type',{selector:'#edit',text:'A中+',delay_ms:30});
+  assert.equal(typed.typed,3);assert.equal(await page('document.querySelector("#edit").value'),'seedA中+');
+  const keys=await page('window.keys');for(const type of ['keydown','keypress','input','keyup'])assert.equal(keys.filter(e=>e.type===type&&e.trusted).length,3,type);
+  const downs=keys.filter(e=>e.type==='keydown');assert.ok(downs[1].time-downs[0].time>=30);
+  await call('type',{selector:'#edit',text:'#'});assert.equal(await page('document.querySelector("#edit").value'),'seedA中+');
+  results.cases.push({scenario:'character_events',keys});
+  await call('wait',{selector:'input',frame:{path:['iframe[title="Outer"]','iframe[title="Inner"]']},condition:'visible'});
+  await call('fill',{selector:'input',frame:{path:['iframe[title="Outer"]','iframe[title="Inner"]']},text:'nested'});
+  assert.equal((await call('read_text',{selector:'input',mode:'value',frame:{title:'Inner document'}})).text,'nested');
+  assert.equal((await call('evaluate',{expression:'() => document.title',frame:{url:base.replace('127.0.0.1','localhost')+'/inner'}})).value,'Inner document');
+  results.cases.push({scenario:'stable_frame_path_title_url'});
+  let f=await call('evaluate',{expression:'async () => Array.from({length:10},(_,i)=>i)',max_chars:5});let valuesRead=[...f.value];while(f.next_cursor){f=await call('evaluate',{cursor:f.next_cursor,max_chars:5});valuesRead.push(...f.value)}assert.equal(valuesRead.length,10);
+  const handle=await call('evaluate',{expression:'() => document.querySelector("#increment")',result_type:'element'});await call('click',{ref:handle.ref});assert.equal(await page('window.count'),1);
+  const found=await call('scroll',{selector:'#list',until:{text:'Row 0487',selector:'button'},delta_y:200,max_steps:60,timeout_ms:15000});await call('click',{ref:found.ref});assert.equal(await page('window.selectedRow'),'Row 0487');
+  results.cases.push({scenario:'virtual_row_ref',found});
+  const steps=[{action:'click',selector:'#increment'},{action:'wait',selector:'#later',condition:'visible',timeout_ms:150},{action:'click',selector:'#increment'}];
+  const failed=await call('batch',{steps});assert.equal(failed.failed_step,1);assert.equal(failed.retry_failed_step_safe,true);assert.equal(await page('window.count'),2);
+  await page('const later=document.createElement("button");later.id="later";later.textContent="Later";document.body.append(later);true');
+  const resumed=await call('batch',{steps,start_at:1});assert.equal(resumed.completed,true);assert.equal(await page('window.count'),3);
+  const extendedBatch=await call('batch',{steps:[{action:'hover',selector:'#increment'},{action:'scroll',selector:'#list',delta_y:-200},{action:'select_option',selector:'#select',value:'b'},{action:'wait',selector:'#later',condition:'attached'}]});assert.equal(extendedBatch.completed,true);
+  results.cases.push({scenario:'batch_deadline_resume',failed});
+  await call('logs',{kind:'network',capture:{enabled:true,max_body_bytes:4096}});
+  await call('evaluate',{expression:'() => fetch("/echo",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer hidden"},body:JSON.stringify({field:"kept",password:"hidden password"})}).then(r=>r.json())'});
+  const network=await call('logs',{kind:'network',url_contains:'/echo',max_chars:100000});
+  assert.ok(network.entries.some(e=>e.method==='POST'));assert.ok(network.entries.some(e=>e.status===200));
+  assert.ok(network.entries.some(e=>e.request_body?.text.includes('kept')));assert.ok(network.entries.some(e=>e.response_body?.text.includes('kept')));
+  assert.ok(!JSON.stringify(network).includes('Bearer hidden'));assert.ok(!JSON.stringify(network).includes('hidden password'));assert.ok(!JSON.stringify(network).includes('hidden response credential'));assert.ok(!JSON.stringify(network).includes('secret_cookie=hidden'));
+  await call('logs',{kind:'network',capture:{enabled:false}});results.cases.push({scenario:'network_details',network});
+  const shot=await call('screenshot',{selector:'#capture'}),png=Buffer.from(shot.data,'base64');assert.equal(shot.capture.scope,'element');assert.equal(png.readUInt32BE(16),160);assert.equal(png.readUInt32BE(20),80);assert.equal(shot.capture.image_origin_css.y,1400);
+  await writeFile(join(ROOT,'test-results','element-evidence.png'),png);
+  const full=await call('screenshot',{full_page:true});assert.ok(full.capture.css_height>=1480);results.cases.push({scenario:'element_and_full_capture',capture:shot.capture});
+  const file1=join(dir,'one.txt'),file2=join(dir,'two.txt');await writeFile(file1,'one');await writeFile(file2,'two');
+  const fileRef=await call('evaluate',{expression:'() => window.closedInput',result_type:'element'});await call('upload_file',{ref:fileRef.ref,files:[file1,file2]});assert.equal(await page('window.closedInput.files.length'),2);await call('upload_file',{ref:fileRef.ref,files:[]});assert.equal(await page('window.closedInput.files.length'),0);
+  await call('click',{selector:'#chooseclosed'});await call('upload_file',{files:[file1,file2]});assert.equal(await page('window.closedInput.files.length'),2);
+  await call('click',{selector:'#chooseclosed'});await call('upload_file',{files:[]});assert.equal(await page('window.closedInput.files.length'),0);
+  const uploadEvents=await page('window.uploadEvents');assert.equal(uploadEvents[0].trusted,true);assert.equal(uploadEvents[2].trusted,false);
+  results.cases.push({scenario:'closed_shadow_multiple_clear',uploadEvents});
+  const alertBatch=await call('batch',{dialog_policy:'accept',steps:[{action:'click',selector:'#alert'},{action:'click',selector:'#increment'}]});assert.equal(alertBatch.completed,true);assert.ok(alertBatch.dialogs.some(d=>d.message==='Continue alert'&&d.accepted));
+  const dismissed=await call('click',{selector:'#confirm',dialog_policy:'dismiss'});assert.equal(await page('window.confirmed'),false);assert.equal(dismissed.dialogs[0].accepted,false);
+  results.cases.push({scenario:'automatic_dialog_policy',alertBatch,dismissed});
+  let unknown;try{await call('click',{selector:'#unreceipt',timeout_ms:10000})}catch(e){unknown=e.message}assert.match(unknown,/Outcome is unknown/);assert.match(unknown,/"dom_changed":true/);assert.equal(await page('document.querySelector("#mark").textContent'),'Effect observed');results.cases.push({scenario:'post_action_observation',unknown});
+  const whole=await call('read_text');assert.ok(whole.text.includes('Increment'));assert.ok(whole.text.includes('Element evidence'));results.cases.push({scenario:'whole_rendered_text'});
+  await call('navigate',{url:base+'/second',include_snapshot:false});await call('navigate',{direction:'back',include_snapshot:false,wait_until:'load'});assert.equal(await page('location.pathname'),'/probe');await call('navigate',{direction:'forward',include_snapshot:false,wait_until:'load'});assert.equal(await page('location.pathname'),'/second');
+  await page('history.pushState({},"","#spa");true');await call('navigate',{direction:'back',include_snapshot:false});assert.equal(await page('location.hash'),'');
+  results.cases.push({scenario:'history_document_and_spa'});
+  await call('click',{selector:'#increment'});await page('window.onbeforeunload=e=>{e.preventDefault();e.returnValue=""};true');
+  const cancelled=await call('navigate',{url:base+'/blocked',dialog_policy:'dismiss',include_snapshot:false,timeout_ms:3000});assert.equal(cancelled.cancelled_by_dialog,true);assert.equal(await page('location.pathname'),'/second');
+  const accepted=await call('navigate',{url:base+'/accepted',dialog_policy:'accept',include_snapshot:false,timeout_ms:5000});assert.ok(accepted.dialogs.some(d=>d.type==='beforeunload'&&d.accepted));assert.equal(await page('location.pathname'),'/accepted');
+  results.cases.push({scenario:'beforeunload_policy',cancelled,accepted});
+ } else if (values.primitives) {
+  await client.call('activate_tab',h);
+  const call=(method,args={})=>client.call(method,{...h,...args});
+  const menuSnap=await call('snapshot'),menuRef=menuSnap.snapshot.match(/\[([^\]]+)\] button "Menu"/)[1];
+  await call('hover',{ref:menuRef});
+  assert.equal(await page('window.enters'),1);assert.equal(await page('window.childClicks'),0);
+  assert.ok((await page('window.events')).every(e=>!['mousedown','mouseup','click'].includes(e.type)));
+  await pause(350);
+  await call('click',{selector:'#child'});
+  assert.equal(await page('window.enters'),1);assert.equal(await page('window.leaves'),0);assert.equal(await page('window.childClicks'),1);
+  results.cases.push({scenario:'hover_then_child',enters:1,leaves:0,clicks:1});
+  // One observation, two inputs and an intervening expression evaluation.
+  const snap=await call('snapshot');const ref=snap.snapshot.match(/\[([^\]]+)\] textbox "Edit"/)[1];
+  await call('fill',{ref,text:'first'});await call('evaluate',{expression:'document.title'});await call('fill',{ref,text:'second'});
+  assert.equal(await page('document.querySelector("#edit").value'),'second');
+  results.cases.push({scenario:'ref_two_inputs_one_snapshot',survives_evaluation:true});
+  await page('document.querySelector("#edit").setAttribute("aria-label","Different");true');
+  await assert.rejects(call('fill',{ref,text:'must not reach repurposed node'}),/identity changed/);
+  await page('document.querySelector("#edit").outerHTML=\'<input id="edit" aria-label="Edit">\';true');
+  await assert.rejects(call('fill',{ref,text:'must not reach replacement'}),/detached|stale|identity changed|[Nn]o node|[Cc]ould not find/);
+  assert.equal(await page('document.querySelector("#edit").value'),'');
+  results.cases.push({scenario:'ref_replaced_node_refused'});
+  for (const choice of [{label:'Beta'},{value:'a'},{index:1}]) {
+   const selected=await call('select_option',{selector:'#select',...choice});assert.equal(selected.value_verified,true);assert.equal(selected.events_trusted,false);
+  }
+  assert.ok((await page('window.selectedEvents')).every(e=>e.trusted===false));
+  let error;const before=performance.now();try{await call('click',{selector:'#select',timeout_ms:30000})}catch(e){error=e.message}
+  assert.match(error,/No input was dispatched.*browser_select_option/);assert.ok(performance.now()-before<2000);
+  results.cases.push({scenario:'select_without_popup',error,ms:Math.round(performance.now()-before)});
+  await page('setTimeout(()=>{const b=document.createElement("button");b.id="late";b.textContent="Later";document.body.append(b)},2500);true');
+  await call('wait',{selector:'#late',condition:'visible',timeout_ms:4000});
+  await page('setTimeout(()=>{document.querySelector("#late").textContent="Ready";history.pushState({},"","/probe#done")},100);true');
+  await call('wait',{selector:'#late',condition:'text',expected:'Ready'});await call('wait',{condition:'url',expected:'#done'});
+  await page('setTimeout(()=>document.querySelector("#late").textContent="Completed",100);true');
+  assert.equal((await call('wait',{selector:'#late',condition:'text',previous:'Ready'})).current.text,'Completed');
+  await call('wait',{selector:'#child',condition:'actionable'});
+  await page('fetch("/slow.js?wait");true');await call('wait',{condition:'network_idle',idle_ms:200,timeout_ms:4000});
+  for(const [selector,condition] of [['#absent','attached'],['#hidden','visible'],['#disabled','actionable']]) {
+   let error;try{await call('wait',{selector,condition,timeout_ms:150})}catch(e){error=e.message}
+   assert.match(error,/Wait for .*current=/);results.cases.push({scenario:'wait_failure',selector,error});
+  }
+  await page('window.events=[];true');
+  const pointer=await call('drag',{source:{selector:'#slider'},destination:{x:550,y:255},steps:8,mode:'pointer',timeout_ms:5000});
+  assert.equal(pointer.delivery_verified,true);assert.ok(await page('window.pointerMoves>=8'));
+  results.cases.push({scenario:'pointer_drag',result:pointer,events:await page('window.events')});
+  await page('window.events=[];true');
+  const html5=await call('drag',{source:{selector:'#drag'},destination:{selector:'#drop'},steps:8,mode:'html5',timeout_ms:5000});
+  const events=await page('window.events');
+  for(const type of ['dragstart','dragover','drop','dragend'])assert.ok(events.some(e=>e.type===type&&e.trusted),type);
+  results.cases.push({scenario:'html5_drag',result:html5,events});
+  await page('window.events=[];true');
+  const far=await call('drag',{source:{selector:'#drag'},destination:{selector:'#far'},steps:8,mode:'html5',timeout_ms:5000});
+  assert.ok(await page('scrollY>1000'));assert.ok((await page('window.events')).some(e=>e.type==='drop'&&e.target==='far'&&e.trusted));
+  results.cases.push({scenario:'html5_offscreen',result:far});
+ } else if (values.forms) {
   await client.call('activate_tab',h);
   const fill = (selector, text, mode='native', nth) => client.call('fill',{...h,selector,text,mode,...(nth==null?{}:{nth})});
   const click = selector => client.call('click',{...h,selector});
@@ -181,13 +293,15 @@ try {
   await page('window.__count=0;window.__events=[];true');
   await suppress(true);
   try {
-   let clickError;
-   try { await client.call('click',{...h,ref:await buttonRef()}); } catch(error) { clickError=error.message; }
+   let clickError;const clickStart=performance.now();
+   try { await client.call('click',{...h,ref:await buttonRef(),timeout_ms:30000}); } catch(error) { clickError=error.message; }
    assert.ok(clickError,'suppressed native click must fail');
+   assert.match(clickError,/Outcome is unknown.*press Esc/);assert.ok(performance.now()-clickStart<2000);
    assert.equal((await state()).count,0);
-   let keyError;
-   try { await client.call('press_key',{...h,key:'Z'}); } catch(error) { keyError=error.message; }
+   let keyError;const keyStart=performance.now();
+   try { await client.call('press_key',{...h,key:'Z',timeout_ms:30000}); } catch(error) { keyError=error.message; }
    assert.ok(keyError,'suppressed keyboard input must fail');
+   assert.match(keyError,/Outcome is unknown.*press Esc/);assert.ok(performance.now()-keyStart<2000);
    assert.equal(await page('document.querySelector("#edit").value'),'native baseline');
    results.cases.push({scenario:'native_input_suppressed',click_error:clickError,key_error:keyError,no_replay:true});
    const focusBefore=await page('document.activeElement.id');
@@ -391,13 +505,13 @@ try {
  assert.equal(fragment.same_document,true);assert.equal(fragment.snapshot,undefined);assert.equal(fragment.url,base+'/slow#fragment');
  }
  results.browser=browserInfo.user_agent;results.extension_version=browserInfo.extension_version;
- console.log(JSON.stringify({tab_indicators:values['tab-indicators']?results.cases:undefined,input_capture:values['input-capture']?results.cases:undefined,snapshots:results.snapshots,background_operations:results.background_operations,
+ console.log(JSON.stringify({extended:values.extended?results.cases:undefined,primitives:values.primitives?results.cases:undefined,tab_indicators:values['tab-indicators']?results.cases:undefined,input_capture:values['input-capture']?results.cases:undefined,snapshots:results.snapshots,background_operations:results.background_operations,
   hover:results.cases.find(c=>c.scenario==='hover_shift_30px'),navigation:results.navigation}));
  if(claim)await client.call('release_tab',{tab_handle:claim.tab_handle});claim=null;
 } finally {
  if(claim)await client?.call('release_tab',{tab_handle:claim.tab_handle}).catch(()=>{});
  await client?.close();ws?.close();browser.kill();await hub.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  await mkdir(join(ROOT,'test-results'),{recursive:true});
-  await writeFile(join(ROOT,'test-results',`${values.forms?'forms':values['tab-indicators']?'tab-indicators':values['input-capture']?'input-capture':values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));
+  await writeFile(join(ROOT,'test-results',`${values.extended?'extended':values.primitives?'primitives':values.forms?'forms':values['tab-indicators']?'tab-indicators':values['input-capture']?'input-capture':values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));
  await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{});
 }

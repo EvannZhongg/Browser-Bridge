@@ -136,7 +136,7 @@ test('unknown outcome disconnects the client and releases its claims without rep
   assert.equal(f.requests.filter(item => item.command === 'read_text').length, 1);
 });
 
-test('real stdio MCP exposes 20 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
+test('real stdio MCP exposes 25 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
   const f = await fixture(t), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
@@ -146,7 +146,7 @@ test('real stdio MCP exposes 20 tools including ordered batch, unified logs, sin
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 20);
+  assert.equal(tools.length, 25);
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const logSchema = tools.find(tool => tool.name === 'browser_logs').inputSchema;
   assert.deepEqual(logSchema.properties.kind.enum, ['console', 'network']);
@@ -197,6 +197,20 @@ test('real stdio MCP exposes 20 tools including ordered batch, unified logs, sin
   assert.equal(f.requests.filter(item => item.command === 'evaluate').length, evaluationCount);
   assert.ok(!(await call('click', { tab_handle: handle, ref: 'current-ref', mode: 'dom' })).isError);
   assert.equal(f.requests.find(item => item.command === 'click').arguments.mode, 'dom');
+  for (const [name, input] of [['hover', {selector:'#menu'}], ['drag', {source:{selector:'#source'},destination:{x:10,y:10}}], ['wait', {condition:'visible',selector:'#late'}], ['select_option', {selector:'select',label:'Beta'}]]) {
+    assert.ok(!(await call(name, {tab_handle:handle,...input})).isError);
+    assert.ok(f.requests.some(item => item.command === name));
+  }
+  for (const [name, input] of [['hover', {}], ['drag', {source:{selector:'#source'},destination:{}}], ['wait', {condition:'text',selector:'#late'}], ['select_option', {selector:'select',label:'Beta',value:'b'}]]) {
+    const before=f.requests.length;
+    assert.equal((await call(name, {tab_handle:handle,...input})).isError,true);
+    assert.equal(f.requests.length,before);
+  }
+  for (const [name, input] of [['type',{selector:'#input',text:'typed',delay_ms:20}],['navigate',{direction:'back'}],['fill',{selector:'input',frame:{path:['iframe[title="Inner"]']},text:'scoped'}],['logs',{kind:'network',capture:{enabled:true,max_body_bytes:4096}}]]) {
+    assert.ok(!(await call(name,{tab_handle:handle,...input})).isError);
+    assert.ok(f.requests.some(r=>r.command===name));
+  }
+  for(const input of [{text:'bad\nline',selector:'input'},{text:'x',selector:'input',delay_ms:-1}])assert.equal((await call('type',{tab_handle:handle,...input})).isError,true);
   const clickCount = f.requests.filter(item => item.command === 'click').length;
   assert.equal((await call('click', { tab_handle: handle, x: 1, y: 1, mode: 'dom' })).isError, true);
   assert.equal(f.requests.filter(item => item.command === 'click').length, clickCount);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDiagnostics } from '../extension/diagnostics.js';
+import { createDiagnostics, boundedBody } from '../extension/diagnostics.js';
 
 function fixture() {
   const logs = createDiagnostics(); logs.start(9);
@@ -125,4 +125,45 @@ test('identical child/root request and context ids retain independent ownership'
   f.logs.detach(9,'child');
   f.emit('Runtime.consoleAPICalled', {executionContextId:42,type:'log',args:[]}, {tabId:9,sessionId:'child'});
   assert.equal(f.read('console').entries.at(-1).frame_id, undefined);
+});
+
+
+test('network details are opt-in, redact credentials, retain method/status and bound request/response bodies', async () => {
+  const calls=[];const logs=createDiagnostics(async(target,method,args)=>{calls.push({method,args});return method==='Network.getResponseBody'?{body:'{"field":"kept","Authorization":"hidden-response"}',base64Encoded:false}:{};});
+  logs.start(9);const source={tabId:9};
+  logs.event(source,'Network.requestWillBeSent',{requestId:'old',type:'Fetch',request:{url:'https://test/api',method:'POST',headers:{Authorization:'secret'},postData:'old-secret'}});
+  assert.equal(logs.read(9,{kind:'network'}).entries[0].headers,undefined);
+  await logs.readDetails(9,{kind:'network',capture:{enabled:true,max_body_bytes:1024}},[source]);
+  logs.event(source,'Network.requestWillBeSent',{requestId:'new',type:'Fetch',request:{url:'https://test/api',method:'POST',headers:{Authorization:'Bearer hidden',Cookie:'session=hidden','X-Safe':'kept'},postData:'{"password":"hidden-password","field":"kept"}'}});
+  logs.event(source,'Network.responseReceived',{requestId:'new',response:{url:'https://test/api',status:201,headers:{'Set-Cookie':'hidden-cookie'},mimeType:'application/json'}});
+  logs.event(source,'Network.dataReceived',{requestId:'new',dataLength:60});
+  logs.event(source,'Network.loadingFinished',{requestId:'new'});
+  const result=await logs.readDetails(9,{kind:'network',max_chars:100000},[source]);
+  assert.ok(result.entries.some(e=>e.method==='POST'&&e.request_body?.text.includes('kept')));
+  assert.ok(result.entries.some(e=>e.status===201));assert.ok(result.entries.some(e=>e.response_body?.text.includes('kept')));
+  assert.doesNotMatch(JSON.stringify(result),/Bearer hidden|hidden-password|hidden-cookie|hidden-response/);
+  assert.equal(calls.filter(c=>c.method==='Network.getResponseBody').length,1);
+  assert.equal(calls.find(c=>c.method==='Network.enable').args.maxResourceBufferSize,1024);
+  await logs.readDetails(9,{kind:'network',capture:{enabled:false}},[source]);
+  assert.equal(logs.networkOptions(9).maxTotalBufferSize,0);
+});
+
+test('oversized decoded responses are reported without fetching an unbounded decompressed body', async () => {
+  let bodyReads=0;const logs=createDiagnostics(async(target,method)=>{if(method==='Network.getResponseBody')bodyReads++;return {};});
+  logs.start(9);const source={tabId:9};await logs.readDetails(9,{kind:'network',capture:{enabled:true,max_body_bytes:1024}},[source]);
+  logs.event(source,'Network.requestWillBeSent',{requestId:'r',type:'XHR',request:{url:'https://test/',method:'GET'}});
+  logs.event(source,'Network.dataReceived',{requestId:'r',dataLength:10000000});logs.event(source,'Network.loadingFinished',{requestId:'r',encodedDataLength:20});
+  const result=await logs.readDetails(9,{kind:'network'},[source]);
+  assert.equal(bodyReads,0);assert.ok(result.entries.some(e=>/exceeds capture/.test(e.response_body_unavailable)));
+  assert.ok(boundedBody('x'.repeat(2000),1024).truncated);
+  assert.doesNotMatch(boundedBody('password=hidden&field=kept',1024).text,/hidden/);
+});
+
+test('late response body reads cannot recreate data after release or capture reconfiguration', async () => {
+  let finish;const logs=createDiagnostics(async(target,method)=>method==='Network.getResponseBody'?new Promise(resolve=>{finish=resolve}):{});
+  const source={tabId:9};logs.start(9);await logs.readDetails(9,{kind:'network',capture:{enabled:true}},[source]);
+  logs.event(source,'Network.requestWillBeSent',{requestId:'r',type:'Fetch',request:{url:'https://test/',method:'GET'}});
+  logs.event(source,'Network.loadingFinished',{requestId:'r'});logs.forget(9);finish({body:'late',base64Encoded:false});
+  await new Promise(resolve=>setImmediate(resolve));logs.start(9);
+  assert.equal(logs.read(9,{kind:'network'}).entries.length,0);assert.equal(logs.networkOptions(9).maxTotalBufferSize,0);
 });

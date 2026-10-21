@@ -33,3 +33,32 @@ test('quad clipping chooses a point inside the visible polygon, including partia
   const point = clippedPoint([50, -50, 150, 50, 50, 150, -50, 50], view);
   assert.ok(point.x > 49 && point.x < 51 && point.y > 49 && point.y < 51);
 });
+
+
+test('history back waits for the selected entry lifecycle even if commit arrives before the command reply', async () => {
+  const calls=[];let navigation;
+  navigation=createNavigation(async(tab,method,params)=>{
+    calls.push({method,params});
+    if(method==='Page.getNavigationHistory')return {currentIndex:1,entries:[{id:7,url:'https://test/list'},{id:9,url:'https://test/detail'}]};
+    if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'main'}}};
+    navigation.event(9,'Page.frameNavigated',{frame:{id:'main',loaderId:'back'}});
+    navigation.event(9,'Page.lifecycleEvent',{frameId:'main',loaderId:'back',name:'load'});return {};
+  });
+  const result=await navigation.navigate(9,undefined,{direction:'back',wait_until:'load'});
+  assert.equal(result.navigated_to,'https://test/list');assert.equal(result.same_document,false);
+  assert.deepEqual(calls.find(c=>c.method==='Page.navigateToHistoryEntry').params,{entryId:7});
+  await assert.rejects(navigation.navigate(9,undefined,{direction:'forward'}),/No forward/);
+});
+
+test('history same-document and BFCache restoration complete without waiting for a new DOMContentLoaded', async () => {
+  for(const same of [true,false]) {
+    let navigation;navigation=createNavigation(async(tab,method)=>{
+      if(method==='Page.getNavigationHistory')return {currentIndex:1,entries:[{id:1,url:'https://test/previous'},{id:2,url:'https://test/current'}]};
+      if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'main'}}};
+      if(same)navigation.event(9,'Page.navigatedWithinDocument',{frameId:'main'});
+      else navigation.event(9,'Page.frameNavigated',{frame:{id:'main',loaderId:'cached'},type:'BackForwardCacheRestore'});
+      return {};
+    });
+    assert.equal((await navigation.navigate(9,undefined,{direction:'back',timeout_ms:100})).same_document,same);
+  }
+});

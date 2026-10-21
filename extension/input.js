@@ -1,4 +1,4 @@
-import { deadline, waitForTarget } from './actionability.js';
+import { deadline, waitForTarget, delivery } from './actionability.js';
 import { clickOptions } from './click.js';
 
 const BUSY = 'Browser UI may be capturing input (a tab drag or native menu). Finish that interaction, then observe the page before deciding whether to try again. Never replay an unknown outcome automatically.';
@@ -34,7 +34,7 @@ export function createInput(cdp, value, sessions) {
   async function pressKey(tabId, chord, args = {}) {
     const budget = args.budget || deadline(args.timeout_ms);
     const send = (...params) => budget.run(() => cdp(...params));
-    const { params, text } = keyParameters(chord);
+    const { params, text } = args.character != null ? characterParameters(args.character) : keyParameters(chord);
     const name = `__attachKey_${crypto.randomUUID().replaceAll('-', '')}`;
     const contexts = new Set(), guards = [], omittedFrames = [];
     const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, contexts, resolve, reject }));
@@ -49,7 +49,7 @@ export function createInput(cdp, value, sessions) {
           const { executionContextId } = await send(target, 'Page.createIsolatedWorld', { frameId: frame.id, worldName: 'browser-attach-input' });
           if (!executionContextId) throw new Error('Could not create keyboard verification context; no input was dispatched.');
           contextId = executionContextId;
-          worlds.set(frame.id, { target, contextId });
+          worlds.set(frame.id, { target, contextId, frameId: frame.id });
           contexts.add(JSON.stringify([target.sessionId, executionContextId]));
           await send(target, 'Runtime.addBinding', { name, executionContextId });
           const installed = await send(target, 'Runtime.evaluate', {
@@ -81,13 +81,19 @@ export function createInput(cdp, value, sessions) {
         } else { focusedNode = { objectId: active.result.objectId }; break; }
       }
       await waitForTarget(cdp, value, focusTarget.target, focusedNode, budget);
+      if (args.expectedNode) {
+        const expected = args.expectedNode;
+        const focused = focusTarget.frameId === expected.frameId && value(await send(expected.target, 'Runtime.callFunctionOn', { objectId: expected.objectId,
+          functionDeclaration: 'function() { const a=this.getRootNode().activeElement; return this.isConnected && (a===this || this.contains(a)); }', returnByValue: true }));
+        if (!focused) throw new Error('Typing target lost focus during key preparation; no further key was dispatched');
+      }
       budget.dispatch();
       // Queue the complete chord before waiting for acknowledgements. Always
       // enqueue keyUp, even if keyDown fails or opens a modal.
-      const commands = [send(focusTarget.target, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params })];
-      if (text != null) commands.push(send(focusTarget.target, 'Input.dispatchKeyEvent', { type: 'char', text, unmodifiedText: text, ...params }));
+      const commands = [send(focusTarget.target, 'Input.dispatchKeyEvent', { type: args.character != null ? 'keyDown' : 'rawKeyDown', ...(args.character != null ? { text, unmodifiedText: text } : {}), ...params })];
+      if (text != null && args.character == null) commands.push(send(focusTarget.target, 'Input.dispatchKeyEvent', { type: 'char', text, unmodifiedText: text, ...params }));
       commands.push(send(focusTarget.target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params }));
-      await budget.run(() => Promise.all([Promise.all(commands), receipt]));
+      await budget.run(() => delivery(Promise.all([Promise.all(commands), receipt])));
       return { sent: chord, method: 'native', delivery_verified: true, application_result: 'not_checked',
         ...(omittedFrames.length ? { verification_omitted_frames: omittedFrames } : {}), observe_again: true };
     } finally {
@@ -125,7 +131,37 @@ export function createInput(cdp, value, sessions) {
       functionDeclaration: clickElement.toString() }));
     return { ...result, method: 'dom', events_trusted: false, application_result: 'not_checked', observe_again: true };
   }
-  return { pressKey, fill, domClick, event, cancel };
+  async function selectOption(tabId, node, args) {
+    selectOptions(args);
+    const budget = args.budget || deadline(args.timeout_ms);
+    await waitForTarget(cdp, value, node.target, node, budget);
+    budget.dispatch();
+    const result = value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', {
+      objectId: node.objectId, functionDeclaration: selectElement.toString(),
+      arguments: [{ value: { value: args.value, label: args.label, index: args.index } }], returnByValue: true,
+    })));
+    return { ...result, method: 'dom', events_trusted: false, application_result: 'not_checked', observe_again: true };
+  }
+  async function typeText(tabId, node, args) {
+    typeOptions(args);
+    const budget = args.budget || deadline(args.timeout_ms);
+    await waitForTarget(cdp, value, node.target, node, budget, { editable: true });
+    budget.dispatch();
+    value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId,
+      functionDeclaration: 'function() { this.focus(); if (this.getRootNode().activeElement !== this && !this.contains(this.getRootNode().activeElement)) throw new Error("Field did not receive focus"); }', returnByValue: true })));
+    let typed = 0; const length = Array.from(args.text).length;
+    for (const character of args.text) {
+      const focused = value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId,
+        functionDeclaration: 'function() { const a=this.getRootNode().activeElement; return this.isConnected && (a===this || this.contains(a)); }', returnByValue: true })));
+      if (!focused) throw new Error(`Typing stopped after ${typed} characters: original field detached or lost focus. Outcome is unknown; do not replay.`);
+      try { await pressKey(tabId, character, { budget, character, expectedNode: node }); }
+      catch (error) { error.message = `Typing stopped after ${typed} verified characters; the current character may already have been delivered. ${error.message}`; throw error; }
+      typed++;
+      if (args.delay_ms && typed < length) await budget.run(() => new Promise(resolve => setTimeout(resolve, args.delay_ms)));
+    }
+    return { typed, method: 'native', events_trusted: true, delivery_verified: true, application_result: 'not_checked', observe_again: true };
+  }
+  return { pressKey, fill, typeText, domClick, selectOption, event, cancel };
 }
 
 function installKeyReceipt(name, params, expiryMs) {
@@ -241,4 +277,42 @@ function activeElement() {
   let element = document.activeElement;
   while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
   return element;
+}
+
+export function selectOptions(args) {
+  if (['value', 'label', 'index'].filter(key => args[key] != null).length !== 1) throw new Error('Provide exactly one of value, label or index');
+  if (args.index != null && (!Number.isSafeInteger(args.index) || args.index < 0)) throw new Error('index must be a nonnegative safe integer');
+  for (const key of ['value', 'label']) if (args[key] != null && typeof args[key] !== 'string') throw new Error(`${key} must be a string`);
+}
+
+export function selectElement(choice) {
+  if (this.tagName !== 'SELECT' || !this.isConnected) throw new Error('Target must be a connected HTML select');
+  if (this.matches(':disabled') || this.closest('[inert]')) throw new Error('Select is disabled or inert');
+  const options = Array.from(this.options);
+  const matches = options.filter((option, index) => choice.index != null ? index === choice.index : choice.value != null ? option.value === choice.value : option.label === choice.label);
+  if (matches.length !== 1) throw new Error(`Option must match exactly once; matched ${matches.length}. Use an explicit index for duplicate labels/values. No value was set.`);
+  const option = matches[0];
+  if (option.disabled || option.parentElement?.tagName === 'OPTGROUP' && option.parentElement.disabled) throw new Error('Option is disabled; no value was set');
+  const win = this.ownerDocument.defaultView;
+  const index = options.indexOf(option);
+  Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'selectedIndex').set.call(this, index);
+  this.dispatchEvent(new win.Event('input', { bubbles: true, composed: true }));
+  this.dispatchEvent(new win.Event('change', { bubbles: true }));
+  if (!this.isConnected || this.selectedIndex !== index || this.options[index] !== option || !option.selected) throw new Error('Select did not retain the requested option. Outcome is unknown; observe before continuing.');
+  return { selected: true, index, value: option.value, label: option.label, value_verified: true };
+}
+
+export function typeOptions(args) {
+  if (typeof args.text !== 'string' || args.text.length > 10000 || /[\r\n\t\x00-\x1f]/.test(args.text)) throw new Error('type text must contain at most 10000 characters');
+  if (!Number.isInteger(args.delay_ms ?? 0) || (args.delay_ms ?? 0) < 0 || (args.delay_ms ?? 0) > 1000) throw new Error('delay_ms must be 0..1000');
+}
+
+export function characterParameters(character) {
+  if (typeof character !== 'string' || Array.from(character).length !== 1 || /[\r\n\t\x00-\x1f]/.test(character)) throw new Error('type accepts printable characters; use press_key for control keys');
+  try {
+    const result = keyParameters(/^[A-Z]$/.test(character) ? `Shift+${character}` : character);
+    return { params: { ...result.params, key: character }, text: character };
+  } catch {
+    return { params: { key: character, code: '', windowsVirtualKeyCode: 0, nativeVirtualKeyCode: 0, modifiers: 0 }, text: character };
+  }
 }

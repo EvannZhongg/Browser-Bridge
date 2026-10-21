@@ -1,6 +1,6 @@
 // Flat debugger sessions are scoped to a claimed tab. Frame and object ids
 // must always travel with their owning session, including nested OOPIFs.
-export function createSessions(cdp, invalidate, detached = () => {}) {
+export function createSessions(cdp, invalidate, detached = () => {}, networkOptions = () => ({ maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 })) {
   const tabs = new Map();
   const autoAttach = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true,
     filter: [{ type: 'iframe', exclude: false }, { exclude: true }] };
@@ -10,7 +10,7 @@ export function createSessions(cdp, invalidate, detached = () => {}) {
       return cdp(target, method, params);
     };
     for (const method of ['Runtime.enable', 'Log.enable', 'Network.enable', 'Page.enable', 'DOM.enable', 'Accessibility.enable']) {
-      await send(method, method === 'Network.enable' ? { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 } : {});
+      await send(method, method === 'Network.enable' ? networkOptions(target.tabId) : {});
     }
     await send('Page.setLifecycleEventsEnabled', { enabled: true });
     await send('Page.setInterceptFileChooserDialog', { enabled: true });

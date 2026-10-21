@@ -47,3 +47,18 @@ test('a late evaluation reply cannot resurrect a result after navigation or rele
   await assert.rejects(pending, /Result was discarded.*do not replay/);
   await assert.rejects(evaluations.read(9, { cursor: 'unknown' }), /stale/);
 });
+
+
+test('a returned function is invoked once, its Promise awaited, and JSON cursor reads never invoke it again', async () => {
+  const f=fixture();let result=await f.read({expression:'async () => { runs++; return [1,2,3,4]; }',max_chars:3});
+  const values=[...result.value];while(result.next_cursor){result=await f.read({cursor:result.next_cursor,max_chars:3});values.push(...result.value)}
+  assert.deepEqual(Array.from(values),[1,2,3,4]);assert.equal(f.page.runs,1);
+});
+
+test('frame-scoped captured JSON is discarded on that frame navigation', async () => {
+  const evaluations=createEvaluations(async()=>({result:{value:{value:[1,2],truncated:false,scope:'frame'}}}));
+  const result=await evaluations.read(9,{expression:'[1,2]',evaluation_frame:'child',max_chars:3});
+  evaluations.forgetFrame(9,'other');assert.equal((await evaluations.read(9,{cursor:result.next_cursor,max_chars:3})).value[0],2);
+  const next=await evaluations.read(9,{expression:'[1,2]',evaluation_frame:'child',max_chars:3});evaluations.forgetFrame(9,'child');
+  await assert.rejects(evaluations.read(9,{cursor:next.next_cursor}),/stale/);
+});

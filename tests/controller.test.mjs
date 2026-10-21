@@ -15,6 +15,7 @@ function fixture() {
   let blocked = false;
   let modalOnClick = false;
   let customNodes;
+  const axTrees = [];
   let binding;
   const api = { storage: { session: { get: async () => structuredClone(stored), set: async value => { stored = structuredClone(value); } } },
     tabGroups: { get: async id => { if (!groups.has(id)) throw new Error('Unknown group'); return groups.get(id); },
@@ -37,7 +38,7 @@ function fixture() {
       sendCommand: async (target, method, args) => {
         calls.push({ method, args, target });
         if (method === 'Runtime.addBinding') binding = args.name;
-        if (method === 'Input.dispatchKeyEvent' && args.type === 'rawKeyDown') {
+        if (method === 'Input.dispatchKeyEvent' && ['rawKeyDown', 'keyDown'].includes(args.type)) {
           api.debugger.onEvent.emit(target, 'Runtime.bindingCalled', { name: binding, executionContextId: 42, payload: '{"delivered":true}' });
         }
         if (method === 'Page.createIsolatedWorld') return { executionContextId: 42 };
@@ -56,11 +57,12 @@ function fixture() {
         }
         if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', url: tabs.get(9).url } } };
         if (method === 'Accessibility.getFullAXTree' && args.frameId === 'remote') throw new Error('Frame is in another process');
-        if (method === 'Accessibility.getFullAXTree') return { nodes: customNodes || [
+        if (method === 'Accessibility.getPartialAXTree') return { nodes: axTrees.filter(tree => tree.sessionId === target.sessionId).flatMap(tree => tree.result.nodes).filter(node => node.backendDOMNodeId === args.backendNodeId).slice(-1) };
+        if (method === 'Accessibility.getFullAXTree') { const result = { nodes: customNodes || [
           { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Demo' }, childIds: ['2', '3'] },
           { nodeId: '2', backendDOMNodeId: 12, role: { value: 'button' }, name: { value: 'Submit' } },
           { nodeId: '3', backendDOMNodeId: 13, role: { value: 'textbox' }, name: { value: 'Name' } },
-        ] };
+        ] }; axTrees.push({ sessionId: target.sessionId, result }); return result; }
         if (method === 'Runtime.evaluate' && args.expression.startsWith('(function queryElement')) return { result: { objectId: 'selector-node' } };
         if (method === 'DOM.describeNode' && args.objectId === 'selector-node') return { node: { backendNodeId: 12 } };
         if (method === 'DOM.describeNode' && args.objectId === 'focused') return { node: {} };
@@ -350,12 +352,14 @@ test('claim verifies title and URL before attaching; ownership is enforced', asy
   assert.equal(f.controller.claimedCount(), 1);
 });
 
-test('fresh AX refs are consumed after input and old refs cannot click again', async () => {
+test('AX backend identity survives consecutive inputs without another snapshot', async () => {
   const f = fixture(); await f.claim();
   const ref = f.ref(await f.exec('snapshot'));
   await f.exec('click', { ref });
   assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 3);
-  await assert.rejects(f.exec('click', { ref }), /stale/);
+  await f.exec('click', { ref });
+  assert.equal(f.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length, 1);
+  assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 6);
 });
 
 test('a new snapshot and navigation invalidate earlier element refs', async () => {
@@ -389,7 +393,7 @@ test('scroll defaults to DOM; explicit wheel uses viewport coordinates and never
   await f.exec('scroll', {delta_y:120});
   assert.ok(f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('function scrollAtPoint')));
   assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
-  await assert.rejects(f.exec('click', {ref}), /stale/);
+  assert.equal((await f.exec('click', {ref})).target_verified, true);
   f.calls.length = 0;
   const result = await f.exec('scroll', {mode:'wheel',x:25,y:30,delta_x:-40,delta_y:120});
   const dispatch = f.calls.find(call => call.method === 'Input.dispatchMouseEvent');
@@ -462,7 +466,7 @@ test('DOM fill bypasses native input and focus, notifies the page and verifies t
   assert.equal(field.value, '中文 test'); assert.equal(result.value_verified, true); assert.equal(result.events_trusted, false);
   assert.deepEqual(events.map(event => event.type), ['input', 'change']);
   assert.equal(f.calls.filter(call => call.method.startsWith('Input.')).length, 0);
-  await assert.rejects(f.exec('fill', { ref, text: 'again', mode: 'dom' }), /stale/);
+  assert.equal((await f.exec('fill', { ref, text: 'again', mode: 'dom' })).value_verified, true);
 });
 
 test('native fill detects swallowed or reformatted text and never falls back or replays', async () => {
@@ -509,7 +513,7 @@ test('swallowed keyboard events and forged page-world receipts cannot report del
   const emit = f.api.debugger.onEvent.emit;
   f.api.debugger.onEvent.emit = (target, method, params) => emit(target, method,
     method === 'Runtime.bindingCalled' ? { ...params, executionContextId: 999 } : params);
-  await assert.rejects(f.exec('press_key', { key: 'Z' }), /verified delivery within 5000 ms.*Browser UI/);
+  await assert.rejects(f.exec('press_key', { key: 'Z' }), /no verified receipt.*Outcome is unknown.*press Esc/);
   const keys = f.calls.filter(call => call.method === 'Input.dispatchKeyEvent');
   assert.deepEqual(keys.map(call => call.args.type), ['rawKeyDown', 'char', 'keyUp']);
   assert.equal(f.calls.filter(call => call.method === 'Runtime.removeBinding').length, 1);
@@ -799,11 +803,11 @@ test('claim intercepts file choosers, click reports one, upload uses the native 
   await assert.rejects(f.exec('upload_file', { files: [] }), /No pending file chooser/);
 });
 
-test('direct upload consumes refs; [] clears and file chooser state expires on navigation and release', async () => {
+test('direct upload retains backend refs; [] clears and file chooser state expires on navigation and release', async () => {
   const f = fixture(); await f.claim();
   const ref = f.ref(await f.exec('snapshot'));
   assert.equal((await f.exec('upload_file', { ref, files: [] })).cleared, true);
-  await assert.rejects(f.exec('upload_file', { ref, files: [] }), /stale/);
+  assert.equal((await f.exec('upload_file', { ref, files: [] })).cleared, true);
   f.api.debugger.onEvent.emit({ tabId: 9 }, 'Page.fileChooserOpened', { backendNodeId: 77, mode: 'selectSingle' });
   f.api.debugger.onEvent.emit({ tabId: 9 }, 'Page.frameNavigated', { frame: { id: 'main' } });
   await assert.rejects(f.exec('upload_file', { files: [] }), /No pending/);
@@ -913,7 +917,7 @@ test('continuously moving refs exhaust the actionability deadline without dispat
   assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
 });
 
-test('evaluation runs once, awaits promises, bounds values, invalidates refs and enforces ownership', async () => {
+test('evaluation runs once, awaits promises, bounds values, retains refs and enforces ownership', async () => {
   const f = fixture(); await f.claim();
   const ref = f.ref(await f.exec('snapshot'));
   const send = f.api.debugger.sendCommand;
@@ -926,7 +930,7 @@ test('evaluation runs once, awaits promises, bounds values, invalidates refs and
   };
   assert.equal((await f.exec('evaluate', { expression: 'Promise.resolve(++runs)' })).value, 1);
   assert.equal(page.runs, 1);
-  await assert.rejects(f.exec('click', { ref }), /stale/);
+  assert.equal((await f.exec('click', { ref })).target_verified, true);
   await assert.rejects(f.exec('evaluate', { expression: '++runs' }, 'two'), /not claimed/);
   assert.equal(page.runs, 1);
   await assert.rejects(f.exec('evaluate', { expression: '(()=>{runs++; throw new Error("fixture failure")})()' }), /effects may already.*fixture failure/);
@@ -1062,6 +1066,7 @@ test('OOPIF trees omitted from root frame metadata still invalidate the full sub
   f.api.debugger.sendCommand = async (target, method, args) => {
     const frame = target.sessionId === 's1' ? 'child' : target.sessionId === 's2' ? 'nested' : 'main';
     if (method === 'Page.getFrameTree') return {frameTree:{frame:{id:frame,url:'https://fixture.test/'}}};
+    if (method === 'Accessibility.getPartialAXTree') return {nodes:[{backendDOMNodeId:12,role:{value:'button'},name:{value:frame}}]};
     if (method === 'Accessibility.getFullAXTree') return {nodes:[
       {nodeId:'button',backendDOMNodeId:12,role:{value:'button'},name:{value:frame}},
       ...(frame !== 'nested' ? [{nodeId:'iframe',backendDOMNodeId:14,role:{value:'Iframe'}}] : []),
@@ -1078,4 +1083,148 @@ test('OOPIF trees omitted from root frame metadata still invalidate the full sub
   await assert.rejects(f.exec('click',{ref:ref('nested')}),/stale/);
   assert.equal((await f.exec('click',{ref:ref('main')})).target_verified,true);
   await assert.rejects(f.exec('upload_file',{files:[]}),/No pending/);
+});
+
+
+test('hover uses the same hit checks but dispatches only one native move and preserves refs', async () => {
+  const f = fixture(); await f.claim(); const ref = f.ref(await f.exec('snapshot'));
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Input.dispatchMouseEvent' && args.type === 'mouseMoved') {
+      const binding = f.calls.findLast(c => c.method === 'Runtime.addBinding').args.name;
+      f.api.debugger.onEvent.emit(target, 'Runtime.bindingCalled', { name: binding, executionContextId: 42, payload: '{"matched":true}' });
+    }
+    return result;
+  };
+  assert.equal((await f.exec('hover', { ref })).events_trusted, true);
+  assert.deepEqual(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent').map(c => c.args.type), ['mouseMoved']);
+  assert.equal((await f.exec('click', { ref })).target_verified, true);
+  assert.equal(f.calls.filter(c => c.method === 'Accessibility.getFullAXTree').length, 1);
+});
+
+test('native select hits fail before dispatch and lost receipts free a long-budget queue within two seconds', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function describeHit')) return { result: { value: { native_select: true } } };
+    return send(target, method, args);
+  };
+  await assert.rejects(f.exec('click', { selector: 'select', timeout_ms: 30000 }), /No input was dispatched.*browser_select_option/);
+  assert.ok(!f.calls.some(c => c.method.startsWith('Input.')));
+  f.api.debugger.sendCommand = send;
+  const emit = f.api.debugger.onEvent.emit;
+  f.api.debugger.onEvent.emit = (...args) => { if (args[1] !== 'Runtime.bindingCalled') emit(...args); };
+  const start = Date.now();
+  await assert.rejects(f.exec('click', { x: 10, y: 10, timeout_ms: 30000 }), /Outcome is unknown.*press Esc/);
+  assert.ok(Date.now() - start < 2000);
+  assert.equal(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent').length, 3);
+  assert.ok((await f.exec('snapshot')).snapshot);
+});
+
+
+test('native drag keeps ordering, includes all requested moves and releases only once', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installDragReceipt')) return { result: { objectId: 'drag-guard' } };
+    if (method === 'Input.dispatchMouseEvent') {
+      const binding = f.calls.findLast(c => c.method === 'Runtime.addBinding')?.args.name;
+      const type = { mousePressed: 'mousedown', mouseReleased: 'mouseup', mouseMoved: 'mousemove' }[args.type];
+      f.api.debugger.onEvent.emit(target, 'Runtime.bindingCalled', { name: binding, executionContextId: 42, payload: JSON.stringify({ type }) });
+    }
+    return result;
+  };
+  const result = await f.exec('drag', { source: { selector: '#source' }, destination: { selector: '#destination' }, steps: 5 });
+  assert.equal(result.delivery_verified, true);
+  const events = f.calls.filter(c => c.method === 'Input.dispatchMouseEvent').map(c => c.args.type);
+  assert.deepEqual(events, ['mouseMoved', 'mousePressed', ...Array(6).fill('mouseMoved'), 'mouseReleased']);
+  assert.equal(f.calls.filter(c => c.method === 'DOM.scrollIntoViewIfNeeded').length, 2);
+  assert.ok(!f.calls.some(c => c.method === 'Input.dispatchDragEvent'));
+});
+
+test('an HTML5 drag without interception never invents payload or switches modes and cleans up', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installDragReceipt')
+    ? { result: { objectId: 'drag-guard' } } : send(target, method, args);
+  await assert.rejects(f.exec('drag', { source: { selector: '#source' }, destination: { selector: '#destination' }, mode: 'html5', timeout_ms: 300 }), /Outcome is unknown/);
+  assert.ok(f.calls.some(c => c.method === 'Input.cancelDragging'));
+  assert.deepEqual(f.calls.filter(c => c.method === 'Input.setInterceptDrags').map(c => c.args.enabled), [true, false]);
+  assert.equal(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent' && c.args.type === 'mouseReleased').length, 1);
+  assert.ok(!f.calls.some(c => c.method === 'Input.dispatchDragEvent'));
+  assert.ok((await f.exec('snapshot')).snapshot);
+});
+
+test('drag stops after document change and does not resolve or act on a new destination', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installDragReceipt')) return { result: { objectId: 'drag-guard' } };
+    const result = await send(target, method, args);
+    if (method === 'Input.dispatchMouseEvent' && args.type === 'mousePressed') f.api.debugger.onEvent.emit(target, 'DOM.documentUpdated');
+    return result;
+  };
+  await assert.rejects(f.exec('drag', { source: { selector: '#source' }, destination: { selector: '#destination' } }), /changed during drag|document.frame changed/);
+  assert.ok(!f.calls.some(c => c.args?.expression?.includes('("#destination"')));
+  assert.equal(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent' && c.args.type === 'mouseReleased').length, 1);
+});
+
+
+test('a retained backend node repurposed with a different AX name is refused without guessing a replacement', async () => {
+  const f = fixture();await f.claim();const ref=f.ref(await f.exec('snapshot'));
+  const send=f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand=async (target,method,args)=> method==='Accessibility.getPartialAXTree'
+    ? {nodes:[{backendDOMNodeId:12,role:{value:'button'},name:{value:'Different action'}}]} : send(target,method,args);
+  await assert.rejects(f.exec('click',{ref}),/ref identity changed.*No input was dispatched/);
+  assert.ok(!f.calls.some(c=>c.method.startsWith('Input.')));
+});
+
+
+test('type appends with native character keyDown text and keyUp, never insertText or a DOM fill setter', async () => {
+  const f=fixture();await f.claim();
+  const result=await f.exec('type',{selector:'#edit',text:'A中+',delay_ms:1});
+  assert.equal(result.typed,3);assert.equal(result.events_trusted,true);
+  const events=f.calls.filter(c=>c.method==='Input.dispatchKeyEvent').map(c=>c.args);
+  assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp','keyDown','keyUp','keyDown','keyUp']);
+  assert.deepEqual(events.filter(e=>e.type==='keyDown').map(e=>e.text),['A','中','+']);
+  assert.ok(!f.calls.some(c=>c.method==='Input.insertText'||c.args?.functionDeclaration?.includes('function prepareFill')));
+});
+
+test('batch uses a child timeout for wait and resumes explicitly without replaying completed steps', async () => {
+  const f=fixture();await f.claim();const send=f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand=async(target,method,args)=> method==='Runtime.evaluate'&&args.expression.includes('function inspectWait')
+    ? {result:{value:{satisfied:false,state:'absent'}}} : send(target,method,args);
+  const steps=[{action:'click',selector:'#first'},{action:'wait',selector:'#later',condition:'visible',timeout_ms:100},{action:'click',selector:'#last'}];
+  const failed=await f.exec('batch',{steps,timeout_ms:5000});
+  assert.equal(failed.failed_step,1);assert.equal(failed.retry_failed_step_safe,true);
+  assert.equal(f.calls.filter(c=>c.method==='Input.dispatchMouseEvent'&&c.args.type==='mousePressed').length,1);
+  const resumed=await f.exec('batch',{steps,start_at:2});assert.equal(resumed.completed,true);
+  assert.equal(f.calls.filter(c=>c.method==='Input.dispatchMouseEvent'&&c.args.type==='mousePressed').length,2);
+});
+
+test('explicit dialog policy handles alerts and permits subsequent batch steps; ask still stops', async () => {
+  const f=fixture();await f.claim();f.modal();const send=f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand=async(target,method,args)=>{
+    if(method==='Page.handleJavaScriptDialog') {f.api.debugger.onEvent.emit(target,'Page.javascriptDialogClosed');return {};}
+    const result=send(target,method,args);
+    if(method==='Input.dispatchMouseEvent'&&args.type==='mouseReleased') {
+      const binding=f.calls.findLast(c=>c.method==='Runtime.addBinding')?.args.name;
+      f.api.debugger.onEvent.emit(target,'Runtime.bindingCalled',{name:binding,executionContextId:42,payload:'{"matched":true}'});
+      return {};
+    }
+    return result;
+  };
+  const result=await f.exec('batch',{dialog_policy:'accept',steps:[{action:'click',selector:'#alert'},{action:'click',selector:'#next'}]});
+  assert.equal(result.completed,true);assert.equal(result.dialogs.length,2);assert.ok(result.dialogs.every(d=>d.accepted&&d.handled));
+});
+
+test('element capture uses its box and retains the document offset instead of full-page origin', async () => {
+  const f=fixture();await f.claim();const send=f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand=async(target,method,args)=>{
+    if(method==='DOM.getBoxModel')return {model:{border:[10,20,110,20,110,60,10,60]}};
+    const result=await send(target,method,args);
+    if(method==='Runtime.evaluate'&&args.expression.includes('scroll_x: scrollX'))result.result.value.scroll_y=100;
+    return result;
+  };
+  const result=await f.exec('screenshot',{selector:'#box'});
+  assert.equal(result.capture.scope,'element');assert.deepEqual(result.capture.image_origin_css,{x:10,y:120});assert.equal(result.capture.css_width,100);
+  await assert.rejects(f.exec('screenshot',{selector:'#box',full_page:true}),/mutually exclusive/);
 });

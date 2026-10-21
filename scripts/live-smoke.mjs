@@ -111,7 +111,7 @@ try {
   mcp = new Client({ name: 'live-test', version: '1' });
   await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp }));
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 20);
+  assert.equal(tools.length, 25);
   assert.ok(tools.some(tool => tool.name === 'browser_logs'));
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const rawCall = async (method, args = {}) => {
@@ -249,7 +249,8 @@ try {
   assert.equal((await state()).files.single[0].text, 'Attach 上传内容\n'); checks.push('single file content + Unicode path');
   assert.ok((await state()).events.includes('single:input'));
   assert.ok((await state()).events.includes('single:change'));
-  assert.equal((await rawCall('upload_file', { ...handle, ref: single, files: [file] })).isError, true); checks.push('stale ref rejected');
+  await snapshot();
+  assert.equal((await rawCall('upload_file', { ...handle, ref: single, files: [file] })).isError, true); checks.push('new snapshot expires the old ref');
   await call('upload_file', { ...handle, ref: await ref('Multiple'), files: [file, empty] });
   await until(async () => (await state()).files.multiple?.length === 2, 'multiple file content');
   assert.equal((await state()).files.multiple[1].size, 0); checks.push('multiple + empty file');
