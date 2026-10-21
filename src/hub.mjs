@@ -49,7 +49,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
     };
     if (method === 'list_tabs' || method === 'claim_tab' || method === 'open_tab') {
       const browser = browsers.get(args.browser_id);
-      if (!browser) throw new Error('Browser is not connected; call browser_list_browsers again');
+      if (!browser) throw new Error('Browser is not connected; call browser_discover kind=browsers again');
       if (method === 'open_tab') return await requestBrowser(browser, owner, method, args);
       if (method === 'list_tabs') {
         const result = await requestBrowser(browser, owner, method, {});
@@ -64,7 +64,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
       }
       const key = keyFor(browser.id, args.tab_id), tab = observed.get(key);
       if (!tab || (args.expected_url != null && tab.url !== args.expected_url) || (args.expected_title != null && tab.title !== args.expected_title))
-        throw new Error("Claim requires a tab_id from this session's latest browser_list_tabs result; optional expected_url/title must match exactly");
+        throw new Error("Claim requires a tab_id from this session's latest browser_discover kind=tabs result; optional expected_url/title must match exactly");
       return queued(key, async () => {
         const existing = tabClaims.get(key);
         if (existing) {

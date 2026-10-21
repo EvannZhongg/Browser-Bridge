@@ -79,7 +79,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     try:
         client.start()
         definitions = client.wait_ready()
-        assert len(definitions) == 20, statuses
+        assert len(definitions) == 22, statuses
         tools = ToolCatalog(definitions).select(client.tool_names, context)
 
         def call(method, arguments=None, allow_error=False):
@@ -97,7 +97,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
                 'artifact': 'artifact_path' in json.loads(model_text)})
             return result, data
 
-        _, browsers = call('list_browsers')
+        _, browsers = call('discover', {'kind': 'browsers'})
         selected = [b for b in browsers['browsers'] if b['family'] == args.family
             and (args.browser_id is None or b['browser_id'] == args.browser_id)]
         assert len(selected) == 1, 'Select exactly one paired profile for this test'
@@ -108,7 +108,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         deadline = time.monotonic() + 15
         tab = None
         while time.monotonic() < deadline:
-            _, tabs = call('list_tabs', {'browser_id': browser_id})
+            _, tabs = call('discover', {'kind': 'tabs', 'browser_id': browser_id})
             tab = next((tab for tab in tabs['tabs'] if tab['tab_id'] == opened['tab_id'] and tab['url'] == url and tab['title'] == 'Nosis Attach contract fixture'), None)
             if tab:
                 break
@@ -128,7 +128,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
 
         _, extra = call('open_tab', {'browser_id': browser_id, 'url': url + '/extra', 'active': False})
         for _ in range(100):
-            _, listed = call('list_tabs', {'browser_id': browser_id})
+            _, listed = call('discover', {'kind': 'tabs', 'browser_id': browser_id})
             extra_tab = next((item for item in listed['tabs'] if item['tab_id'] == extra['tab_id']
                 and item['title'] == 'Nosis Attach contract fixture'), None)
             if extra_tab:
@@ -139,11 +139,11 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
             'expected_url': extra_tab['url'], 'expected_title': extra_tab['title']})
         extra_h = {'tab_handle': extra_claim['tab_handle']}
         handles.append(extra_h)
-        call('activate_tab', {**extra_h, 'focus_window': False})
-        call('close_tab', extra_h)
+        call('tab_control', {'action': 'activate', **extra_h, 'focus_window': False})
+        call('tab_control', {**extra_h, 'action': 'close'})
         handles.remove(extra_h)
         call('snapshot', extra_h, allow_error=True)
-        call('activate_tab', {**h, 'focus_window': False})
+        call('tab_control', {'action': 'activate', **h, 'focus_window': False})
 
         def ref(name, role):
             _, snapshot = call('snapshot', h)
@@ -191,7 +191,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
         assert dialog['dialog']['type'] == 'confirm'
         call('handle_dialog', {**h, 'accept': False})
         call('read_text', {'tab_handle': 'expired-contract-handle'}, allow_error=True)
-        call('list_browsers')  # A tool error must not poison the physical connection.
+        call('discover', {'kind': 'browsers'})  # A tool error must not poison the physical connection.
         call('navigate', {**h, 'url': url + '/large'})
         for _ in range(40):
             result, body = call('read_text', {**h, 'max_chars': 100000})
@@ -211,10 +211,10 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
                 break
             offset = int(following[1])
         paging_limitation = truncated_line and 'TAILMARK' not in '\n'.join(pages)
-        call('release_tab', h)
+        call('tab_control', {**h, 'action': 'release'})
         handles.clear()
         assert set(sample['method'] for sample in samples) == {
-            'list_browsers','list_tabs','open_tab','activate_tab','close_tab','claim_tab','release_tab','snapshot','read_text','click','fill','press_key',
+            'discover','open_tab','tab_control','claim_tab','snapshot','read_text','click','fill','press_key',
             'scroll','navigate','handle_dialog','upload_file','screenshot','evaluate','logs'}
         report = {'family': args.family, 'tools': len(definitions), 'statuses': statuses, 'samples': samples,
             'command': settings['command'], 'args': settings.get('args', []),
@@ -229,7 +229,7 @@ document.querySelector('#file').onchange=async e=>{const file=e.target.files[0];
     finally:
         for h in handles:
             try:
-                client.call_tool('browser_attach', 'browser_release_tab', h)
+                client.call_tool('browser_attach', 'browser_tab_control', {**h, 'action': 'release'})
             except Exception:
                 pass
         client.close()

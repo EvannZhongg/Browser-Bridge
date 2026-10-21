@@ -39,10 +39,10 @@ try {
   client = new Client({ name: 'package-test', version: '1' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(installed, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp, env }));
   const tools = (await client.listTools()).tools;
-  assert.equal(tools.length, 25);
+  assert.equal(tools.length, 22);
   assert.ok(tools.some(tool => tool.name === 'browser_logs'));
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
-  const result = await client.callTool({ name: 'browser_list_browsers', arguments: {} });
+  const result = await client.callTool({ name: 'browser_discover', arguments: { kind: 'browsers' } });
   assert.equal(JSON.parse(result.content[0].text).browsers[0].browser_id, 'package:one');
   console.log(JSON.stringify({ archive, files: packed.files.length, installedOutsideCheckout: true, stdioTools: tools.length, extensionDirectoryOutsidePackage: true }));
 } finally {

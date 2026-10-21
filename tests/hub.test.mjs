@@ -34,6 +34,10 @@ async function fixture(t, options) {
       const data = JSON.parse(raw.toString()); requests.push(data);
       if (!data.id || data.command === 'stall') return;
       if (data.command === 'read_text' && options?.stall) return;
+      if (options?.failCommands?.has(data.command)) {
+        ws.send(JSON.stringify({ id: data.id, error: `${data.command} failed` }));
+        return;
+      }
       let result = { ok: true };
       if (data.command === 'list_tabs') result = { tabs: structuredClone(tabs) };
       if (data.command === 'open_tab') result = { opened: true, tab_id: 11, active: data.arguments.active ?? false };
@@ -136,8 +140,9 @@ test('unknown outcome disconnects the client and releases its claims without rep
   assert.equal(f.requests.filter(item => item.command === 'read_text').length, 1);
 });
 
-test('real stdio MCP exposes 25 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
-  const f = await fixture(t), browser = await f.extension();
+test('real stdio MCP exposes 22 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
+  const failCommands = new Set();
+  const f = await fixture(t, { failCommands }), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const path = join(temp, 'config.json'), file = join(temp, '中文 empty.txt');
@@ -146,7 +151,7 @@ test('real stdio MCP exposes 25 tools including ordered batch, unified logs, sin
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 25);
+  assert.equal(tools.length, 22);
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const logSchema = tools.find(tool => tool.name === 'browser_logs').inputSchema;
   assert.deepEqual(logSchema.properties.kind.enum, ['console', 'network']);
@@ -158,14 +163,44 @@ test('real stdio MCP exposes 25 tools including ordered batch, unified logs, sin
   }
   const scrollSchema = tools.find(tool => tool.name === 'browser_scroll').inputSchema.properties;
   assert.deepEqual(scrollSchema.mode.enum, ['dom', 'wheel']); assert.equal(scrollSchema.mode.default, 'dom');
-  for (const name of ['upload_file', 'open_tab', 'activate_tab', 'close_tab', 'evaluate', 'logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
+  for (const name of ['upload_file', 'open_tab', 'discover', 'tab_control', 'evaluate', 'logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
+  const discoverSchema = tools.find(tool => tool.name === 'browser_discover').inputSchema;
+  assert.deepEqual(discoverSchema.properties.kind.enum, ['browsers', 'tabs']);
+  assert.ok(discoverSchema.required.includes('kind'));
+  const controlSchema = tools.find(tool => tool.name === 'browser_tab_control').inputSchema;
+  assert.deepEqual(controlSchema.properties.action.enum, ['release', 'activate', 'close']);
+  assert.ok(controlSchema.required.includes('action') && controlSchema.required.includes('tab_handle'));
   const call = (name, args = {}) => mcp.callTool({ name: `browser_${name}`, arguments: args });
-  const browsers = await call('list_browsers');
+  const beforeDiscovery = f.requests.length;
+  for (const args of [{}, { kind: 'all' }, { kind: 'tabs' }, { kind: 'tabs', browser_id: '' }, { kind: 'browsers', browser_id: browser.id }]) {
+    assert.equal((await call('discover', args)).isError, true);
+  }
+  assert.equal(f.requests.length, beforeDiscovery);
+  const browsers = await call('discover', { kind: 'browsers' });
   assert.equal(browsers.structuredContent, undefined); assert.equal(browsers.content.length, 1);
   assert.equal(JSON.parse(browsers.content[0].text).browsers[0].browser_id, browser.id);
-  await call('list_tabs', { browser_id: browser.id });
+  const claimArgs = { browser_id: browser.id, tab_id: 9 };
+  assert.equal((await call('claim_tab', claimArgs)).isError, true);
+  const discoveredTabs = await call('discover', { kind: 'tabs', browser_id: browser.id });
+  assert.equal(JSON.parse(discoveredTabs.content[0].text).tabs[0].control, 'available');
+  assert.deepEqual(f.requests.find(item => item.command === 'list_tabs').arguments, {});
   const result = await call('claim_tab', { browser_id: browser.id, tab_id: 9, expected_title: 'Demo', expected_url: f.tabs[0].url });
   const handle = JSON.parse(result.content[0].text).tab_handle;
+  const beforeControl = f.requests.length;
+  for (const args of [{ tab_handle: handle }, { action: 'all', tab_handle: handle }, { action: 'release' },
+    { action: 'release', tab_handle: handle, focus_window: false }, { action: 'close', tab_handle: handle, focus_window: true },
+    { action: 'activate', tab_handle: handle, focus_window: 'true' }]) {
+    assert.equal((await call('tab_control', args)).isError, true);
+  }
+  assert.equal(f.requests.length, beforeControl);
+  const other = f.client(), foreign = await f.claim(other, browser, 10);
+  const beforeForeign = f.requests.length;
+  for (const action of ['release', 'activate', 'close']) {
+    const rejected = await call('tab_control', { action, tab_handle: foreign.tab_handle });
+    assert.equal(rejected.isError, true);
+    assert.match(rejected.content[0].text, /belongs to another/);
+  }
+  assert.equal(f.requests.length, beforeForeign);
   for (const nth of [-1, 0.5]) assert.equal((await call('fill', { tab_handle: handle, selector: 'input', nth, text: 'x' })).isError, true);
   assert.equal((await call('fill', { tab_handle: handle, ref: 'a', nth: 1, text: 'x' })).isError, true);
   const batch = await call('batch', { tab_handle: handle, steps: [{ action: 'fill', selector: 'input', nth: 1, text: 'x' }, { action: 'press_key', key: 'Tab' }] });
@@ -233,10 +268,29 @@ test('real stdio MCP exposes 25 tools including ordered batch, unified logs, sin
   assert.match(error.content[0].text, /^Tab handle/);
   assert.ok(!(await call('open_tab', { browser_id: browser.id, url: 'https://example.com/' })).isError);
   assert.equal(f.requests.find(item => item.command === 'open_tab').arguments.active, false);
-  assert.ok(!(await call('activate_tab', { tab_handle: handle })).isError);
-  assert.equal(f.requests.find(item => item.command === 'activate_tab').arguments.focus_window, true);
-  assert.ok(!(await call('close_tab', { tab_handle: handle })).isError);
+  assert.ok(!(await call('tab_control', { action: 'activate', tab_handle: handle })).isError);
+  assert.deepEqual(f.requests.find(item => item.command === 'activate_tab').arguments, { tab_handle: handle, focus_window: true, tab_id: 9 });
+  assert.ok(!(await call('tab_control', { action: 'activate', tab_handle: handle, focus_window: false })).isError);
+  assert.equal(f.requests.filter(item => item.command === 'activate_tab').at(-1).arguments.focus_window, false);
+  failCommands.add('release_tab');
+  assert.equal((await call('tab_control', { action: 'release', tab_handle: handle })).isError, true);
+  assert.ok(!(await call('snapshot', { tab_handle: handle })).isError);
+  await assert.rejects(other.call('claim_tab', claimArgs), /another MCP/);
+  failCommands.delete('release_tab');
+  assert.ok(!(await call('tab_control', { action: 'release', tab_handle: handle })).isError);
+  assert.deepEqual(f.requests.filter(item => item.command === 'release_tab').at(-1).arguments, { tab_handle: handle, tab_id: 9 });
   assert.equal((await call('snapshot', { tab_handle: handle })).isError, true);
+  const reclaimed = await call('claim_tab', claimArgs);
+  assert.ok(!reclaimed.isError);
+  const nextHandle = JSON.parse(reclaimed.content[0].text).tab_handle;
+  assert.notEqual(nextHandle, handle);
+  failCommands.add('close_tab');
+  assert.equal((await call('tab_control', { action: 'close', tab_handle: nextHandle })).isError, true);
+  assert.ok(!(await call('snapshot', { tab_handle: nextHandle })).isError);
+  failCommands.delete('close_tab');
+  assert.ok(!(await call('tab_control', { action: 'close', tab_handle: nextHandle })).isError);
+  assert.deepEqual(f.requests.filter(item => item.command === 'close_tab').at(-1).arguments, { tab_handle: nextHandle, tab_id: 9 });
+  assert.equal((await call('snapshot', { tab_handle: nextHandle })).isError, true);
   await mcp.close();
 });
 

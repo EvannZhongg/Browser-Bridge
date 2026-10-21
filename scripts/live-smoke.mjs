@@ -111,7 +111,7 @@ try {
   mcp = new Client({ name: 'live-test', version: '1' });
   await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp }));
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 25);
+  assert.equal(tools.length, 22);
   assert.ok(tools.some(tool => tool.name === 'browser_logs'));
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const rawCall = async (method, args = {}) => {
@@ -121,12 +121,12 @@ try {
   };
   const call = async (method, args) => { const result = await rawCall(method, args); if (result.isError) throw new Error(result.content[0].text); return JSON.parse(result.content[0].text); };
   const browsers = await until(async () => {
-    const list = (await call('list_browsers')).browsers.filter(browser => !values.connected || browser.family === values.family);
+    const list = (await call('discover', { kind: 'browsers' })).browsers.filter(browser => !values.connected || browser.family === values.family);
     return list.length && list;
   }, 'extension connection');
   assert.ok(browsers[0].capabilities.includes('upload_file'));
   const browserId = browsers[0].browser_id;
-  const tab = await until(async () => (await call('list_tabs', { browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Attach upload fixture'), 'fixture tab');
+  const tab = await until(async () => (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Attach upload fixture'), 'fixture tab');
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };
   const evaluate = (expression, args = {}) => call('evaluate', { ...handle, expression, ...args });
@@ -168,20 +168,20 @@ try {
     const start = performance.now();
     const blocked = await rawCall('click', { ...handle, ...target, timeout_ms: 30000 });
     assert.equal(blocked.isError, true);
-    assert.match(blocked.content[0].text, /TAB_NOT_READY.*browser_activate_tab.*No input was dispatched/);
+    assert.match(blocked.content[0].text, /TAB_NOT_READY.*browser_tab_control action=activate.*No input was dispatched/);
     assert.doesNotMatch(blocked.content[0].text, /unknown/i);
     assert.ok(performance.now() - start < 2000, 'background click must fail quickly, not consume the input deadline');
   }
   assert.equal((await evaluate('window.extraClicks')).value, 3);
   await call('click', { ...handle, selector: '#offscreen', mode: 'dom' });
   assert.equal((await evaluate('window.extraClicks')).value, 4);
-  await call('activate_tab', handle);
+  await call('tab_control', { ...handle, action: 'activate' });
   await call('snapshot', handle);
   assert.equal((await call('click', { ...handle, selector: '#offscreen' })).target_verified, true);
   assert.equal((await evaluate('window.extraClicks')).value, 5);
-  const listedCover = await until(async () => (await call('list_tabs', { browser_id: browserId })).tabs.find(tab => tab.tab_id === backgroundCover.tab_id && tab.title === 'Attach upload fixture'), 'background click cover');
+  const listedCover = await until(async () => (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.find(tab => tab.tab_id === backgroundCover.tab_id && tab.title === 'Attach upload fixture'), 'background click cover');
   const coverClaim = await call('claim_tab', { browser_id: browserId, tab_id: listedCover.tab_id });
-  await call('close_tab', { tab_handle: coverClaim.tab_handle });
+  await call('tab_control', { action: 'close', tab_handle: coverClaim.tab_handle });
   checks.push('background native ref/selector/coordinate click fast rejection without effects; explicit DOM and activation recovery; span/button hit hints');
   assert.equal((await rawCall('click', { ...handle, selector: 'button' })).isError, true);
   await call('fill', { ...handle, selector: '#name', mode: 'dom', text: 'selector input' });
@@ -328,7 +328,7 @@ try {
     await evaluate(`setTimeout(()=>document.querySelector('iframe').src += '&again', 500)`);
     const stable = await childRef('button', 'Main frame button');
     await new Promise(resolve => setTimeout(resolve, 800));
-    await call('activate_tab', handle);
+    await call('tab_control', { ...handle, action: 'activate' });
     await call('click', { ...handle, ref: stable });
   }
   await evaluate(`(()=>{const cover=document.createElement('button');cover.id='cover';cover.textContent='Cover';cover.style='position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647';cover.onclick=()=>window.coverClicks=(window.coverClicks||0)+1;document.body.append(cover)})()`);
@@ -355,7 +355,7 @@ try {
   assert.deepEqual(wheelState,{count:1,dx:-15,dy:120,trusted:true});
   checks.push('F8/Insert/PageUp trusted keys, shifted punctuation text, DOM default and native wheel custom handler');
 
-  await call('release_tab', handle);
+  await call('tab_control', { ...handle, action: 'release' });
   const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: VERSION, checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });
   await writeFile(join(out, `npm-live-${values.family}.json`), JSON.stringify(report, null, 2));

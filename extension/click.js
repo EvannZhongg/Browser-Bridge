@@ -5,7 +5,7 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
   const pending = new Map();
   async function assertReady(tabId, budget) {
     const timeout = Math.min(500, budget.remaining());
-    const guidance = 'Call browser_activate_tab with this tab_handle, then browser_snapshot and retry the requested pointer action. If focus is still unavailable, restore/focus the browser window. No input was dispatched.';
+    const guidance = 'Call browser_tab_control action=activate with this tab_handle, then browser_snapshot and retry the requested pointer action. If focus is still unavailable, restore/focus the browser window. No input was dispatched.';
     let timer;
     try {
       if (timeout <= 0) throw new Error('input deadline expired before the readiness check');
