@@ -65,7 +65,7 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 3. `browser_snapshot` 取得元素 `ref`，再执行点击、填写或其他动作。
 4. 动作后重新观察，结束时调用 `browser_release_tab`。
 
-标题易变时，claim 可省略 `expected_title`；`expected_url` 也可选。点击/填写可改用每次重新解析的 `selector`。原生元素点击自动滚动；整页坐标点击使用 `coordinate_space: "document"`。求值结果使用 `next_cursor` 续读缓存，不会重新运行脚本。逐项问题评估、修复范围和复杂度见 [交互能力评估](docs/INTERACTION-REVIEW.md)。
+标题易变时，claim 可省略 `expected_title`；`expected_url` 也可选。点击/填写可改用每次重新解析的 `selector`。原生元素点击自动滚动；整页坐标点击使用 `coordinate_space: "document"`。求值结果使用 `next_cursor` 续读缓存，不会重新运行脚本。逐项能力评估与取舍见 [交互能力评估](docs/INTERACTION-REVIEW.md)。
 
 接管和普通输入不会主动激活标签或窗口；需要前台渲染时显式调用 `browser_activate_tab`。操作结果未知时先重新观察，避免重复提交。完整参数、分页、上传与输入语义见 [使用指南](docs/USAGE.md)。
 

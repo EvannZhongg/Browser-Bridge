@@ -156,7 +156,7 @@ hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证�
 
 导航成功后另有一次 10000 ms 的观察预算；观察失败会返回导航结果加 `observation_error`、`observe_again`，不会把已成功的导航报告为失败。Hub 侧操作上限 60 秒、客户端 65 秒，覆盖最长导航加观察并保留传输余量。超时不代表导航已取消，SPA 在 `DOMContentLoaded` 之后仍可能异步更新。
 
-观察遇到文档变化、执行上下文销毁等瞬时错误时，内部只重读一次，共享原来的 10 秒预算；不会重新导航。权限错误和预算耗尽不重试。
+观察遇到文档变化、执行上下文销毁等瞬时错误时，内部只重读一次，共享同一 10 秒预算；不会重新导航。权限错误和预算耗尽不重试。
 
 页面弹出 JavaScript 对话框时，`browser_snapshot` 会返回 `dialog` 对象，其他动作（除 `release_tab`）被拒绝；用 `browser_handle_dialog` 接受或取消，`prompt_text` 只在 prompt 时使用。对话框打开期间仍可读取控制台和网络日志。
 
@@ -212,11 +212,9 @@ handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`�
 {"tab_handle":"...","kind":"console","level":"error","after_seq":0,"limit":100,"max_chars":24000}
 ```
 
-统一使用 `browser_logs`，`kind` 必填且只能是 `console` 或 `network`，没有默认值或混合模式。返回包含 `kind`、`entries` 及续读元数据。两类日志各自拥有缓冲和序列，只能在同一标签、同一次 claim、同一个 kind 内续读：把返回的 `next_seq` 作为下一次的 `after_seq`，切换 kind 时使用该 kind 自己的续读位置。`limit` 为 1–200，`max_chars` 为 1000–100000（约束 `entries` 数组）。`has_more` 表示还有事件可扫描，`latest_seq` 是当前末尾；被过滤器跳过的事件也会推进游标，想在改过滤条件后回看旧事件应从 `after_seq: 0` 开始。
+使用 `browser_logs` 读取日志，`kind` 必填且只能是 `console` 或 `network`，没有默认值或混合模式。返回包含 `kind`、`entries` 及续读元数据。两类日志各自拥有缓冲和序列，只能在同一标签、同一次 claim、同一个 kind 内续读：把返回的 `next_seq` 作为下一次的 `after_seq`，切换 kind 时使用该 kind 自己的续读位置。`limit` 为 1–200，`max_chars` 为 1000–100000（约束 `entries` 数组）。`has_more` 表示还有事件可扫描，`latest_seq` 是当前末尾；被过滤器跳过的事件也会推进游标，想在改过滤条件后回看旧事件应从 `after_seq: 0` 开始。
 
 网络查询示例：`{"tab_handle":"...","kind":"network","url_contains":"/api/","after_seq":0}`。`level` 仅接受 console，`url_contains` 仅接受 network；传错类型明确报错，不会静默忽略。读取不消费缓冲，不使快照 refs 失效，JS 对话框打开时也可读取。
-
-旧的 `browser_console_logs` / `browser_network_logs` 已移除，没有别名或兼容转发。更新扩展、重启 Hub 与 MCP 连接并重新发现工具后使用新接口。
 
 - 控制台：`level` 可选 `log` / `debug` / `info` / `warning` / `error`，收集 console、未捕获异常 / rejection 和浏览器 Log 消息。对象参数是浅层预览，没有 live handle；行号列号从 0 开始，`timestamp` 与 `capture_started_at` 是 Unix 毫秒。
 - 网络：`url_contains`（最多 2000 字符）过滤 URL，事件为 `request` / `redirect` / `response` / `finished` / `failed` / `cache`。按 `session_id`、`request_id` 和重定向 `hop` 关联；404 属于 `response`，连接失败属于 `failed`。timestamp 是 CDP 单调时钟秒，`request` 另带 Unix 秒的 `wall_time`。

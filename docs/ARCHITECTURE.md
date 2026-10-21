@@ -37,8 +37,6 @@ Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopbac
 - 参数 schema 表达类型、枚举、范围、默认值与参数专属限制；例如 DOM click 仅支持元素目标和无修饰键的左键单击。
 - [使用指南](USAGE.md) 保留完整原理、边界与示例。包内文档不会自动成为模型上下文，不能替代初始化 instructions 中的必要规则。
 
-描述分层本身不改变工具名称、参数约束、默认值或执行语义；原生点击就绪检查是独立的行为改动。
-
 ## 控制模型
 
 1. **发现**：`list_tabs` 的结果被 Hub 记为本次连接的观察快照。
@@ -82,7 +80,7 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 
 ## 诊断模型
 
-统一由 `browser_logs(kind=console/network)` 读取，替代两个独立工具。两者共享只读权限、生命周期、分页和预算接口，合并减少工具发现与调用选择的重复；事件结构和过滤条件通过必填 kind 区分。实现只统一 schema 和调用路由，保留各类缓冲，不新增聚合状态机。旧命令已删除，没有兼容层。
+`browser_logs` 通过必填 `kind=console/network` 读取控制台与网络日志。两类日志共享只读权限、生命周期、分页和预算接口；事件结构与过滤条件由 `kind` 区分，各自维护独立缓冲。工具层只有一套 schema 和调用路由，不引入聚合状态机。
 
 - 每次 claim 开启 Runtime / Log / Network 观察，`Network.enable` 把缓冲区设为 0，避免浏览器侧缓存响应体。
 - 两类 append-only 缓冲各自维护 `seq`：读取使用 `after_seq` + `limit` + `max_chars`；续读位置必须与 tab claim 和 kind 一起保存。网络突发流量不会挤掉控制台错误。console 的 level 与 network 的 url_contains 不得跨类使用。两种 timestamp 基准不同，不混排或伪造统一时间轴。同一 requestId 的重定向用 `hop` 区分，完成事件后追加而不是覆盖请求行。
