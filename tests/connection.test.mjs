@@ -6,7 +6,7 @@ import { VERSION } from '../src/config.mjs';
 async function fixture(t) {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   const sockets = [], local = {}, session = {};
-  let cleanupError, diskVersion = VERSION, reloads = 0, executions = 0;
+  let cleanupError, cleanupRejection, diskVersion = VERSION, reloads = 0, executions = 0;
   class Socket {
     static OPEN = 1;
     readyState = 1;
@@ -21,13 +21,16 @@ async function fixture(t) {
   t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ version: diskVersion }) }));
   const storage = values => ({ get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, values[key]])),
     set: async data => Object.assign(values, data), remove: async key => { delete values[key]; } });
-  const event = () => ({ addListener() {} });
+  const event = () => ({ addListener(listener) { this.listener = listener; } });
   const api = { storage: { local: storage(local), session: storage(session) },
     runtime: { id: 'test', getManifest: () => ({ version: '0.16.9' }), getURL: path => `chrome-extension://test/${path}`,
       reload: () => { reloads++; }, onMessage: event(), onStartup: event(), onInstalled: event() },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
     alarms: { create: async () => {}, onAlarm: event() } };
-  const controller = { releaseAll: async () => ({ errors: cleanupError ? [cleanupError] : [] }),
+  const controller = { releaseAll: async () => {
+    if (cleanupRejection) throw new Error(cleanupRejection);
+    return { released: 1, errors: cleanupError ? [cleanupError] : [] };
+  },
     execute: async () => { executions++; return { ok: true }; }, claimedCount: () => 0 };
   createConnection(api, { url: 'ws://127.0.0.1:47831/extension', token: 'secret' }, controller);
   const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
@@ -40,8 +43,22 @@ async function fixture(t) {
     return ws.messages.find(message => message.id === id);
   };
   return { ws, local, sockets, flush, command, get reloads() { return reloads; }, get executions() { return executions; },
-    set cleanupError(value) { cleanupError = value; }, set diskVersion(value) { diskVersion = value; } };
+    message: message => new Promise(resolve => {
+      assert.equal(api.runtime.onMessage.listener(message, { id: api.runtime.id }, resolve), true);
+    }),
+    set cleanupError(value) { cleanupError = value; }, set cleanupRejection(value) { cleanupRejection = value; }, set diskVersion(value) { diskVersion = value; } };
 }
+
+test('popup release reports partial cleanup failures and rejected cleanup, then permits an explicit retry', async t => {
+  const f = await fixture(t);
+  f.cleanupError = 'detach failed';
+  assert.deepEqual(await f.message({ type: 'release_all' }), { ok: false, error: 'Extension cleanup failed: detach failed' });
+  f.cleanupError = undefined;
+  f.cleanupRejection = 'cleanup rejected';
+  assert.deepEqual(await f.message({ type: 'release_all' }), { ok: false, error: 'cleanup rejected' });
+  f.cleanupRejection = undefined;
+  assert.deepEqual(await f.message({ type: 'release_all' }), { ok: true });
+});
 
 test('maintenance blocks page commands until resume and failed cleanup never reloads', async t => {
   const f = await fixture(t);

@@ -126,7 +126,7 @@ export function createConnection(chrome, CONNECTION, controller) {
       respond({ ok: true });
     }
     if (message.type === 'release_all') {
-      controller.releaseAll().then(() => respond({ ok: true }));
+      release().then(() => respond({ ok: true }), error => respond({ ok: false, error: error.message }));
       return true;
     }
   });

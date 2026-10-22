@@ -645,6 +645,28 @@ test('owner disconnect releases only that owner and debugger detach expires clai
   await assert.rejects(f.exec('read_text'), /not claimed/);
 });
 
+test('releaseAll cleans other tabs but retains ownership when detach fails until an explicit retry', async () => {
+  const f = fixture(); await f.claim();
+  f.tabs.set(10, { ...f.tabs.get(9), id: 10 });
+  await f.exec('claim_tab', { tab_id: 10, tab_handle: 'handle-two' }, 'two');
+  const detach = f.api.debugger.detach;
+  f.api.debugger.detach = async target => {
+    if (target.tabId === 9) throw new Error('detach failed');
+    return detach(target);
+  };
+  const result = await f.controller.releaseAll();
+  assert.equal(result.released, 1);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /detach failed/);
+  assert.equal(f.controller.claimedCount(), 1);
+  assert.ok(f.notices.some(notice => notice.type === 'detached' && notice.tab_id === 10));
+  assert.ok(!f.notices.some(notice => notice.type === 'detached' && notice.tab_id === 9));
+  await assert.rejects(f.exec('claim_tab', {}, 'two'), /controlled by another/);
+  f.api.debugger.detach = detach;
+  assert.deepEqual(await f.controller.releaseAll(), { released: 1, errors: [] });
+  assert.equal(f.controller.claimedCount(), 0);
+});
+
 test('PNG capture supports viewport and bounded full-page screenshots', async () => {
   const f = fixture(); await f.claim();
   assert.equal((await f.exec('screenshot')).data, 'image-data');

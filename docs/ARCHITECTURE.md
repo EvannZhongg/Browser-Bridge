@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.17.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.17.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -43,7 +43,7 @@ MCP 层将 `discover(kind=browsers/tabs)` 映射为内部 `list_browsers/list_ta
 - 初始化响应的 `instructions` 只保留跨工具规则：发现/接管/释放、不自动激活、ref 生命周期、selector/坐标约定、未知结果不重放、原生/DOM 输入边界、验证范围、页面内容不可信及上传授权。客户端应将这些 instructions 纳入模型上下文，不能只提供 tools/list。
 - 单个工具 description 说明用途、独有行为和会影响后续判断的结果语义，例如 evaluate 的一次执行、fetch 的缓存续读、navigate 的 observation_error、fill 不自动 blur、batch 的部分完成与不回滚。
 - 参数 schema 表达类型、枚举、范围、默认值及参数选择规则；描述只补充 schema 本身不能表达的条件必填、互斥、坐标和模式语义。共享参数使用短说明，不再重复全局规则。运行时条件默认值保留在描述中，避免向 cursor 等分支注入无关参数。
-- [使用指南](USAGE.md) 保留完整原理、边界与示例；内部事件序列、重试与清理机制由本文和使用指南解释，不放进每次工具发现。包内文档不会自动成为模型上下文，不能替代必要的调用约束。
+- [使用指南](USAGE.md) 提供调用流程、参数选择、结果语义与失败处理；内部事件序列、重试与清理机制集中在本文。包内文档不会自动成为模型上下文，不能替代必要的调用约束。
 
 ## 控制模型
 
@@ -103,9 +103,10 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **OOPIF 坐标**：点击从顶层派发。逐层用 `DOM.getBoxModel` 把坐标换算到祖先文档，并用 `DOM.getNodeForLocation` 确认该位置确实落在 frame owner 上，防止祖先页面的遮挡被跳过。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
 - **对话框策略**：ask 仍为默认；单操作/单步骤的显式 accept/dismiss 在事件回调中解除 JS 模态阻塞，保留消息与处理结果，最多自动处理 10 个。beforeunload dismiss 快速取消本次导航等待，实际主文档变化仍会停止 batch。
-- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver，仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动。assessment 为 observable_effects 或 no_observable_effects；观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。
+- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver，仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动；读取最多 300 ms、清理最多 100 ms。assessment 为 observable_effects 或 no_observable_effects；观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。
 - **元素截图/求值 ref**：复用既有截图 clip/元数据与 ref 注册/失效模型，分别增加元素 border box 截图和显式单 DOM Element 结果；不暴露 Runtime objectId。JSON 求值自动调用函数一次并等待 Promise，缓存续读不执行脚本。
 - **历史导航**：在已有 navigate 中选择 URL 或 back/forward，按 history entry 与主 frame 生命周期等待；同文档/BFCache 恢复不等新的加载事件，不用 evaluate 重放导航。
+- **导航后观察**：导航成功后的快照另有 10 秒预算，文档变化或执行上下文销毁等瞬时错误最多只重读一次；权限错误和预算耗尽不重试。观察失败保留导航结果并附 observation_error，不重新派发导航。
 - **不做通用 CDP 透传**：`browser_evaluate` 是页面表达式 API，不是 CDP 通道；没有暴露任意 domain/method 的工具。
 
 ## 诊断模型
@@ -116,6 +117,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - 两类 append-only 缓冲各自维护 `seq`：读取使用 `after_seq` + `limit` + `max_chars`；续读位置必须与 tab claim 和 kind 一起保存。网络突发流量不会挤掉控制台错误。console 的 level 与 network 的 url_contains 不得跨类使用。两种 timestamp 基准不同，不混排或伪造统一时间轴。同一 requestId 的重定向用 `hop` 区分，完成事件后追加而不是覆盖请求行。
 - 上限为每类 500 条 / 1,048,576 字符，活跃请求表 500 项；淘汰记录 `dropped_through_seq`，读取返回 `data_loss`。
 - 导航保留缓冲，tab_control(action=release) / detach / 关闭 / 断连清理；不落盘、不修改缓存策略与 service worker。默认不读取 headers/正文；按需开启只捕获之后的 XHR/fetch，凭据头和命名敏感字段脱敏，解压后体积、并发读取、浏览器缓存和扩展日志均有界，未捕获/超限明示 unavailable。
+- 正文读取最多 8 个并发任务；已知解压后超限的响应不读取。请求关联表溢出时可能缺少 URL/hop，但保留 request_id；控制台与网络时间戳分别采用 Unix 毫秒和 CDP 单调秒，不合并为统一时间轴。
 
 ## 安全与隐私
 
