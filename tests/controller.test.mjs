@@ -1189,6 +1189,60 @@ test('native drag keeps ordering, includes all requested moves and releases only
   assert.ok(!f.calls.some(c => c.method === 'Input.dispatchDragEvent'));
 });
 
+test('document drag endpoints share a viewport and preserve both coordinate deltas before dispatch', async () => {
+  for (const [a, b, initial] of [
+    [{x:200,y:1000},{x:200,y:1200},{x:0,y:0}],
+    [{x:200,y:1200},{x:200,y:1000},{x:0,y:0}],
+    [{x:1400,y:200},{x:1600,y:200},{x:0,y:0}],
+    [{x:1600,y:1200},{x:1400,y:1000},{x:1300,y:900}],
+  ]) {
+    const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+    let scroll = initial;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      const result = await send(target, method, args);
+      if (method === 'Runtime.evaluate' && args.expression.startsWith('scrollTo(')) {
+        const [,x,y] = args.expression.match(/left:([^,]+),top:([^,]+)/);
+        scroll = {x:Number(x),y:Number(y)};
+      }
+      if (method === 'Runtime.evaluate' && args.expression.includes('scroll_x: scrollX'))
+        result.result.value = {...result.result.value,scroll_x:scroll.x,scroll_y:scroll.y};
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installDragReceipt')) return {result:{objectId:'drag-guard'}};
+      if (method === 'Input.dispatchMouseEvent') {
+        const binding = f.calls.findLast(c=>c.method==='Runtime.addBinding')?.args.name;
+        const type = {mousePressed:'pointerdown',mouseReleased:'pointerup',mouseMoved:'pointermove'}[args.type];
+        f.api.debugger.onEvent.emit(target,'Runtime.bindingCalled',{name:binding,executionContextId:42,payload:JSON.stringify({type})});
+      }
+      return result;
+    };
+    const result = await f.exec('drag',{source:{...a,coordinate_space:'document'},destination:{...b,coordinate_space:'document'},steps:3});
+    assert.equal(result.to.x-result.from.x,b.x-a.x); assert.equal(result.to.y-result.from.y,b.y-a.y);
+    const inputAt = f.calls.findIndex(c=>c.method==='Input.dispatchMouseEvent');
+    assert.ok(!f.calls.slice(inputAt).some(c=>c.args?.expression?.startsWith('scrollTo(')));
+    assert.ok(f.calls.filter(c=>c.args?.expression?.startsWith('scrollTo(')).length<=1);
+    const down = f.calls.find(c=>c.method==='Input.dispatchMouseEvent'&&c.args.type==='mousePressed').args;
+    const up = f.calls.find(c=>c.method==='Input.dispatchMouseEvent'&&c.args.type==='mouseReleased').args;
+    assert.equal(up.y-down.y,b.y-a.y); assert.equal(up.x-down.x,b.x-a.x);
+    await assert.rejects(f.exec('drag',{source:{x:-1,y:100,coordinate_space:'document'},destination:{x:20,y:100,coordinate_space:'document'}}),/nonnegative/);
+  }
+});
+
+test('document click preserves an already visible point and scrolls only the axis that needs it', async () => {
+  for (const [x,y,expected] of [[300,400,0],[300,1500,1]]) {
+    const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand; let scrolled = false;
+    f.api.debugger.sendCommand = async (target,method,args)=>{
+      const result=await send(target,method,args);
+      if(method==='Runtime.evaluate'&&args.expression.startsWith('scrollTo('))scrolled=true;
+      if(method==='Runtime.evaluate'&&args.expression.includes('scroll_x: scrollX'))
+        result.result.value={...result.result.value,scroll_x:250,scroll_y:scrolled?1200:350};
+      return result;
+    };
+    const result=await f.exec('click',{x,y,coordinate_space:'document'});
+    assert.equal(result.clicked.x,50); assert.equal(result.clicked.y,expected?300:50);
+    const scrolls=f.calls.filter(c=>c.args?.expression?.startsWith('scrollTo('));
+    assert.equal(scrolls.length,expected); if(expected)assert.match(scrolls[0].args.expression,/left:250,/);
+  }
+});
+
 test('an HTML5 drag without interception never invents payload or switches modes and cleans up', async () => {
   const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
   f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installDragReceipt')

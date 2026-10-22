@@ -3,12 +3,15 @@ import { targetOptions } from './locator.js';
 
 export function dragOptions(args) {
   if (!args.source || !args.destination) throw new Error('drag requires source and destination');
-  for (const target of [args.source, args.destination]) targetOptions(target, { coordinates: true });
+  for (const target of [args.source, args.destination]) {
+    targetOptions(target, { coordinates: true });
+    if (target.coordinate_space === 'document' && (target.x < 0 || target.y < 0)) throw new Error('Document coordinates must be finite and nonnegative');
+  }
   if (!['pointer', 'html5'].includes(args.mode ?? 'pointer')) throw new Error('drag mode must be pointer or html5');
   if (!Number.isInteger(args.steps ?? 20) || (args.steps ?? 20) < 2 || (args.steps ?? 20) > 100) throw new Error('steps must be 2..100');
 }
 
-export function createDrag(cdp, value, mouse) {
+export function createDrag(cdp, value, mouse, viewport) {
   const pending = new Map();
   function event(tabId, method, params, sessionId) {
     const operation = pending.get(tabId);
@@ -36,6 +39,20 @@ export function createDrag(cdp, value, mouse) {
     dragOptions(args);
     const budget = args.budget || deadline(args.timeout_ms ?? 5000), html5 = args.mode === 'html5', steps = args.steps ?? 20;
     await mouse.assertReady(tabId, budget);
+    if (args.source.coordinate_space === 'document' && args.destination.coordinate_space === 'document') {
+      const view = await budget.run(() => viewport(tabId)), a = args.source, b = args.destination;
+      // Keep both endpoints in one viewport when possible. Centering them
+      // independently can erase the requested delta before interpolation.
+      if (Math.abs(a.x - b.x) < view.width && Math.abs(a.y - b.y) < view.height) {
+        const left = Math.min(a.x, b.x) < view.scroll_x || Math.max(a.x, b.x) >= view.scroll_x + view.width
+          ? Math.max(0, (a.x + b.x - view.width) / 2) : view.scroll_x;
+        const top = Math.min(a.y, b.y) < view.scroll_y || Math.max(a.y, b.y) >= view.scroll_y + view.height
+          ? Math.max(0, (a.y + b.y - view.height) / 2) : view.scroll_y;
+        if (left !== view.scroll_x || top !== view.scroll_y) value(await budget.run(() => cdp(tabId, 'Runtime.evaluate', {
+          expression: `scrollTo({left:${left},top:${top},behavior:'instant'})`, returnByValue: true,
+        })));
+      }
+    }
     const source = await mouse.prepare(tabId, await resolve(args.source, budget), { ...args.source, budget });
     const name = `__attachDrag_${crypto.randomUUID().replaceAll('-', '')}`, contexts = new Set(), guards = [], frames = new Set();
     let intercept; const intercepted = new Promise(resolve => { intercept = resolve; });

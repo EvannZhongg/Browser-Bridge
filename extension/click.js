@@ -67,9 +67,14 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       view = await budget.run(() => viewport(target));
       if (args.coordinate_space === 'document') {
         if (!Number.isFinite(args.x) || !Number.isFinite(args.y) || args.x < 0 || args.y < 0) throw new Error('Document coordinates must be finite and nonnegative');
-        value(await send('Runtime.evaluate', { returnByValue: true,
-          expression: `scrollTo({left:${Math.max(0, args.x - view.width / 2)},top:${Math.max(0, args.y - view.height / 2)},behavior:'instant'})` }));
-        view = await budget.run(() => viewport(target));
+        const x = args.x - view.scroll_x, y = args.y - view.scroll_y;
+        if (args.scroll !== false && (x < 0 || y < 0 || x >= view.width || y >= view.height)) {
+          const left = x < 0 || x >= view.width ? Math.max(0, args.x - view.width / 2) : view.scroll_x;
+          const top = y < 0 || y >= view.height ? Math.max(0, args.y - view.height / 2) : view.scroll_y;
+          value(await send('Runtime.evaluate', { returnByValue: true,
+            expression: `scrollTo({left:${left},top:${top},behavior:'instant'})` }));
+          view = await budget.run(() => viewport(target));
+        }
         point = position(view, args.x - view.scroll_x, args.y - view.scroll_y);
       } else point = position(view, args.x, args.y);
     }

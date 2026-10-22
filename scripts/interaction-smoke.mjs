@@ -187,6 +187,22 @@ try {
   assert.equal(cancelledMouse.delivery_verified,true);assert.ok(await page('window.pointerMoves>=8'));
   assert.ok(!(await page('window.events')).some(e=>['mousedown','mouseup'].includes(e.type)));
   results.cases.push({scenario:'pointer_drag_without_mouse_compatibility',result:cancelledMouse});
+  await page(`(() => {
+    const slider=document.createElement('div');slider.id='document-slider';slider.style='position:absolute;left:700px;top:900px;width:150px;height:600px;touch-action:none';
+    document.body.append(slider);window.documentDragEvents=[];
+    for(const type of ['pointerdown','pointermove','pointerup'])slider.addEventListener(type,e=>{
+      if(type==='pointerdown')slider.setPointerCapture(e.pointerId);
+      if(type!=='pointermove'||e.buttons===1)window.documentDragEvents.push({type,x:e.clientX,y:e.clientY,pageY:e.pageY});
+    });return true;
+  })()`);
+  const documentDrag=await call('drag',{source:{x:750,y:1000,coordinate_space:'document'},destination:{x:750,y:1200,coordinate_space:'document'},steps:8});
+  const documentEvents=await page('window.documentDragEvents');
+  assert.equal(documentDrag.to.y-documentDrag.from.y,200);
+  assert.equal(documentEvents.at(-1).y-documentEvents[0].y,200);
+  const documentMoves=documentEvents.filter(e=>e.type==='pointermove').slice(-8);
+  assert.equal(documentMoves.length,8);
+  documentMoves.forEach((event,index)=>assert.ok(Math.abs(event.y-documentEvents[0].y-(index+1)*25)<1));
+  results.cases.push({scenario:'document_coordinate_vertical_drag',result:documentDrag,events:documentEvents});
   await page('window.events=[];true');
   const html5=await call('drag',{source:{selector:'#drag'},destination:{selector:'#drop'},steps:8,mode:'html5',timeout_ms:5000});
   const events=await page('window.events');
@@ -196,6 +212,12 @@ try {
   const far=await call('drag',{source:{selector:'#drag'},destination:{selector:'#far'},steps:8,mode:'html5',timeout_ms:5000});
   assert.ok(await page('scrollY>1000'));assert.ok((await page('window.events')).some(e=>e.type==='drop'&&e.target==='far'&&e.trusted));
   results.cases.push({scenario:'html5_offscreen',result:far});
+  await page('window.events=[];document.querySelector("#drag").style.top="1000px";document.querySelector("#drop").style.top="1200px";true');
+  const documentHtml5=await call('drag',{source:{x:370,y:1040,coordinate_space:'document'},destination:{x:650,y:1260,coordinate_space:'document'},steps:8,mode:'html5'});
+  assert.equal(documentHtml5.to.y-documentHtml5.from.y,220);
+  assert.equal(documentHtml5.to.x-documentHtml5.from.x,280);
+  assert.ok((await page('window.events')).some(e=>e.type==='drop'&&e.target==='drop'&&e.trusted));
+  results.cases.push({scenario:'document_coordinate_html5_drag',result:documentHtml5});
   await page(`(() => {
     const list=document.createElement('div');list.id='lazy-list';list.style='position:fixed;left:20px;top:350px;width:200px;height:100px;overflow:auto';
     document.body.append(list);

@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.11.2**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.11.3**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -149,6 +149,8 @@ hover 接受与原生 click 相同的目标，执行一次 mouseMoved，不派�
 随后调用 `browser_click({tab_handle, selector:'#menu .child'})`。需要等待菜单出现时可组合 browser_wait。
 
 drag 的 source / destination 各自接受 ref、严格 selector（可带 frame_id/nth）或 x/y（可带 coordinate_space）。mode 必须按页面交互选择，默认 pointer；steps 默认 20，范围 2–100，每步间隔约 16 ms。
+
+两端均为 document 坐标且能同时容纳于一个顶层视口时，在按下前统一滚动位置，保留两端的 x/y 差值。已在视口内的 document 坐标不重复居中；需要滚动时只调整越界的轴。跨屏目标仍在按住后滚入视口，因此返回的 from/to 是各自派发时的视口坐标，不能用两者之差推断跨屏的文档距离。
 
 ```json
 {"tab_handle":"...","source":{"selector":"#card"},"destination":{"selector":"#column"},"mode":"html5","steps":20}

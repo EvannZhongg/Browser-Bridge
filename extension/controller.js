@@ -38,7 +38,7 @@ export function createController(api, notify = () => {}) {
     for (const key of pageContexts.keys()) { const [tab, session] = JSON.parse(key); if (tab === tabId && session === sessionId) pageContexts.delete(key); }
   }, tabId => diagnostics.networkOptions(tabId));
   const mouse = createClick(cdp, value, viewport, position, sessions, tabId => api.tabs.get(tabId), windowId => api.windows.get(windowId));
-  const gestures = createDrag(cdp, value, mouse);
+  const gestures = createDrag(cdp, value, mouse, viewport);
   const input = createInput(cdp, value, sessions);
   const evaluations = createEvaluations(cdp);
 
