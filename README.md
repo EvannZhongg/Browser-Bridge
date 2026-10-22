@@ -15,7 +15,7 @@ Drive the Chrome / Edge tabs you already have open and already signed in from an
 ## What it does
 
 - Discover multiple browser profiles, pick one precisely, claim a tab exclusively, and release it when done.
-- Read the accessibility tree, field values and supported editor models; click, replace-fill and type character by character through current snapshot refs or strict CSS/XPath locators.
+- Read the accessibility tree, query it by literal name/value, inspect field values and supported editor models; click, replace-fill and type character by character through current snapshot refs or strict CSS/XPath locators.
 - Native pointer hover, stepped drags and conditional waits; select HTML options without opening a native popup.
 - Navigate and go back/forward, open or close tabs, handle JavaScript dialogs, upload local files, and capture the whole page or a single element.
 - Evaluate JavaScript expressions in the main page; read console, page-error and network lifecycle logs captured after claiming; opt in to bounded, redacted request/response details when XHR/fetch needs verification.
@@ -90,7 +90,7 @@ Claiming and ordinary input never activate a tab or window; call `browser_tab_co
 | `browser_claim_tab` | Exclusively claim a discovered tab |
 | `browser_open_tab` / `browser_tab_control` | Create a tab; explicit `release/activate/close` of a claimed tab |
 | `browser_fetch` | Read one HTTP(S) URL in a temporary background tab using the profile's sign-in; `text`/`html`/`json`, optional HTTP status and cursor continuation |
-| `browser_snapshot` / `browser_read_text` | AX snapshot, element refs and page text |
+| `browser_snapshot` / `browser_read_text` | AX snapshot, literal name/value query with actionable refs, and page text |
 | `browser_wait` | Read-only wait for an element, text, URL or network idle |
 | `browser_click` / `browser_hover` / `browser_drag` / `browser_select_option` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_scroll` | Native/DOM input, pointer hover and drag, option selection, character typing and scrolling |
 | `browser_batch` | Run 1–20 click/fill/type/press_key/hover/scroll/select_option/wait steps in one queue; stops on the first failure and returns partial results |

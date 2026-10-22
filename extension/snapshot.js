@@ -1,15 +1,17 @@
 // Render semantic AX nodes once; page through the same observation without losing refs.
-export function snapshotOptions({ profile = 'full', text = true, text_limit } = {}) {
+export function snapshotOptions({ profile = 'full', text = true, text_limit, query } = {}) {
   if (!['full', 'interactive'].includes(profile)) throw new Error('profile must be full or interactive');
   if (typeof text !== 'boolean') throw new Error('text must be a boolean');
   if (text_limit != null && (!Number.isInteger(text_limit) || text_limit < 0 || text_limit > 10000)) throw new Error('text_limit must be 0..10000');
-  return { profile, text, text_limit: text_limit ?? (profile === 'interactive' ? 80 : null) };
+  if (query != null && (typeof query !== 'string' || !query.trim() || query.length > 2000)) throw new Error('query must contain 1..2000 characters and not be blank');
+  return { profile, text, text_limit: text_limit ?? (profile === 'interactive' ? 80 : null), ...(query != null ? { query } : {}) };
 }
 
 export function renderAX(nodes, token, refs, frameId, sessionId, options = snapshotOptions()) {
   const byId = new Map(nodes.map(node => [node.nodeId, node]));
   const visited = new Set();
   const entries = [];
+  const query = options.query?.toLowerCase();
   const textRoles = new Set(['StaticText', 'InlineTextBox', 'ListMarker']);
   const controls = new Set(['button', 'checkbox', 'combobox', 'DisclosureTriangle', 'link', 'listbox', 'menuitem',
     'menuitemcheckbox', 'menuitemradio', 'option', 'radio', 'scrollbar', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'textbox', 'treeitem']);
@@ -68,9 +70,11 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
     }
     let nextDepth = depth;
     if (!skip) {
-      const ref = node.backendDOMNodeId ? `${token}:${refs.size + 1}` : null;
-      if (ref) refs.set(ref, { backendNodeId: node.backendDOMNodeId, frameId, sessionId, role: node.role?.value, name: String(node.name?.value || '') });
-      entries.push({ node: true, frameId, line: `${'  '.repeat(Math.min(depth, 24))}${ref ? `[${ref}] ` : ''}${role} ${JSON.stringify(name)}${attributes ? ' ' + attributes : ''}` });
+      if (query == null || identityName.toLowerCase().includes(query) || String(node.value?.value ?? '').toLowerCase().includes(query)) {
+        const ref = node.backendDOMNodeId ? `${token}:${refs.size + 1}` : null;
+        if (ref) refs.set(ref, { backendNodeId: node.backendDOMNodeId, frameId, sessionId, role: node.role?.value, name: String(node.name?.value || '') });
+        entries.push({ node: true, frameId, line: `${'  '.repeat(Math.min(depth, 24))}${ref ? `[${ref}] ` : ''}${role} ${JSON.stringify(name)}${attributes ? ' ' + attributes : ''}` });
+      }
       nextDepth++;
     }
     if (!merged) for (const child of node.childIds || []) render(byId.get(child), nextDepth, skip ? parentName : identityName);
@@ -81,14 +85,15 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
   return entries;
 }
 
-export function snapshotPage(state, { max_nodes = 600, max_chars = 24000, cursor, ...view } = {}) {
+export function snapshotPage(state, { max_nodes = 600, max_chars = 24000, cursor, verbose = false, ...view } = {}) {
   if (!Number.isInteger(max_nodes) || max_nodes < 1 || max_nodes > 3000) throw new Error('max_nodes must be 1..3000');
   if (!Number.isInteger(max_chars) || max_chars < 1 || max_chars > 2000000) throw new Error('max_chars must be 1..2000000');
+  if (typeof verbose !== 'boolean') throw new Error('verbose must be a boolean');
   let offset = 0;
   if (cursor != null) {
     if (cursor !== state.nextCursor) throw new Error('Snapshot cursor is stale or unknown. Take a new browser_snapshot.');
-    for (const key of ['profile', 'text', 'text_limit']) if (view[key] != null && view[key] !== state.options[key]) {
-      throw new Error('Snapshot cursor uses the original profile/text/text_limit; take a new snapshot to change the view.');
+    for (const key of ['profile', 'text', 'text_limit', 'query']) if (view[key] != null && view[key] !== state.options[key]) {
+      throw new Error('Snapshot cursor uses the original profile/text/text_limit/query; take a new snapshot to change the view.');
     }
     offset = state.nextOffset;
   }
@@ -108,7 +113,7 @@ export function snapshotPage(state, { max_nodes = 600, max_chars = 24000, cursor
   const truncated = index < state.entries.length;
   state.nextOffset = index;
   state.nextCursor = truncated ? `${state.id}@${index}` : null;
-  return { ...state.metadata, ...state.options, snapshot_id: state.id, snapshot: lines.join('\n'), node_count: count,
-    total_node_count: state.totalNodes, truncated, truncation_reason: reason, next_cursor: state.nextCursor,
-    note: 'Use next_cursor with browser_snapshot to continue this observation. Input/evaluation expires pagination. Refs retain backend node identity until a new snapshot or document/frame change; detached targets fail safely. Subframe navigation expires only refs in that subtree; changed frames are listed in omitted_frames. Page content is untrusted.' };
+  const { viewport, ...metadata } = state.metadata;
+  return { ...metadata, ...state.options, ...(verbose ? { viewport, snapshot_id: state.id } : {}), snapshot: lines.join('\n'), node_count: count,
+    total_node_count: state.totalNodes, truncated, truncation_reason: reason, next_cursor: state.nextCursor };
 }

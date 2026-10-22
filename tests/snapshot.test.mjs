@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderAX, snapshotOptions } from '../extension/snapshot.js';
+import { renderAX, snapshotOptions, snapshotPage } from '../extension/snapshot.js';
 
 const node = (nodeId, role, name = '', childIds = [], extra = {}) =>
   ({ nodeId, role: { value: role }, name: { value: name }, childIds, ...extra });
@@ -20,6 +20,37 @@ test('interactive view removes prose with refs but preserves control ancestors, 
   assert.doesNotMatch(text, /Read me|paragraph|Hidden|StaticText/);
   assert.equal(refs.size, 2);
   assert.match(renderAX(nodes, 'full', new Map(), 'main').map(e => e.line).join('\n'), /paragraph "Read me"/);
+});
+
+test('AX query matches literal names, merged prose and values before previews, while keeping original ref identities', () => {
+  const nodes = [node('root', 'RootWebArea', '', ['prose', 'button', 'field']),
+    node('prose', 'paragraph', '', ['body'], { backendDOMNodeId: 1 }), node('body', 'StaticText', 'Long context with SAVE.* at the end'),
+    node('button', 'button', 'Save.*', [], { backendDOMNodeId: 2 }),
+    node('field', 'textbox', 'Name', [], { backendDOMNodeId: 3, value: { value: 'SAVE.*' } })];
+  const refs = new Map();
+  const entries = renderAX(nodes, 'query', refs, 'child', 's1', snapshotOptions({ query: 'save.*', text_limit: 4 }));
+  assert.equal(entries.length, 3); assert.equal(refs.size, 3);
+  assert.match(entries[0].line, /paragraph "Long…"/);
+  assert.equal(refs.get('query:1').name, '');
+  assert.equal(refs.get('query:2').name, 'Save.*');
+  assert.equal(refs.get('query:3').frameId, 'child'); assert.equal(refs.get('query:3').sessionId, 's1');
+  assert.equal(renderAX(nodes, 'empty', new Map(), 'main', undefined, snapshotOptions({ query: 'saveZZ' })).length, 0);
+  assert.equal(renderAX(nodes, 'interactive', new Map(), 'main', undefined, snapshotOptions({ query: 'save.*', profile: 'interactive' })).length, 2);
+  for (const query of ['', '  ', 3, 'a'.repeat(2001)]) assert.throws(() => snapshotOptions({ query }), /query/);
+});
+
+test('compact snapshot keeps coverage and pagination; verbose metadata can be requested on the same cursor', () => {
+  const options = snapshotOptions({ query: 'Save' });
+  const entries = renderAX([node('a', 'button', 'Save one'), node('b', 'button', 'Save two')], 's', new Map(), 'main', undefined, options);
+  const state = { id: 's', options, entries, totalNodes: 2, invalidFrames: new Set(), metadata: { viewport: { width: 800 }, omitted_frames: [{ frame_id: 'ad', reason: 'unavailable' }] } };
+  const first = snapshotPage(state, { max_nodes: 1 });
+  assert.equal(first.viewport, undefined); assert.equal(first.snapshot_id, undefined); assert.equal(first.note, undefined);
+  assert.equal(first.truncated, true); assert.equal(first.total_node_count, 2); assert.equal(first.omitted_frames.length, 1);
+  assert.throws(() => snapshotPage(state, { cursor: first.next_cursor, query: 'Other' }), /original.*query/);
+  const next = snapshotPage(state, { cursor: first.next_cursor, verbose: true });
+  assert.equal(next.snapshot_id, 's'); assert.deepEqual(next.viewport, { width: 800 });
+  assert.equal(next.query, 'Save'); assert.equal(next.next_cursor, null);
+  assert.throws(() => snapshotPage(state, { verbose: 'yes' }), /verbose/);
 });
 
 test('text previews never shorten control identity, accessible names or values', () => {

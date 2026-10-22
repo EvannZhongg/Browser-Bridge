@@ -375,8 +375,16 @@ test('a new snapshot and navigation invalidate earlier element refs', async () =
 
 test('covered elements are refused before input is dispatched', async () => {
   const f = fixture(); await f.claim(); f.block();
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function describeHit')
+    ? { result: { value: { tag: 'div', text: 'Loading overlay', clickable_hint: false } } } : send(target, method, args);
   const ref = f.ref(await f.exec('snapshot'));
-  await assert.rejects(f.exec('click', { ref }), /covers/);
+  await assert.rejects(f.exec('click', { ref }), error => {
+    assert.match(error.message, /covers.*hit_target=.*Loading overlay.*point=.*frame_id=.*No input was dispatched/);
+    assert.equal(error.input_dispatched, false); assert.equal(error.post_action, undefined); return true;
+  });
+  const batch = await f.exec('batch', { steps: [{ action: 'click', selector: '#go' }] });
+  assert.equal(batch.completed, false); assert.equal(batch.retry_failed_step_safe, true);
   assert.equal(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
 });
 
@@ -746,13 +754,13 @@ test('long AX names can be continued without loss, with stable refs and configur
     nodes.push({ nodeId: String(i), role: { value: 'button' }, backendDOMNodeId: i + 1, name: { value: '长文本"\\'.repeat(200) } });
   }
   f.nodes(nodes);
-  const snapshot = await f.exec('snapshot', { max_nodes: 3000, max_chars: 14000 });
+  const snapshot = await f.exec('snapshot', { max_nodes: 3000, max_chars: 14000, verbose: true });
   assert.equal(snapshot.truncated, true);
   assert.equal(snapshot.truncation_reason, 'text_budget');
   assert.ok(JSON.stringify(snapshot).length < 16000);
   let page = snapshot, count = snapshot.node_count;
   while (page.next_cursor) {
-    page = await f.exec('snapshot', { cursor: page.next_cursor, max_nodes: 3000, max_chars: 14000 });
+    page = await f.exec('snapshot', { cursor: page.next_cursor, max_nodes: 3000, max_chars: 14000, verbose: true });
     assert.equal(page.snapshot_id, snapshot.snapshot_id);
     count += page.node_count;
   }
@@ -807,11 +815,36 @@ test('interactive snapshot reduces round trips and keeps one immutable view acro
   await f.exec('click', { ref, mode: 'dom' }); await f.exec('click', { ref, mode: 'dom' });
   await assert.rejects(f.exec('snapshot', { profile: 'typo' }), /profile/);
   await f.exec('click', { ref, mode: 'dom' });
-  const first = await f.exec('snapshot', { profile: 'interactive', text: false, max_nodes: 1 });
+  const first = await f.exec('snapshot', { profile: 'interactive', text: false, max_nodes: 1, verbose: true });
   await assert.rejects(f.exec('snapshot', { cursor: first.next_cursor, profile: 'full' }), /original profile/);
-  const next = await f.exec('snapshot', { cursor: first.next_cursor });
+  const next = await f.exec('snapshot', { cursor: first.next_cursor, verbose: true });
   assert.equal(next.profile, 'interactive'); assert.equal(next.text, false);
   assert.equal(next.snapshot_id, first.snapshot_id); assert.equal(next.node_count, 2);
+});
+
+test('snapshot query starts a fresh observation, returns actionable refs and binds query pagination', async () => {
+  const f = fixture(); await f.claim();
+  const oldRef = f.ref(await f.exec('snapshot'));
+  const found = await f.exec('snapshot', { query: 'sUbMiT', max_nodes: 1 });
+  assert.equal(found.profile, 'full'); assert.equal(found.node_count, 1); assert.equal(found.total_node_count, 1);
+  assert.match(found.snapshot, /Frame main.*\n.*button "Submit"/);
+  assert.doesNotMatch(found.snapshot, /textbox|RootWebArea/);
+  assert.equal(found.next_cursor, null); assert.equal(found.viewport, undefined); assert.equal(found.snapshot_id, undefined);
+  await assert.rejects(f.exec('click', { ref: oldRef }), /stale/);
+  const ref = f.ref(found);
+  await f.exec('click', { ref });
+  await assert.rejects(f.exec('snapshot', { query: '   ' }), /query/);
+  await f.exec('click', { ref });
+  const page = await f.exec('snapshot', { query: 'm', max_nodes: 1 });
+  const reads = f.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+  await assert.rejects(f.exec('snapshot', { cursor: page.next_cursor, query: 'n' }), /original.*query/);
+  const next = await f.exec('snapshot', { cursor: page.next_cursor, verbose: true });
+  assert.equal(next.query, 'm'); assert.equal(next.node_count, 2); assert.equal(next.next_cursor, null);
+  assert.ok(next.viewport.width); assert.equal(f.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length, reads);
+  f.nodes([{ nodeId: 'new', backendDOMNodeId: 12, role: { value: 'button' }, name: { value: 'New action' } }]);
+  assert.match((await f.exec('snapshot', { query: 'new action' })).snapshot, /New action/);
+  const empty = await f.exec('snapshot', { query: 'missing' });
+  assert.equal(empty.snapshot, ''); assert.equal(empty.node_count, 0); assert.equal(empty.next_cursor, null);
 });
 
 test('mouse acknowledgments cannot serialize dispatch; mismatched events never report clicked', async () => {

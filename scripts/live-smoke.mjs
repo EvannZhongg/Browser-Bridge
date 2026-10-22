@@ -226,6 +226,19 @@ try {
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };
   const evaluate = (expression, args = {}) => call('evaluate', { ...handle, expression, ...args });
+  const whole = await call('snapshot', handle);
+  assert.equal(whole.profile, 'full'); assert.equal(whole.viewport, undefined); assert.equal(whole.snapshot_id, undefined); assert.equal(whole.note, undefined);
+  const queried = await call('snapshot', { ...handle, query: 'increment' });
+  assert.equal(queried.node_count, 1); assert.equal(queried.next_cursor, null); assert.ok(queried.snapshot.length < whole.snapshot.length);
+  assert.doesNotMatch(queried.snapshot, /textbox/);
+  await call('hover', { ...handle, ref: queried.snapshot.match(/\[([^\]]+)\] button/)[1] });
+  const queriedPage = await call('snapshot', { ...handle, query: 'i', max_nodes: 1 });
+  assert.equal(queriedPage.truncated, true);
+  const queriedNext = await call('snapshot', { ...handle, cursor: queriedPage.next_cursor, verbose: true });
+  assert.equal(queriedNext.query, 'i'); assert.ok(queriedNext.viewport.width); assert.ok(queriedNext.snapshot_id);
+  const unmatched = await call('snapshot', { ...handle, query: 'no-such-fixture-control' });
+  assert.equal(unmatched.snapshot, ''); assert.equal(unmatched.node_count, 0); assert.equal(unmatched.next_cursor, null);
+  checks.push('compact default/full reading, fresh AX name query with actionable ref, query pagination/verbose metadata and zero matches');
   assert.ok(!(await call('logs', { ...handle, kind: 'console' })).entries.some(entry => entry.text === 'attach-before-claim'));
   assert.deepEqual((await evaluate('Promise.resolve({title: document.title, answer: 6 * 7})')).value,
     { title: 'Attach upload fixture', answer: 42 });
@@ -429,7 +442,7 @@ try {
   }
   await evaluate(`(()=>{const cover=document.createElement('button');cover.id='cover';cover.textContent='Cover';cover.style='position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647';cover.onclick=()=>window.coverClicks=(window.coverClicks||0)+1;document.body.append(cover)})()`);
   const covered = await rawCall('click', { ...handle, ref: await childRef('button', 'Child button'), timeout_ms: 500 });
-  assert.equal(covered.isError, true); assert.match(covered.content[0].text, /covers this frame/);
+  assert.equal(covered.isError, true); assert.match(covered.content[0].text, /covers this frame.*hit_target=.*Cover.*No input was dispatched/);
   assert.equal((await evaluate('window.coverClicks||0')).value, 0);
   await call('navigate', { ...handle, url });
   checks.push('nested OOPIF snapshot/native and DOM fill/keyboard/right-middle-double-Control clicks/chooser upload/logs/subframe navigation cleanup');

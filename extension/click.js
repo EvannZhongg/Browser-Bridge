@@ -49,6 +49,9 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
     if (args.coordinate_space != null && !['viewport', 'document'].includes(args.coordinate_space)) throw new Error('coordinate_space must be viewport or document');
     if (node && args.coordinate_space != null) throw new Error('coordinate_space applies to coordinate clicks only');
     const budget = args.budget || deadline(args.timeout_ms);
+    const obstruction = detail => Object.assign(new Error(`${detail}. ${budget.has_dispatched()
+      ? 'Input has already been dispatched. Outcome is unknown; observe before continuing. Do not replay automatically.'
+      : 'No input was dispatched.'}`), { input_dispatched: budget.has_dispatched() });
     let target = node?.target || { tabId };
     const send = (method, params) => budget.run(() => cdp(target, method, params));
     let point, view;
@@ -120,7 +123,7 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
         objectId: node.objectId, functionDeclaration: 'function(hit) { for (let e = hit; e; e = e.parentNode || e.host) if (e === this) return true; return false; }',
         arguments: [{ objectId: hit.object.objectId }], returnByValue: true,
       }));
-      if (!unblocked) throw new Error('Another element covers this ref. Inspect a new snapshot or screenshot.');
+      if (!unblocked) throw obstruction(`Another element covers this ref. hit_target=${JSON.stringify(hitTarget)}; point=${JSON.stringify(point)}; frame_id=${JSON.stringify(node.frameId)}`);
     }
     // Dispatch through the root widget so overlays in ancestor documents cannot
     // be bypassed by sending directly to an OOPIF widget. Guard every boundary.
@@ -136,7 +139,16 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       const parentHit = await budget.run(() => cdp(parent.target, 'DOM.getNodeForLocation', {
         x: Math.floor(rootPoint.x + parentView.scroll_x), y: Math.floor(rootPoint.y + parentView.scroll_y), includeUserAgentShadowDOM: true,
       }));
-      if (parentHit.backendNodeId !== owner.backendNodeId) throw new Error('Another element covers this frame. Inspect a new snapshot or screenshot.');
+      if (parentHit.backendNodeId !== owner.backendNodeId) {
+        let blocker;
+        try {
+          const diagnostic = budget.child(200);
+          const resolved = await diagnostic.run(() => cdp(parent.target, 'DOM.resolveNode', { backendNodeId: parentHit.backendNodeId, objectGroup: 'browser-attach' }));
+          blocker = value(await diagnostic.run(() => cdp(parent.target, 'Runtime.callFunctionOn', { objectId: resolved.object.objectId,
+            functionDeclaration: describeHit.toString(), returnByValue: true })));
+        } catch { /* Preserve the obstruction error even if its node disappears. */ }
+        throw obstruction(`Another element covers this frame. hit_target=${JSON.stringify(blocker ?? { backend_node_id: parentHit.backendNodeId })}; point=${JSON.stringify(rootPoint)}; blocked_frame_id=${JSON.stringify(parent.frameId)}`);
+      }
       const ownerFrameId = parent.ownerFrameId || (await budget.run(() => cdp(parent.target, 'Page.getFrameTree'))).frameTree.frame.id;
       boundaries.push({ target: parent.target, backendNodeId: owner.backendNodeId, frameId: ownerFrameId });
       current = parent.target; currentView = parentView;

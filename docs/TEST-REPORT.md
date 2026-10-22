@@ -1,8 +1,17 @@
 # 验证报告
 
-当前版本 **0.15.0**（2026-10-22）。验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
+当前版本 **0.15.1**（2026-10-22）。浏览器验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
 
 ## 当前版本
+
+- `npm test`：176 项通过。新增 AX 字面查询（名称/合并正文/value、预览前匹配、interactive 视图、零命中）、查询分页与新旧 ref 生命周期、默认精简/verbose 元数据、当前/祖先 frame 的遮挡诊断、诊断节点失效保留主错误，以及 drag 已派发预算不能误报“未派发”的回归。
+- Chromium 156 与 Edge 155 headless 完整 stdio MCP 集成：各 244 次调用通过。新增真实 AX 查询返回的 ref 可用于原生 hover、查询分页和 verbose 续页、零命中及 ancestor frame 的实际遮挡文字；保留输入、导航、OOPIF、日志、分页和临时页关闭链路。
+- 同一构造表单 AX（2 个字段、2 个按钮，固定 URL/ref 前缀）比较 JSON 字符数：0.15.0 默认 908，0.15.1 默认 443（减少 51.2%），query=save 为 332。这里只衡量固定 fixture 的序列化输出，不代表题述表单、token 数或 AX 采集耗时。
+- 实际 MCP tools/list：仍为 23 个工具；紧凑 JSON 从 36703 增至 37116 UTF-8 字节（新增 query/verbose 参数及说明，约 +1.1%），格式化 JSON 从 75945 增至 76502 字节。未声称 schema 总量下降；不新增工具分组、依赖或扩展权限。
+- `npm run test:package`：仓库外安装运行通过，23 个工具、47 个发布文件，版本为 0.15.1；发布包不含本机配对密钥。
+- 本机部署：已把扩展同步至 `F:\.nosis\browser-attach\extension`，关键模块与源码一致，Hub 健康接口返回 0.15.1。临时 Chromium 加载该实际副本连接共享 Hub，AX 查询 → 原生点击 → 查询确认页面变化通过。验证结束时用户原有浏览器尚未重新连接；仍需在 Chrome/Edge 重新加载扩展，并刷新 MCP 连接以获取新 schema。
+
+## 0.15.0 验证
 
 - `npm test`：172 项通过。新增 commit / DOMContentLoaded、等待超时后的降级采集、主文档替换后跟随 loader、采集期间只读重试、等待完成后换文档的身份核对、HTTP 错误响应关联及空体判断，以及标签创建/关闭超时和迟到清理；保留断连、控制权变化与不重放导航的回归覆盖。
 - Chromium 156 与 Edge 155 headless 完整 stdio MCP 集成：各 238 次调用通过。新增阻塞 load 时的早期等待及超时降级、load 前 location.replace、SSE 阻塞 network_idle，以及空体 418/500/503 的状态码和正文来源；同时验证既有输入、导航、OOPIF、分页与临时页关闭链路。

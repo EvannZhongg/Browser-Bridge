@@ -166,6 +166,7 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   const snapshotSchema = tools.find(tool => tool.name === 'browser_snapshot').inputSchema.properties;
   assert.deepEqual(snapshotSchema.profile.enum, ['full', 'interactive']);
   assert.equal(snapshotSchema.text.type, 'boolean'); assert.equal(snapshotSchema.text_limit.maximum, 10000);
+  assert.equal(snapshotSchema.query.maxLength, 2000); assert.equal(snapshotSchema.verbose.default, false);
   for (const name of ['upload_file', 'open_tab', 'discover', 'tab_control', 'evaluate', 'logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
   const discoverSchema = tools.find(tool => tool.name === 'browser_discover').inputSchema;
   assert.deepEqual(discoverSchema.properties.kind.enum, ['browsers', 'tabs']);
@@ -204,13 +205,14 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   assert.deepEqual(f.requests.find(item => item.command === 'list_tabs').arguments, {});
   const result = await call('claim_tab', { browser_id: browser.id, tab_id: 9, expected_title: 'Demo', expected_url: f.tabs[0].url });
   const handle = JSON.parse(result.content[0].text).tab_handle;
-  for (const args of [{ profile: 'bad' }, { text: 'false' }, { text_limit: -1 }]) {
+  for (const args of [{ profile: 'bad' }, { text: 'false' }, { text_limit: -1 }, { query: '' }, { verbose: 'true' }]) {
     assert.equal((await call('snapshot', { tab_handle: handle, ...args })).isError, true);
   }
-  await call('snapshot', { tab_handle: handle, profile: 'interactive', text: false, text_limit: 40 });
+  await call('snapshot', { tab_handle: handle, profile: 'interactive', text: false, text_limit: 40, query: 'Save', verbose: true });
   const viewRequest = f.requests.findLast(item => item.command === 'snapshot');
   assert.equal(viewRequest.arguments.profile, 'interactive'); assert.equal(viewRequest.arguments.text, false);
   assert.equal(viewRequest.arguments.text_limit, 40);
+  assert.equal(viewRequest.arguments.query, 'Save'); assert.equal(viewRequest.arguments.verbose, true);
   const beforeControl = f.requests.length;
   for (const args of [{ tab_handle: handle }, { action: 'all', tab_handle: handle }, { action: 'release' },
     { action: 'release', tab_handle: handle, focus_window: false }, { action: 'close', tab_handle: handle, focus_window: true },

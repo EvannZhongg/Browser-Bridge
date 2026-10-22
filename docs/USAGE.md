@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.15.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.15.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则；工具 description 说明用途、独有行为与结果语义；参数 schema 及其短说明提供类型、默认值和选择规则。本文保留完整原理、边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -35,7 +35,7 @@
 
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
-| `browser_snapshot` | `profile`, `text`, `text_limit`, `max_nodes=600`, `max_chars=24000`, `cursor` | AX 语义树、元素 ref、frame 覆盖、待处理文件选择器 |
+| `browser_snapshot` | `profile`, `text`, `text_limit`, `query`, `verbose=false`, `max_nodes=600`, `max_chars=24000`, `cursor` | AX 语义树、按名称/value 查询、元素 ref、frame 覆盖、待处理文件选择器 |
 | `browser_wait` | `condition`, `selector`, `expected` / `previous`, `idle_ms=500`, `timeout_ms=5000` | 只读等待元素、文本、URL 或被动网络空闲 |
 | `browser_fetch` | `browser_id`, `url`, `wait_until=load`, `format=text`, `max_chars=20000`, `cursor` | 后台临时页读取一次，关闭后按缓存续读 |
 | `browser_read_text` | `mode`, `selector`, `offset=0`, `max_chars=20000` | 主 frame 的 DOM、字段值或支持的编辑器模型 |
@@ -94,7 +94,7 @@ browser_fetch({browser_id, cursor: next_cursor, max_chars: 20000})
 
 ## 观察：快照与引用
 
-`browser_snapshot` 返回 `snapshot` 文本（每行 `[token:n] role "name" 状态`）、`snapshot_id`、`node_count`、`total_node_count`、`truncated`、`truncation_reason`（`node_limit` / `text_budget`）、`next_cursor`、`viewport`、`omitted_frames`，以及当前 `title` / `url`。
+`browser_snapshot` 返回 `snapshot` 文本（每行 `[token:n] role "name" 状态`）、`node_count`、`total_node_count`、`truncated`、`truncation_reason`（`node_limit` / `text_budget`）、`next_cursor`、`omitted_frames`，以及当前 `title` / `url`；`verbose: true` 时额外返回 `viewport` 和 `snapshot_id`。
 
 - 渲染时移除 `InlineTextBox`，合并纯文本列表项与段落名称，保留 `disabled`、`focused`、`expanded`、`checked`、`selected`、`required`、`invalid`、`level` 等状态，以及浏览器提供的 `value`；`[token:n]` 即后续动作使用的 `ref`。未提供 invalid/selected 等属性不代表有效或已提交；value 也可能只是下拉框的过滤文本。
 - `max_nodes` 为 1–3000（默认 600）；`max_chars` 为 1–2000000（默认 24000），按行序列化长度累计，与节点数是两个独立预算。
@@ -102,8 +102,18 @@ browser_fetch({browser_id, cursor: next_cursor, max_chars: 20000})
 - `text` 默认 `true`；`false` 隐去独立文本和纯文本段落/列表项的合并正文，仍保留可访问名称及控件值。`text_limit` 为 0–10000，限制每个文本/合并正文名称并以 `…` 标明省略；`interactive` 默认 80，`full` 默认不截断。需要更多正文时重新请求 `full`，或显式提高 `text_limit`。控件名称、值及 ref 校验所用身份始终完整。
 - 返回 `profile` / `text` / `text_limit` 表明本次视图；`node_count` 和 `total_node_count` 统计筛选后的节点。`truncated` / `next_cursor` 只表示该视图尚有分页，不表示视图包含全部网页正文。筛选发生在完整 AX 树读取后，减少返回内容与分页次数，不减少 CDP 的 AX 树采集量。
 - `truncated: true` 时把 `next_cursor` 传回同一个工具继续读取同一份观察，refs 在续读期间保持有效；也可以调整预算。单个超长节点放不下时会明确报出所需预算，不静默丢尾部。
-- 续读可省略视图参数，沿用原 `profile` / `text` / `text_limit`；显式提供时必须与原观察相同。调整视图须请求新快照，并按下表使旧 ref 失效。
+- 续读可省略视图参数，沿用原 `profile` / `text` / `text_limit` / `query`；显式提供时必须与原观察相同。调整视图须请求新快照，并按下表使旧 ref 失效。
 - 覆盖主 frame、同进程 iframe 与递归 OOPIF；读取失败、读取期间变化或附着失败的 frame 列入 `omitted_frames`。
+
+默认输出省略 viewport、snapshot_id 和重复的使用说明；需要视口几何与观察标识时传 `verbose: true`，也可在同一 cursor 的续页上开启。frame 覆盖、分页与截断字段始终保留。默认仍是 full 视图，阅读与交互任务可自行选择。
+
+已知目标文字时可直接查询，无需先返回整棵树：
+
+```json
+{"tab_handle":"...","query":"保存","max_nodes":20}
+```
+
+`query`（1–2000 字符，不能全为空白）在当前视图的 AX 完整名称（含合并正文）或 value 中匹配不区分大小写的字面子串，保留原始空格，不解释正则；不匹配 role、ref 或未暴露给 AX 的 DOM 内容。匹配发生在文本预览截取之前，返回匹配行及所属 frame 标题，有 backend node 的节点带可操作 ref。`total_node_count` 统计匹配节点；零命中正常返回空 snapshot，不等待目标出现。多命中按原有 max_nodes/max_chars 和 cursor 续读。每个新查询仍读取完整 AX 树、替换旧观察并使旧 refs 失效；只减少返回量，不能据此推断采集时间缩短。`profile=interactive` 会先筛掉正文，阅读查询保留默认 full。
 
 失效规则：
 
@@ -400,5 +410,6 @@ handle_dialog 返回原始 `dialog.type/message/default_prompt` 和 `accepted`�
 - 标签拖动或浏览器原生菜单可能捕获原生输入，CDP 返回成功不等于页面收到事件；结束该交互后再依赖原生输入。不要用 `Input.setIgnoreInputEvents(false)` 强行解除用户的菜单 / 拖动状态。
 - 后台操作要求浏览器运行且页面未冻结；网站自己弹窗或权限 UI 仍可能改变焦点。
 - `target_verified`、`delivery_verified`、`value_verified` 只证明事件送达或文本写入，不证明提交、付款、服务端上传等业务完成。
+- 点击/hover 准备时发现遮挡会返回 `hit_target`、命中点及受阻 frame；祖先 frame 的节点描述若失效则保留 backend node ID。普通点击在此失败尚未派发输入；drag 若已经按住，再准备目的节点时遇到遮挡仍按结果未知处理。不可见/禁用/尺寸不稳定及 selector 尚未出现沿用准备等待与最后状态诊断。
 - Hub 日志位于配对文件同目录的 `hub.log`；`browser-attach status` 查看连接状态，`browser-attach stop` 停止 Hub。
 - 宿主把大结果保存为 Artifact 时，长行可能被宿主截断；这是宿主读取行为，不是快照游标分页。相关说明见 [Agent 集成](AGENT-INTEGRATION.md)。

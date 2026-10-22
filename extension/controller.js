@@ -341,8 +341,9 @@ export function createController(api, notify = () => {}) {
         const url = srcIndex >= 0 ? new URL(attributes[srcIndex + 1], frame.url).href : 'about:blank';
         knownFrames.add(childId); frames.push({ id: childId, url });
       }
-      entries.push({ node: false, frameId: frame.id, line: `Frame ${frame.id} ${frame.url}` });
-      entries.push(...renderAX(nodes, token, refs, frame.id, target.sessionId, options));
+      const rendered = renderAX(nodes, token, refs, frame.id, target.sessionId, options);
+      if (rendered.length || options.query == null) entries.push({ node: false, frameId: frame.id, line: `Frame ${frame.id} ${frame.url}` });
+      entries.push(...rendered);
     }
     const metadata = value(await send(tabId, 'Runtime.evaluate', {
       expression: '({title: document.title, url: location.href})', returnByValue: true,

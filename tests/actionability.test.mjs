@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deadline, inspectTarget, waitForTarget } from '../extension/actionability.js';
-import { clickOptions, describeHit, framePoint } from '../extension/click.js';
+import { createClick, clickOptions, describeHit, framePoint } from '../extension/click.js';
 import { NAVIGATION_MAX_TIMEOUT_MS, NAVIGATION_OBSERVATION_TIMEOUT_MS, HUB_OPERATION_TIMEOUT_MS, CLIENT_RESPONSE_TIMEOUT_MS } from '../extension/limits.js';
 
 test('transport budgets leave headroom after maximum navigation plus observation', () => {
@@ -80,4 +80,37 @@ test('frame coordinate conversion preserves affine transforms and refuses perspe
   assert.deepEqual(framePoint({x:50,y:25},quad,view), {x:-40,y:120});
   assert.deepEqual(framePoint({x:-40,y:120},quad,view,true), {x:50,y:25});
   assert.throws(() => framePoint({x:1,y:1},[0,0,100,0,80,100,0,100],view), /Perspective/);
+});
+
+test('ancestor-frame obstruction reports its hit target and preserves the failure if diagnostics disappear', async () => {
+  for (const [vanished, dispatched] of [[false, false], [true, false], [false, true]]) {
+    const calls = [];
+    const cdp = async (target, method, args) => {
+      calls.push(method);
+      if (method === 'Runtime.callFunctionOn') {
+        if (args.functionDeclaration.includes('function inspectTarget')) return { result: { value: { ready: true, x: 10, y: 10 } } };
+        if (args.functionDeclaration.includes('function describeHit')) {
+          if (!target.sessionId && vanished) throw new Error('Node disappeared');
+          return { result: { value: { tag: 'div', text: target.sessionId ? 'Child' : 'Parent overlay' } } };
+        }
+        return { result: { value: true } };
+      }
+      if (method === 'DOM.getContentQuads') return { quads: [[0, 0, 50, 0, 50, 50, 0, 50]] };
+      if (method === 'DOM.getBoxModel') return { model: { content: [0, 0, 100, 0, 100, 100, 0, 100] } };
+      if (method === 'DOM.getFrameOwner') return { backendNodeId: 55 };
+      if (method === 'DOM.getNodeForLocation') return { backendNodeId: target.sessionId ? 7 : 99 };
+      if (method === 'DOM.resolveNode') return { object: { objectId: 'hit' } };
+      return {};
+    };
+    const mouse = createClick(cdp, r => r.result.value, async () => ({ width: 100, height: 100, scroll_x: 0, scroll_y: 0 }), p => p,
+      { parent: () => ({ target: { tabId: 1 }, frameId: 'child' }) });
+    const budget = deadline(); if (dispatched) budget.dispatch();
+    await assert.rejects(mouse.prepare(1, { target: { tabId: 1, sessionId: 's1' }, objectId: 'target', backendNodeId: 7, frameId: 'child' }, { budget }), error => {
+      assert.match(error.message, /covers this frame.*hit_target=.*blocked_frame_id="child"/);
+      assert.match(error.message, dispatched ? /Outcome is unknown/ : /No input was dispatched/);
+      assert.match(error.message, vanished ? /backend_node_id.*99/ : /Parent overlay/);
+      assert.equal(error.input_dispatched, dispatched); return true;
+    });
+    assert.ok(!calls.some(method => method.startsWith('Input.')));
+  }
 });
