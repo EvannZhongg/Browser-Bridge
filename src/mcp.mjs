@@ -149,7 +149,7 @@ export function createMcp(client) {
     ])).min(1).max(20),
   });
   tool('press_key', 'Send a native key/chord to current focus and verify keydown delivery. Supports F1-F12, navigation/editing keys and US ASCII punctuation. Examples: Control+A, Shift+/, Control++, Plus.', { ...handle, ...inputTimeout, key: z.string() });
-  tool('scroll', 'Scroll an explicit element container or at viewport CSS x/y (default center); positive delta_y is down. DOM mode uses scrollBy without wheel events; wheel mode sends a native wheel for custom handlers/OOPIFs. until.text performs a bounded DOM scroll search and returns a fresh actionable ref; max_steps bounds the search. Wheel acknowledgement does not prove scrolling.', {
+  tool('scroll', 'Scroll an explicit element container or at viewport CSS x/y (default center); positive delta_y is down. DOM mode uses scrollBy without wheel events; wheel mode sends a native wheel for custom handlers/OOPIFs. until.text performs a bounded DOM search and returns a fresh ref; at an unchanged boundary it observes until content changes or timeout. max_steps bounds scroll calls. A search miss does not prove content will never load. Wheel acknowledgement does not prove scrolling.', {
     ...handle, ...inputTimeout, ...target, ...scrollFields,
   }, null, args => { scrollOptions(args); if (args.ref != null || args.selector != null || args.frame || args.frame_id) targetOptions(args); return args; });
   tool('navigate', 'Navigate to an HTTP(S) URL or back/forward history entry, wait until wait_until, and return a fresh snapshot by default. Observation has a separate 10s deadline with one transient-error retry; observation_error preserves navigation success.', {

@@ -19,7 +19,8 @@ test('snapshots preserve AX value and invalid/selection signals without inferrin
 });
 
 test('strict CSS and XPath reject zero, multiple and non-element matches', () => {
-  const element = { nodeType: 1 };
+  const element = { nodeType: 1, tagName: 'BUTTON', matches: () => false, closest: () => null,
+    getBoundingClientRect: () => ({ width: 10, height: 10 }), ownerDocument: { defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) } } };
   const context = vm.createContext({ document: { querySelectorAll: s => s === '#one' ? [element] : s === 'button' ? [element, element] : [],
     evaluate: () => ({ snapshotLength: 1, snapshotItem: () => element }) }, XPathResult: { ORDERED_NODE_SNAPSHOT_TYPE: 7 } });
   const query = vm.runInContext(`(${queryElement.toString()})`, context);

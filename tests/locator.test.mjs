@@ -5,13 +5,20 @@ import { queryElement, targetOptions, resolveSelector, resolveFrame } from '../e
 import { deadline } from '../extension/actionability.js';
 
 test('explicit nth selects CSS/XPath document order; omission remains strict', () => {
-  const elements = [{ nodeType: 1, id: 'first' }, { nodeType: 1, id: 'second' }];
+  const elements = ['first', 'second'].map((id, index) => ({ nodeType: 1, id, tagName: 'BUTTON', textContent: `Choice ${index}`,
+    matches: () => index === 1, closest: () => null, getBoundingClientRect: () => ({ width: 10, height: index ? 0 : 10 }),
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) } } }));
   const query = vm.runInNewContext(`(${queryElement.toString()})`, { document: {
     querySelectorAll: () => elements,
     evaluate: () => ({ snapshotLength: 2, snapshotItem: n => elements[n] }),
   }, XPathResult: { ORDERED_NODE_SNAPSHOT_TYPE: 7 } });
   for (const type of ['css', 'xpath']) {
-    assert.throws(() => query('input', type), /matched 2/);
+    assert.throws(() => query('input', type), error => {
+      assert.match(error.message, /matched 2/);
+      assert.match(error.message, /"nth":0,"tag":"button","text":"Choice 0","disabled":false,"visible":true/);
+      assert.match(error.message, /"nth":1,"tag":"button","text":"Choice 1","disabled":true,"visible":false/);
+      return true;
+    });
     assert.equal(query('input', type, 0), elements[0]);
     assert.equal(query('input', type, 1), elements[1]);
     assert.throws(() => query('input', type, 2), /out of range.*matched 2/);
@@ -20,6 +27,17 @@ test('explicit nth selects CSS/XPath document order; omission remains strict', (
   for (const args of [{ ref: 'a', nth: 0 }, { x: 1, y: 1, nth: 0 }, { selector: 'input', nth: -1 }, { selector: 'input', nth: 1.5 }]) {
     assert.throws(() => targetOptions(args, { coordinates: true }), /nth/);
   }
+});
+
+test('ambiguity previews bound candidate count and text without losing total match count', () => {
+  const element = { nodeType: 1, tagName: 'DIV', textContent: 'x'.repeat(1000), matches: () => false, closest: () => null,
+    getBoundingClientRect: () => ({ width: 10, height: 10 }), ownerDocument: { defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) } } };
+  const query = vm.runInNewContext(`(${queryElement.toString()})`, { document: { querySelectorAll: () => Array(100).fill(element) } });
+  assert.throws(() => query('div'), error => {
+    assert.match(error.message, /matched 100/); assert.match(error.message, /90 more omitted/);
+    assert.equal((error.message.match(/"nth":/g) || []).length, 10);
+    assert.ok(error.message.length < 2500); return true;
+  });
 });
 
 test('selector preparation waits for a later-rendered option, but never retries ambiguity or dispatches input', async () => {

@@ -14,8 +14,15 @@ export function scrollElement(dx, dy) {
   if (!this.isConnected) throw new Error('Scroll container is detached');
   const before = { x: this.scrollLeft, y: this.scrollTop };
   this.scrollBy({ left: dx, top: dy ?? Math.max(1, this.clientHeight * 0.8), behavior: 'instant' });
-  const after = { x: this.scrollLeft, y: this.scrollTop };
+  const after = { x: this.scrollLeft, y: this.scrollTop, width: this.scrollWidth, height: this.scrollHeight,
+    client_width: this.clientWidth, client_height: this.clientHeight };
   return { scrolled: before.x !== after.x || before.y !== after.y, before, after, method: 'dom_scroll', scope: 'element' };
+}
+
+export function scrollState() {
+  if (!this.isConnected) throw new Error('Scroll container is detached');
+  return { x: this.scrollLeft, y: this.scrollTop, width: this.scrollWidth, height: this.scrollHeight,
+    client_width: this.clientWidth, client_height: this.clientHeight };
 }
 
 export function findScrollText(text, selector) {

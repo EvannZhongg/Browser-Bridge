@@ -423,6 +423,53 @@ test('a stalled native wheel frees the queue, reports unknown outcome and never 
   assert.ok(!f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('function scrollAtPoint')));
 });
 
+test('scroll search observes delayed matches and resumes after boundary growth without repeating unchanged scrolls', async () => {
+  for (const grows of [false, true]) {
+    const f = fixture(); await f.claim(); await f.exec('snapshot');
+    const send = f.api.debugger.sendCommand;
+    const initial = { x: 0, y: 0, width: 100, height: 100, client_width: 100, client_height: 100 };
+    let scrolls = 0, boundaryAt;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      const result = await send(target, method, args);
+      const loaded = boundaryAt != null && Date.now() - boundaryAt >= 200;
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function findScrollText'))
+        return { result: loaded && (!grows || scrolls === 2) ? { objectId: 'found' } : { subtype: 'null' } };
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function scrollElement')) {
+        scrolls++; boundaryAt ??= Date.now();
+        return { result: { value: { scrolled: scrolls > 1, after: initial } } };
+      }
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function scrollState'))
+        return { result: { value: { ...initial, height: grows && loaded ? 200 : 100 } } };
+      if (method === 'DOM.describeNode' && args.objectId === 'found') return { node: { nodeType: 1, backendNodeId: 12 } };
+      return result;
+    };
+    const result = await f.exec('scroll', { selector: '#list', until: { text: 'Later' }, max_steps: 3, timeout_ms: 1500 });
+    assert.equal(result.found, true); assert.ok(result.ref);
+    assert.equal(result.scroll_steps, grows ? 2 : 1); assert.equal(scrolls, grows ? 2 : 1);
+    assert.ok(!f.calls.some(c => c.method.startsWith('Input.')));
+  }
+});
+
+test('scroll boundary timeout stays uncertain, sends no repeated scroll and leaves the queue usable', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  const after = { x: 0, y: 0, width: 100, height: 100, client_width: 100, client_height: 100 };
+  let scrolls = 0;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function findScrollText')) return { result: { subtype: 'null' } };
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function scrollElement')) {
+      scrolls++; return { result: { value: { scrolled: false, after } } };
+    }
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function scrollState')) return { result: { value: after } };
+    return result;
+  };
+  await assert.rejects(f.exec('scroll', { selector: '#list', until: { text: 'Missing' }, timeout_ms: 250 }), error => {
+    assert.equal(error.post_action.delivery, 'unknown');
+    assert.equal(error.post_action.assessment, 'no_observable_effects'); return true;
+  });
+  assert.equal(scrolls, 1); assert.ok((await f.exec('snapshot')).snapshot);
+});
+
 test('scrolled-page hit testing uses document coordinates while native input keeps viewport coordinates', async () => {
   const f = fixture(); await f.claim();
   const send = f.api.debugger.sendCommand;
@@ -1129,7 +1176,7 @@ test('native drag keeps ordering, includes all requested moves and releases only
     if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installDragReceipt')) return { result: { objectId: 'drag-guard' } };
     if (method === 'Input.dispatchMouseEvent') {
       const binding = f.calls.findLast(c => c.method === 'Runtime.addBinding')?.args.name;
-      const type = { mousePressed: 'mousedown', mouseReleased: 'mouseup', mouseMoved: 'mousemove' }[args.type];
+      const type = { mousePressed: 'pointerdown', mouseReleased: 'pointerup', mouseMoved: 'pointermove' }[args.type];
       f.api.debugger.onEvent.emit(target, 'Runtime.bindingCalled', { name: binding, executionContextId: 42, payload: JSON.stringify({ type }) });
     }
     return result;

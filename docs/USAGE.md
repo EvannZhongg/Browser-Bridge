@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.11.1**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.11.2**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -130,7 +130,7 @@ ref 每次用 frame/session + backendNodeId 重新解析，并以局部 AX 查�
 
 hint 仅为 HTML/ARIA 启发式判断，false 表示未找到候选，不能证明元素不可点击，也不能覆盖所有事件代理。它不会替换真正的鼠标命中节点或改变派发目标。坐标点击无法推断调用者的业务意图，DOM/网络变化也不能证明业务成功，需按具体任务观察。
 
-`selector` 可复用，但不是永久元素身份。输入准备阶段会等待匹配出现，受同一 timeout_ms 限制；省略 nth 时多个匹配立即报错。显式 nth 按当前文档顺序选择，尚未出现该索引时等待；行顺序变化后须重新确认目标。解析后元素被替换会安全失败，不自动重放。CSS/XPath 不穿透 Shadow DOM，那里继续使用 AX ref；iframe 用明确 `frame_id`。例如 `browser_fill({tab_handle, selector:'input[placeholder="公司名称"]', nth:1, text:"第二段经历", mode:"native"})`；XPath 同样支持 nth。
+`selector` 可复用，但不是永久元素身份。输入准备阶段会等待匹配出现，受同一 timeout_ms 限制；省略 nth 时多个匹配立即报错，附带前 10 个候选的 nth、tag、最多 120 字符的 DOM 文本、disabled 和 visible，超出部分标明省略数量。显式 nth 按当前文档顺序选择，尚未出现该索引时等待；行顺序变化后须重新确认目标。解析后元素被替换会安全失败，不自动重放。CSS/XPath 不穿透 Shadow DOM，那里继续使用 AX ref；iframe 用明确 `frame_id`。例如 `browser_fill({tab_handle, selector:'input[placeholder="公司名称"]', nth:1, text:"第二段经历", mode:"native"})`；XPath 同样支持 nth。
 
 坐标命中 CSS 伪元素时，以其 originating element 做描述和事件校验，`hit_target.pseudo_element=true`。截图坐标仍按截图元数据换算；优先用 ref/selector 避免布局漂移。
 
@@ -154,7 +154,7 @@ drag 的 source / destination 各自接受 ref、严格 selector（可带 frame_
 {"tab_handle":"...","source":{"selector":"#card"},"destination":{"selector":"#column"},"mode":"html5","steps":20}
 ```
 
-pointer 发送 mousePressed → 多步 mouseMoved → mouseReleased；HTML5 模式先通过真实按下/移动触发 dragstart 并截获其 DragData，再派发 dragEnter/dragOver/drop，核验可信 dragstart/drop/dragend。不会凭空构造拖拽数据，不自动切换模式。目的元素在按住后调用已有滚入视口逻辑，包含嵌套容器，然后重新命中检查；这是目标驱动的滚动，不是持续的视口边缘滚动任务。固定坐标始终受视口边界约束，视口外坐标用 document 或改用元素目标。
+pointer 发送 mousePressed → 多步 mouseMoved → mouseReleased，核验可信 pointerdown/pointermove/pointerup，因此控件取消 pointerdown 的默认行为、抑制兼容鼠标事件时仍可校验送达；HTML5 模式先通过真实按下/移动触发 dragstart 并截获其 DragData，再派发 dragEnter/dragOver/drop，核验可信 dragstart/drop/dragend。不会凭空构造拖拽数据，不自动切换模式。目的元素在按住后调用已有滚入视口逻辑，包含嵌套容器，然后重新命中检查；这是目标驱动的滚动，不是持续的视口边缘滚动任务。固定坐标始终受视口边界约束，视口外坐标用 document 或改用元素目标。
 
 成功返回 events_trusted=true、delivery_verified=true、application_result=not_checked；不保证应用已保存排序。任一步失败、主文档/相关 frame 变化或接管结束即停止，尝试取消/释放本次手势；不回滚、不重放。HTML5 CDP 路径仍受浏览器和站点原生拖拽支持限制。
 
@@ -244,7 +244,7 @@ timeout_ms 默认 15000，范围 100–30000，是整批准备、派发和校验
 {"tab_handle":"...","selector":"#list","until":{"text":"Row 0487","selector":"button"},"delta_y":200,"max_steps":100,"timeout_ms":15000}
 ```
 
-until 是显式 DOM 滚动搜索，不与 wheel 组合；省略 delta_y 时每次滚约 0.8 个容器高度。max_steps 默认 100、范围 1–500。搜索容器内渲染且有尺寸的最深匹配元素，文本为子串；重复匹配报错，使用 until.selector 消歧。每次滚动后有界轮询，导航、相关 frame 变化、边界、步数或超时即停止，不自动点击；返回 found/ref/frame_id/scroll_steps。滚动本身会改变页面状态，即使未找到也可能已触发加载。它不承诺读到服务端未提供的数据，也不把虚拟列表未渲染行当作已存在。batch 的 scroll 步骤使用同一实现。
+until 是显式 DOM 滚动搜索，不与 wheel 组合；省略 delta_y 时每次滚约 0.8 个容器高度。max_steps 默认 100、范围 1–500，只计算实际 scrollBy 次数。搜索容器内渲染且有尺寸的最深匹配元素，文本为子串；重复匹配报错，使用 until.selector 消歧。滚动无位移时继续只读查找并观察容器位置、内容尺寸与视口尺寸，状态变化后才继续滚动；边界本身不证明内容已加载完毕。导航、相关 frame 变化、步数用尽或总预算超时即停止，不自动点击；返回 found/ref/frame_id/scroll_steps。未找到只表示本次有界搜索未命中，内容仍可能稍后加载。滚动本身会改变页面状态，即使未找到也可能已触发加载。它不承诺读到服务端未提供的数据，也不把虚拟列表未渲染行当作已存在。batch 的 scroll 步骤使用同一实现。
 
 ### 结果未知时
 

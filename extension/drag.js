@@ -27,7 +27,7 @@ export function createDrag(cdp, value, mouse) {
       const { type, rejected } = JSON.parse(params.payload);
       if (rejected) { operation.error = new Error('Drag target changed during dispatch; outcome is unknown. Observe before continuing.'); operation.reject(operation.error); }
       operation.seen.add(type);
-      const required = operation.html5 ? ['mousedown', 'dragstart', 'drop', 'dragend'] : ['mousedown', 'mousemove', 'mouseup'];
+      const required = operation.html5 ? ['mousedown', 'dragstart', 'drop', 'dragend'] : ['pointerdown', 'pointermove', 'pointerup'];
       if (required.every(type => operation.seen.has(type))) operation.resolve();
     } catch (error) { operation.reject(error); }
   }
@@ -117,18 +117,21 @@ export function createDrag(cdp, value, mouse) {
 
 function installDragReceipt(name, stage, html5, expiryMs) {
   const target = this, win = target.ownerDocument.defaultView, report = win[name];
-  const types = stage === 'source' ? ['mousedown', 'mousemove', 'mouseup', 'dragstart', 'dragend']
-    : stage === 'source_boundary' ? ['mousedown'] : ['drop', 'mouseup'];
+  // Cancelling pointerdown suppresses compatibility mouse down/up, but does
+  // not prevent a pointer-based control from receiving the drag.
+  const down = html5 ? 'mousedown' : 'pointerdown';
+  const types = stage === 'source' ? (html5 ? ['mousedown', 'dragstart', 'dragend'] : ['pointerdown', 'pointermove', 'pointerup'])
+    : stage === 'source_boundary' ? [down] : (html5 ? ['drop'] : ['pointerup']);
   const listeners = [];
   function listener(event, expected) {
     if (!event.isTrusted) return;
     const hit = event.composedPath().includes(expected);
-    if ((event.type === 'mousedown' || event.type === 'drop') && (!hit || !target.isConnected)) {
+    if ((event.type === down || event.type === 'drop') && (!hit || !target.isConnected)) {
       event.preventDefault(); event.stopImmediatePropagation(); report(JSON.stringify({ rejected: true })); return;
     }
     if (stage.endsWith('_boundary') || expected !== target) return;
     if (['dragstart', 'dragend'].includes(event.type) && !hit) return;
-    if (event.type === 'mousemove' && event.buttons !== 1) return;
+    if (event.type === 'pointermove' && event.buttons !== 1) return;
     if (html5 && !['mousedown', 'dragstart', 'drop', 'dragend'].includes(event.type)) return;
     report(JSON.stringify({ type: event.type }));
   }
@@ -148,7 +151,7 @@ function installDragReceipt(name, stage, html5, expiryMs) {
   }
   // Pointer capture and movement can leave the source's closed shadow root.
   if (stage === 'source' && target.getRootNode().host && !html5) {
-    const callback = event => listener(event, target), types = ['mousemove', 'mouseup'];
+    const callback = event => listener(event, target), types = ['pointermove', 'pointerup'];
     listeners.push({ receiver: win, callback, types });
     for (const type of types) win.addEventListener(type, callback, { capture: true, passive: false });
   }

@@ -1,11 +1,15 @@
 # 验证报告
 
-当前版本 **0.11.1**（2026-10-22）。验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
+当前版本 **0.11.2**（2026-10-22）。验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
 
 ## 当前版本
 
-- `npm test`：141 项通过。覆盖独占控制、快照/ref 生命周期、严格 selector、原生/DOM 输入、逐字输入、hover、pointer/HTML5 拖拽、条件等待、HTML select、batch、历史导航、OOPIF、日志、上传、截图、对话框和未知结果不重放。
-- `npm run test:package`：仓库外含空格路径安装运行通过，22 个 MCP 工具、44 个发布文件；包含 `drag.js` / `wait.js` / `scroll.js` / `outcomes.js`，不包含配对密钥。版本为 0.11.1，示例配置使用 `@latest`。
+- `npm test`：144 项通过。覆盖独占控制、快照/ref 生命周期、严格 selector 与有界歧义候选、原生/DOM 输入、逐字输入、hover、pointer/HTML5 拖拽、滚动边界后的延迟加载、条件等待、HTML select、batch、历史导航、OOPIF、日志、上传、截图、对话框和未知结果不重放。
+- `npm run test:package`：仓库外含空格路径安装运行通过，22 个 MCP 工具、45 个发布文件；包含 `drag.js` / `wait.js` / `scroll.js` / `outcomes.js`，不包含配对密钥。版本为 0.11.2，示例配置使用 `@latest`。
+- Edge 155 headless `--primitives`：13 个场景通过，包含普通 pointer/HTML5 拖拽、取消 pointerdown 默认行为后的可信回执、滚动边界后延迟增长和歧义候选。
+
+## 升级前的浏览器验证
+
 - Edge 155 headless `--primitives`：10 个场景通过，包含 hover 停留后点击子项、一次快照的 ref 连续输入并跨只读 evaluate 保持有效、替换节点拒绝、label/value/index 下拉选择、三种等待失败、pointer/HTML5 拖拽和目的元素滚入视口。
 - Edge 155 完整 stdio MCP 集成：192 个调用通过，包含嵌套 OOPIF、原生/DOM 输入、遮挡、上传、日志、按键、滚动与导航；扩展报告 `extension_version=0.10.0`。
 - Chromium 156、Edge 155 headless `--extended`：各 12 个场景通过，包含 ref 生命周期、选择框、拖拽、等待、历史导航和 OOPIF。

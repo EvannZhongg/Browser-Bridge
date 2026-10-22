@@ -17,17 +17,28 @@ export function targetOptions(args, { coordinates = false } = {}) {
 
 export function queryElement(selector, type = 'css', nth, waitForMatch = false) {
   if (nth != null && (!Number.isSafeInteger(nth) || nth < 0)) throw new Error('nth must be a nonnegative safe integer (zero-based)');
-  let element, count;
+  let element, count, at;
   if (type === 'xpath') {
     const result = document.evaluate(selector, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-    count = result.snapshotLength; element = result.snapshotItem(nth ?? 0);
+    count = result.snapshotLength; at = index => result.snapshotItem(index);
   } else {
     const elements = document.querySelectorAll(selector);
-    count = elements.length; element = elements[nth ?? 0];
+    count = elements.length; at = index => elements[index];
   }
   if (waitForMatch && (count === 0 || (nth != null && nth >= count))) return null;
-  if (nth == null && count !== 1) throw new Error(`Selector must match exactly one element; matched ${count}. Scope the selector or provide an explicit zero-based nth.`);
+  if (nth == null && count !== 1) {
+    const candidates = Array.from({ length: Math.min(count, 10) }, (_, nth) => {
+      const node = at(nth), text = (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      if (node.nodeType !== 1) return { nth, node_type: node.nodeType, text };
+      const rect = node.getBoundingClientRect(), style = node.ownerDocument.defaultView.getComputedStyle(node);
+      return { nth, tag: node.tagName.toLowerCase(), text,
+        disabled: node.matches(':disabled') || !!node.closest('[inert], [aria-disabled="true"]'),
+        visible: rect.width > 0 && rect.height > 0 && style.visibility === 'visible' };
+    });
+    throw new Error(`Selector must match exactly one element; matched ${count}. Scope the selector or provide an explicit zero-based nth. Candidates: ${JSON.stringify(candidates)}${count > candidates.length ? ` (${count - candidates.length} more omitted)` : ''}`);
+  }
   if (nth != null && nth >= count) throw new Error(`Selector nth=${nth} is out of range; matched ${count}`);
+  element = at(nth ?? 0);
   if (element.nodeType !== 1) throw new Error('Selector must resolve to an element');
   return element;
 }

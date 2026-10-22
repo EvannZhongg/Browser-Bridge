@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.11.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.11.2**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -88,7 +88,7 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 - **OOPIF 坐标**：点击从顶层派发。逐层用 `DOM.getBoxModel` 把坐标换算到祖先文档，并用 `DOM.getNodeForLocation` 确认该位置确实落在 frame owner 上，防止祖先页面的遮挡被跳过。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
 - **对话框策略**：ask 仍为默认；单操作/单步骤的显式 accept/dismiss 在事件回调中解除 JS 模态阻塞，保留消息与处理结果，最多自动处理 10 个。beforeunload dismiss 快速取消本次导航等待，实际主文档变化仍会停止 batch。
-- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver，仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动。观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。
+- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver，仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动。assessment 为 observable_effects 或 no_observable_effects；观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。
 - **元素截图/求值 ref**：复用既有截图 clip/元数据与 ref 注册/失效模型，分别增加元素 border box 截图和显式单 DOM Element 结果；不暴露 Runtime objectId。JSON 求值自动调用函数一次并等待 Promise，缓存续读不执行脚本。
 - **历史导航**：在已有 navigate 中选择 URL 或 back/forward，按 history entry 与主 frame 生命周期等待；同文档/BFCache 恢复不等新的加载事件，不用 evaluate 重放导航。
 - **不做通用 CDP 透传**：`browser_evaluate` 是页面表达式 API，不是 CDP 通道；没有暴露任意 domain/method 的工具。

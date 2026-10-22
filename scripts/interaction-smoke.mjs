@@ -182,6 +182,11 @@ try {
   const pointer=await call('drag',{source:{selector:'#slider'},destination:{x:550,y:255},steps:8,mode:'pointer',timeout_ms:5000});
   assert.equal(pointer.delivery_verified,true);assert.ok(await page('window.pointerMoves>=8'));
   results.cases.push({scenario:'pointer_drag',result:pointer,events:await page('window.events')});
+  await page('window.events=[];window.pointerMoves=0;document.querySelector("#slider").addEventListener("pointerdown",e=>e.preventDefault(),{once:true});true');
+  const cancelledMouse=await call('drag',{source:{selector:'#slider'},destination:{x:550,y:255},steps:8,mode:'pointer'});
+  assert.equal(cancelledMouse.delivery_verified,true);assert.ok(await page('window.pointerMoves>=8'));
+  assert.ok(!(await page('window.events')).some(e=>['mousedown','mouseup'].includes(e.type)));
+  results.cases.push({scenario:'pointer_drag_without_mouse_compatibility',result:cancelledMouse});
   await page('window.events=[];true');
   const html5=await call('drag',{source:{selector:'#drag'},destination:{selector:'#drop'},steps:8,mode:'html5',timeout_ms:5000});
   const events=await page('window.events');
@@ -191,6 +196,24 @@ try {
   const far=await call('drag',{source:{selector:'#drag'},destination:{selector:'#far'},steps:8,mode:'html5',timeout_ms:5000});
   assert.ok(await page('scrollY>1000'));assert.ok((await page('window.events')).some(e=>e.type==='drop'&&e.target==='far'&&e.trusted));
   results.cases.push({scenario:'html5_offscreen',result:far});
+  await page(`(() => {
+    const list=document.createElement('div');list.id='lazy-list';list.style='position:fixed;left:20px;top:350px;width:200px;height:100px;overflow:auto';
+    document.body.append(list);
+    list.addEventListener('scroll',()=>setTimeout(()=>{const b=document.createElement('button');b.textContent='Delayed result';list.append(b)},200),{once:true});
+    setTimeout(()=>{const filler=document.createElement('div');filler.style.height='400px';list.append(filler)},500);
+    return true;
+  })()`);
+  const delayed=await call('scroll',{selector:'#lazy-list',until:{text:'Delayed result',selector:'button'},max_steps:20,timeout_ms:3000});
+  assert.equal(delayed.found,true);assert.ok(delayed.scroll_steps>=2);
+  results.cases.push({scenario:'scroll_boundary_delayed_growth',result:delayed});
+  await page(`(() => {for(let i=0;i<3;i++){const b=document.createElement('button');b.className='ambiguity-probe';b.textContent='Choice '+i;b.disabled=i===2;if(i===1)b.hidden=true;document.body.append(b)}return true})()`);
+  await assert.rejects(call('wait',{selector:'.ambiguity-probe',condition:'attached'}),error=>{
+    assert.match(error.message,/matched 3/);
+    assert.match(error.message,/"nth":1,"tag":"button","text":"Choice 1","disabled":false,"visible":false/);
+    assert.match(error.message,/"nth":2,"tag":"button","text":"Choice 2","disabled":true,"visible":true/);
+    return true;
+  });
+  results.cases.push({scenario:'ambiguity_candidates'});
  } else if (values.forms) {
   await client.call('activate_tab',h);
   const fill = (selector, text, mode='native', nth) => client.call('fill',{...h,selector,text,mode,...(nth==null?{}:{nth})});

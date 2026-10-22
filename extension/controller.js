@@ -12,7 +12,7 @@ import { createDiagnostics } from './diagnostics.js';
 import { createSessions } from './sessions.js';
 import { NAVIGATION_OBSERVATION_TIMEOUT_MS } from './limits.js';
 import { deadline } from './actionability.js';
-import { scrollOptions, scrollElement, findScrollText } from './scroll.js';
+import { scrollOptions, scrollElement, findScrollText, scrollState } from './scroll.js';
 import { validateSteps } from './batch.js';
 import { waitFor } from './wait.js';
 import { boundedRead, installOutcomeObserver } from './outcomes.js';
@@ -566,7 +566,7 @@ export function createController(api, notify = () => {}) {
       const root = node || await resolveSelector(cdp, value, sessions, tabId, { selector: 'html' }, args.budget);
       const claim = claims.get(tabId), version = documents.get(tabId), frameVersion = frameStates.get(tabId)?.versions.get(root.frameId);
       let last;
-      for (let step = 0; step <= maxSteps; step++) {
+      for (let step = 0; step <= maxSteps;) {
         if (claims.get(tabId) !== claim || documents.get(tabId) !== version || frameStates.get(tabId)?.versions.get(root.frameId) !== frameVersion) throw new Error('Document/frame/control changed during scroll search; observe before continuing');
         const found = await args.budget.run(() => cdp(root.target, 'Runtime.callFunctionOn', { objectId: root.objectId,
           functionDeclaration: findScrollText.toString(), arguments: [{ value: text }, { value: selector }], objectGroup: 'browser-attach-search' }));
@@ -576,13 +576,21 @@ export function createController(api, notify = () => {}) {
           await args.budget.run(() => cdp(root.target, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach-search' }));
           return { found: true, ...result, scroll_steps: step, application_result: 'not_checked', observe_again: true };
         }
-        if (step === maxSteps || last?.scrolled === false) break;
+        if (step === maxSteps) break;
+        if (last?.scrolled === false) {
+          // A boundary may precede lazy loading. Observe without repeating a
+          // no-op scroll until content grows, a match appears, or time runs out.
+          const current = value(await args.budget.run(() => cdp(root.target, 'Runtime.callFunctionOn', { objectId: root.objectId,
+            functionDeclaration: scrollState.toString(), returnByValue: true })));
+          if (JSON.stringify(current) === JSON.stringify(last.after)) { await args.budget.run(() => new Promise(resolve => setTimeout(resolve, 50))); continue; }
+        }
         args.budget.dispatch();
         last = value(await args.budget.run(() => cdp(root.target, 'Runtime.callFunctionOn', { objectId: root.objectId,
           functionDeclaration: scrollElement.toString(), arguments: [{ value: args.delta_x ?? 0 }, { value: args.delta_y ?? null }], returnByValue: true })));
+        step++;
         await args.budget.run(() => new Promise(resolve => setTimeout(resolve, 50)));
       }
-      throw new Error(`Scroll search did not find ${JSON.stringify(text)} within ${maxSteps} steps or reached the scroll boundary; current=${JSON.stringify(last)}. Scrolling may already have occurred.`);
+      throw new Error(`Scroll search did not find ${JSON.stringify(text)} within ${maxSteps} steps; current=${JSON.stringify(last)}. Content may still load later. Scrolling may already have occurred.`);
     }
     if (command === 'scroll') {
       const mode = args.mode ?? 'dom';
@@ -648,7 +656,7 @@ export function createController(api, notify = () => {}) {
         error.post_action = { delivery: 'unknown', frame_id: observationFrame, frame_navigation_observed: frameChanged, dialog: dialogs.get(tabId) || null, dialogs: state.messages,
           navigation_observed: documents.get(tabId) !== version || !!current && current.url !== startTab.url,
           current_url: current?.url ?? null, dom_changed: dom?.dom_changed ?? null,
-          assessment: dialogs.has(tabId) || state.messages.length || documents.get(tabId) !== version || frameChanged || dom?.dom_changed ? 'observable_effects' : 'no_effect_confirmed',
+          assessment: dialogs.has(tabId) || state.messages.length || documents.get(tabId) !== version || frameChanged || dom?.dom_changed ? 'observable_effects' : 'no_observable_effects',
           note: 'These observations do not prove business success or that an unchanged page received no input. Do not replay automatically.' };
         error.message += ` Post-action observation: ${JSON.stringify(error.post_action)}`;
       } else if (state.messages.length) error.message += ` Dialogs: ${JSON.stringify(state.messages)}`;
