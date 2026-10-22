@@ -1,8 +1,8 @@
 # BrowserAttach 使用指南
 
-适用于 **0.12.0**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.13.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
-工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
+工具发现采用三层说明：初始化 `instructions` 提供跨工具规则；工具 description 说明用途、独有行为与结果语义；参数 schema 及其短说明提供类型、默认值和选择规则。本文保留完整原理、边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
 ## 基本流程
 
@@ -37,6 +37,7 @@
 |---|---|---|
 | `browser_snapshot` | `profile`, `text`, `text_limit`, `max_nodes=600`, `max_chars=24000`, `cursor` | AX 语义树、元素 ref、frame 覆盖、待处理文件选择器 |
 | `browser_wait` | `condition`, `selector`, `expected` / `previous`, `idle_ms=500`, `timeout_ms=5000` | 只读等待元素、文本、URL 或被动网络空闲 |
+| `browser_fetch` | `browser_id`, `url`, `wait_until=load`, `format=text`, `max_chars=20000`, `cursor` | 后台临时页读取一次，关闭后按缓存续读 |
 | `browser_read_text` | `mode`, `selector`, `offset=0`, `max_chars=20000` | 主 frame 的 DOM、字段值或支持的编辑器模型 |
 
 ### 输入
@@ -65,6 +66,25 @@
 | `browser_logs` | 必填 `kind=console/network`, `after_seq`, `limit`, `max_chars`, `level` / `url_contains` | 统一读取日志；network 可显式 capture 有界脱敏的 XHR/fetch 详情 |
 
 普通结果是一份紧凑 JSON 文本；截图另外返回标准图片内容。失败通过 MCP `isError` 返回，错误文本即原因。
+
+## 读取一个 URL
+
+先用 `browser_discover(kind="browsers")` 选择配置，再调用：
+
+```js
+browser_fetch({browser_id, url: "https://example.com/article", wait_until: "network_idle", format: "text", max_chars: 20000})
+// → {url, title, contentType, format, body, capture_truncated, truncated, next_cursor}
+browser_fetch({browser_id, cursor: next_cursor, max_chars: 20000})
+```
+
+`browser_fetch` 在选定配置中新建 `active=false` 的临时标签，复用该配置的登录态和导航链路，采集后关闭；不需要对临时页显式 discover/claim。它不操作已有标签，不创建浏览器或窗口，不跟随页面链接。后台标签会短暂出现在标签栏，不能保证浏览器完全不可见。网页脚本、子资源、重定向仍照常执行，打开 URL 也可能产生网站状态变化；“读一页”指工具范围，不代表 HTTP 请求无副作用。
+
+- `wait_until=load` 为默认；`network_idle` 在 load 后再等被动请求表中连续 500 ms 无活动请求，复用 `browser_wait` 的网络空闲条件，不保证应用内容全部完成。`timeout_ms` 为 100–30000，默认 15000；调试初始化、导航和读取共享预算，标签创建和关闭受 Hub 超时约束。
+- 只读当前主文档。`text` 使用 `body.innerText`；`html` 返回执行脚本后的当前 DOM `outerHTML`，并非原始 HTTP 响应；`json` 从浏览器呈现的 JSON 正文解析、校验后序列化，不另发 fetch/XHR，也不返回响应头或 HTTP 状态。`contentType` 来自 `document.contentType`，`url` 为采集时的最终地址。非 HTTP(S) 最终文档报错。
+- `body` 始终为字符串，`max_chars` 为 1–100000，默认 20000，按 JavaScript 字符串长度计算。JSON 分页也为字符串片段，应先按顺序拼接再 `JSON.parse`。
+- 一次最多保留 1000000 字符。`next_cursor` 非空表示缓存尚有后续片段；`truncated` 表示尚未返回全部内容或采集有损。`capture_truncated=true` 表示文本/HTML 超出采集上限，丢失的尾部不能通过 cursor 取回；JSON 无法完整捕获或解析时直接报错。
+- 每个连接、每个浏览器配置最多保留一份缓存；新 fetch 替换旧缓存，读完或断连清除。续读只接受 `browser_id`、`cursor` 和可选 `max_chars`，不再打开页面。缓存不因临时页关闭而失效，也不能跨连接读取。
+- 超时、解析错误或断连会清理临时页，不自动重新导航。关闭失败会明确报错并保留清理责任，在断连时再次尝试关闭；不会静默移交给其他连接。临时页不出现在 `discover(kind="tabs")` 的结果中。
 
 ## 观察：快照与引用
 

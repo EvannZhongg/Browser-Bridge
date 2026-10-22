@@ -42,8 +42,20 @@ for(const input of document.querySelectorAll('input[type=file]')){
  data.files[input.id]=await Promise.all([...input.files].map(async file=>({name:file.name,size:file.size,text:await file.text()})));sync()});
 }
 document.querySelector('#name').oninput=sync;sync();</script>`;
+let fetchVisits = 0, crawled = 0;
 const fixture = http.createServer((request, response) => {
   const port = fixture.address().port;
+  if (request.url === '/fetch/redirect') { response.writeHead(302, { Location: '/fetch/page', 'Set-Cookie': 'fetch_session=local; HttpOnly; Path=/' }); response.end(); return; }
+  if (request.url === '/fetch/page') {
+    fetchVisits++; response.setHeader('Content-Type', 'text/html; charset=utf-8');
+    response.end(`<title>Fetch fixture</title><h1>Read once</h1><span hidden>SECRET_HIDDEN</span><a href="/fetch/link">Link</a><p>${request.headers.cookie?.includes('fetch_session=local') ? 'SIGNED_IN' : 'SIGNED_OUT'}</p><script>fetch('/fetch/data').then(r=>r.text()).then(text=>{const p=document.createElement('p');p.textContent=text;document.body.append(p)})</script>`); return;
+  }
+  if (request.url === '/fetch/data') { setTimeout(() => response.end('LATE_CONTENT'), 150); return; }
+  if (request.url === '/fetch/link') { crawled++; response.end('not requested'); return; }
+  if (request.url === '/fetch/json') { response.setHeader('Content-Type', 'application/json'); response.end('{"ok":true,"text":"你好😀"}'); return; }
+  if (request.url === '/fetch/invalid') { response.setHeader('Content-Type', 'application/json'); response.end('{invalid'); return; }
+  if (request.url === '/fetch/large') { response.setHeader('Content-Type', 'text/html'); response.end('<pre>' + 'a'.repeat(1000020) + '</pre>'); return; }
+  if (request.url === '/fetch/slow') return;
   if (request.url === '/frames') {
     response.setHeader('Content-Type', 'text/html');
     response.end(`<title>Frame fixture</title><button>Main frame button</button><iframe style="margin:60px;width:650px;height:500px" src="http://localhost:${port}/frame"></iframe><script>window.frameState={};addEventListener('message',event=>{window.frameState[event.data.id]=event.data})</script>`); return;
@@ -111,7 +123,7 @@ try {
   mcp = new Client({ name: 'live-test', version: '1' });
   await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', configPath], cwd: temp }));
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 22);
+  assert.equal(tools.length, 23);
   assert.ok(tools.some(tool => tool.name === 'browser_logs'));
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const rawCall = async (method, args = {}) => {
@@ -126,6 +138,32 @@ try {
   }, 'extension connection');
   assert.ok(browsers[0].capabilities.includes('upload_file'));
   const browserId = browsers[0].browser_id;
+  const fetchArgs = { browser_id: browserId };
+  const activeBefore = (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.filter(t => t.active).map(t => t.tab_id);
+  let fetched = await call('fetch', { ...fetchArgs, url: url + 'fetch/redirect', wait_until: 'network_idle', max_chars: 5 });
+  assert.equal(fetched.url, url + 'fetch/page'); assert.equal(fetched.title, 'Fetch fixture'); assert.equal(fetched.contentType, 'text/html');
+  let fetchedText = fetched.body;
+  while (fetched.next_cursor) { fetched = await call('fetch', { ...fetchArgs, cursor: fetched.next_cursor, max_chars: 9 }); fetchedText += fetched.body; }
+  assert.match(fetchedText, /Read once/); assert.match(fetchedText, /SIGNED_IN/); assert.match(fetchedText, /LATE_CONTENT/);
+  assert.doesNotMatch(fetchedText, /SECRET_HIDDEN/); assert.equal(fetchVisits, 1); assert.equal(crawled, 0);
+  const fetchedHtml = await call('fetch', { ...fetchArgs, url: url + 'fetch/page', format: 'html' });
+  assert.match(fetchedHtml.body, /<h1>Read once<\/h1>/); assert.match(fetchedHtml.body, /SECRET_HIDDEN/);
+  let jsonPage = await call('fetch', { ...fetchArgs, url: url + 'fetch/json', format: 'json', max_chars: 4 });
+  assert.equal(jsonPage.contentType, 'application/json');
+  let jsonText = jsonPage.body;
+  while (jsonPage.next_cursor) { jsonPage = await call('fetch', { ...fetchArgs, cursor: jsonPage.next_cursor, max_chars: 4 }); jsonText += jsonPage.body; }
+  assert.deepEqual(JSON.parse(jsonText), { ok: true, text: '你好😀' });
+  const invalidJson = await rawCall('fetch', { ...fetchArgs, url: url + 'fetch/invalid', format: 'json' });
+  assert.equal(invalidJson.isError, true);
+  const slow = await rawCall('fetch', { ...fetchArgs, url: url + 'fetch/slow', timeout_ms: 250 }); assert.equal(slow.isError, true);
+  let large = await call('fetch', { ...fetchArgs, url: url + 'fetch/large', max_chars: 100000 });
+  assert.equal(large.capture_truncated, true); let capturedChars = large.body.length;
+  while (large.next_cursor) { large = await call('fetch', { ...fetchArgs, cursor: large.next_cursor, max_chars: 100000 }); capturedChars += large.body.length; }
+  assert.equal(capturedChars, 1000000); assert.equal(large.truncated, true);
+  const afterFetch = (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs;
+  assert.deepEqual(afterFetch.filter(t => t.active).map(t => t.tab_id), activeBefore);
+  assert.ok(!afterFetch.some(t => t.url.startsWith(url + 'fetch/')));
+  checks.push('fetch background cleanup/no activation, one navigation, redirect/login cookie, network idle, no crawling, text/DOM/JSON, immutable pagination, capture cap, malformed JSON and timeout');
   const tab = await until(async () => (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Attach upload fixture'), 'fixture tab');
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };

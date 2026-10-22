@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.12.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.13.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -20,13 +20,14 @@ MCP 客户端
 | `src/setup.mjs` | 生成配对密钥、复制稳定扩展目录、写 Nosis 配置 |
 | `src/hub.mjs` | 浏览器与会话注册、独占 claim、每标签串行队列、超时 |
 | `src/client.mjs` | MCP 进程到 Hub 的 WebSocket 客户端，按需拉起 Hub |
-| `src/mcp.mjs` | 22 个工具的 schema、结果与图片封装 |
+| `src/mcp.mjs` | 23 个工具的 schema、结果与图片封装 |
 | `extension/controller.js` | 操作实现；传输层从不暴露原始 CDP |
 | `extension/sessions.js` | 扁平 debugger session 与 frame/OOPIF 归属 |
 | `extension/{click,input,actionability,scroll}.js` | 原生/DOM 输入、逐字按键、可操作性、容器滚动与有界查找 |
 | `extension/{drag,wait}.js` | 复用鼠标准备和严格定位的拖拽、只读条件等待；网络空闲复用被动请求表 |
 | `extension/batch.js` | 有限输入序列的参数预检；执行复用 controller 的单步流程与标签队列 |
 | `extension/outcomes.js` | 临时 DOM 变动观察器与有界只读探测，不推断业务成功 |
+| `extension/fetch.js` | 单页读取的参数、隔离世界采集与每 owner 有界缓存分页；临时页生命周期复用 controller 的 attach、导航和标签队列 |
 | `extension/{snapshot,navigation,evaluate,diagnostics}.js` | 观察、导航、有界求值结果缓存与分页、日志缓冲 |
 | `extension/{locator,text}.js` | 严格 CSS/XPath 定位、每次解析的 frame URL/title/iframe 路径、DOM/字段/支持的编辑器模型读取 |
 | `extension/visuals.js`、`click-visuals.js` | 无标题红色原生标签组、临时点击反馈 |
@@ -37,10 +38,10 @@ MCP 层将 `discover(kind=browsers/tabs)` 映射为内部 `list_browsers/list_ta
 
 ## MCP 描述分层
 
-- 初始化响应的 `instructions` 集中说明跨工具规则：接管/释放、不自动激活、ref 生命周期、selector 解析、未知结果不重放、原生/DOM 输入、超时、验证范围和页面内容不可信。客户端应将这些 instructions 纳入模型上下文，不能只提供 tools/list。
-- 单个工具 description 只保留用途和特有行为，例如 evaluate 的缓存续读、navigate 的观察预算、fill 的 setter/input/change、press_key 的 keydown 回执。
-- 参数 schema 表达类型、枚举、范围、默认值与参数专属限制；例如 DOM click 仅支持元素目标和无修饰键的左键单击。
-- [使用指南](USAGE.md) 保留完整原理、边界与示例。包内文档不会自动成为模型上下文，不能替代初始化 instructions 中的必要规则。
+- 初始化响应的 `instructions` 只保留跨工具规则：发现/接管/释放、不自动激活、ref 生命周期、selector/坐标约定、未知结果不重放、原生/DOM 输入边界、验证范围、页面内容不可信及上传授权。客户端应将这些 instructions 纳入模型上下文，不能只提供 tools/list。
+- 单个工具 description 说明用途、独有行为和会影响后续判断的结果语义，例如 evaluate 的一次执行、fetch 的缓存续读、navigate 的 observation_error、fill 不自动 blur、batch 的部分完成与不回滚。
+- 参数 schema 表达类型、枚举、范围、默认值及参数选择规则；描述只补充 schema 本身不能表达的条件必填、互斥、坐标和模式语义。共享参数使用短说明，不再重复全局规则。运行时条件默认值保留在描述中，避免向 cursor 等分支注入无关参数。
+- [使用指南](USAGE.md) 保留完整原理、边界与示例；内部事件序列、重试与清理机制由本文和使用指南解释，不放进每次工具发现。包内文档不会自动成为模型上下文，不能替代必要的调用约束。
 
 ## 控制模型
 
@@ -53,6 +54,12 @@ MCP 层将 `discover(kind=browsers/tabs)` 映射为内部 `list_browsers/list_ta
 7. **清理**：`tab_control(action="release")` 先移除可视标记，再 `debugger.detach`，最后才忘记 claim——detach 失败不会静默把标签交给别人。断连、标签关闭、浏览器重启、用户停止调试都会清理状态。
 
 claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；需要前台渲染时显式调用 `tab_control(action="activate")`。
+
+## 单页读取
+
+`browser_fetch` 是一次 URL 读取：Hub 按显式 `browser_id` 把请求交给配对扩展；controller 创建后台 `about:blank` 临时标签，在其队列内复用 attach/session 初始化后只导航一次，按 load 或 load + network_idle 等待，在隔离世界读取主文档，再于 finally 关闭。它不接管已有页面，不创建浏览器或窗口。临时标签在扩展内记录 owner，并从标签发现列表排除；即使关闭或初始化失败，也不能被其他连接接管。关闭失败保留临时页记录并报告，release_owner/releaseAll 再次尝试关闭；正常已有标签的 detach 边界保持不变。
+
+正文按 owner 保留一份最多 1000000 字符的不可变缓存，分页不执行脚本、不导航，临时标签关闭不会删除它；新 fetch、读完、owner 断连或扩展断连清除。读取期间文档或控制权变化会丢弃结果，断连后的迟到结果不能复活缓存。格式、采集上限与分页语义见使用指南。
 
 ## 观察模型
 

@@ -17,9 +17,12 @@ import { validateSteps } from './batch.js';
 import { waitFor } from './wait.js';
 import { boundedRead, installOutcomeObserver } from './outcomes.js';
 import { createDrag, dragOptions } from './drag.js';
+import { createFetches, capturePage } from './fetch.js';
 
 export function createController(api, notify = () => {}) {
   const claims = new Map();
+  const temporaryTabs = new Map();
+  const fetches = createFetches(fetchPage);
   const snapshots = new Map();
   const documents = new Map();
   const pageContexts = new Map();
@@ -155,8 +158,8 @@ export function createController(api, notify = () => {}) {
   }
 
   async function releaseMatching(predicate) {
-    const targets = [...claims.entries()].filter(([, claim]) => predicate(claim));
-    const outcomes = await Promise.allSettled(targets.map(([tabId]) => queued(tabId, () => release(tabId))));
+    const targets = new Map([...claims, ...temporaryTabs].filter(([, claim]) => predicate(claim)));
+    const outcomes = await Promise.allSettled([...targets].map(([tabId]) => queued(tabId, () => temporaryTabs.has(tabId) ? closeTemporary(tabId) : release(tabId))));
     return { released: outcomes.filter(item => item.status === 'fulfilled').length,
       errors: outcomes.filter(item => item.status === 'rejected').map(item => String(item.reason)) };
   }
@@ -241,7 +244,7 @@ export function createController(api, notify = () => {}) {
     }
     if (method === 'Page.javascriptDialogClosed') dialogs.delete(source.tabId);
   });
-  api.tabs.onRemoved.addListener(forget);
+  api.tabs.onRemoved.addListener(tabId => { temporaryTabs.delete(tabId); forget(tabId); });
   api.tabs.onUpdated.addListener((tabId, change) => {
     // A subframe reload can also set the TAB status to loading. CDP main-frame
     // events identify document changes; a status-only update carries no identity.
@@ -698,7 +701,82 @@ export function createController(api, notify = () => {}) {
     return { x: 0, y: 0, width: cssContentSize.width, height: cssContentSize.height, scale: 1 };
   }
 
+  async function closeTemporary(tabId) {
+    try { await api.tabs.remove(tabId); }
+    catch (error) {
+      // A closed tab is already clean; otherwise retain ownership for later cleanup.
+      let tab;
+      try { tab = await api.tabs.get(tabId); }
+      catch (lookup) { if (!/No tab with id|Invalid tab ID/i.test(lookup.message)) throw error; }
+      if (tab) throw error;
+    }
+    temporaryTabs.delete(tabId);
+    if (claims.has(tabId)) forget(tabId);
+  }
+
+  async function fetchPage(owner, args, cap, checkConnection) {
+    const url = httpUrl(args.url);
+    const budget = deadline(args.timeout_ms ?? 15000, 'fetch');
+    const tab = await api.tabs.create({ url: 'about:blank', active: false });
+    const handle = crypto.randomUUID();
+    temporaryTabs.set(tab.id, { owner, handle });
+    return await queued(tab.id, async () => {
+      let failure;
+      try {
+        checkConnection();
+        await attach(tab.id, owner, { tab_handle: handle }, tab, budget);
+        const claim = claims.get(tab.id);
+        checkConnection();
+        if (budget.remaining() < 100) throw new Error('Fetch preparation timed out; no navigation was dispatched');
+        await navigation.navigate(tab.id, url, { wait_until: 'load', timeout_ms: Math.max(100, budget.remaining()) });
+        checkConnection();
+        if (args.wait_until === 'network_idle') await waitFor(cdp, value, sessions, diagnostics, mouse, tab.id, { condition: 'network_idle', budget });
+        checkConnection();
+        const version = documents.get(tab.id);
+        const { frameTree } = await budget.run(() => cdp(tab.id, 'Page.getFrameTree'));
+        const { executionContextId } = await budget.run(() => cdp(tab.id, 'Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: 'browser-attach-fetch' }));
+        const result = value(await budget.run(() => cdp(tab.id, 'Runtime.evaluate', { contextId: executionContextId, returnByValue: true, userGesture: false,
+          expression: `(${capturePage.toString()})(${JSON.stringify(args.format ?? 'text')},${cap})` })));
+        if (claims.get(tab.id) !== claim || documents.get(tab.id) !== version) throw new Error('Document or control changed during fetch; capture discarded');
+        httpUrl(result.url);
+        return result;
+      } catch (error) { failure = error; throw error; }
+      finally {
+        try { await closeTemporary(tab.id); }
+        catch (error) { throw new Error(`${failure ? failure.message + '; ' : ''}Fetch temporary tab ${tab.id} could not be closed: ${error.message}. Cleanup will be retried on disconnect.`); }
+      }
+    });
+  }
+
+  async function attach(tabId, owner, args, tab, budget) {
+    const run = operation => budget ? budget.run(operation) : operation();
+    await run(() => api.debugger.attach({ tabId }, '1.3'));
+    try {
+      diagnostics.start(tabId);
+      await run(() => sessions.start(tabId));
+      const { frameTree } = await run(() => cdp(tabId, 'Page.getFrameTree'));
+      const state = { mainId: frameTree.frame.id, parents: new Map(), versions: new Map(), sessions: new Map() };
+      const remember = tree => {
+        if (tree.frame.parentId) state.parents.set(tree.frame.id, tree.frame.parentId);
+        (tree.childFrames || []).forEach(remember);
+      };
+      remember(frameTree); frameStates.set(tabId, state);
+      claims.set(tabId, { owner, handle: args.tab_handle });
+      let visualWarning;
+      try { if (!temporaryTabs.has(tabId)) await visuals.install(tabId); }
+      catch (error) { visualWarning = error.message; }
+      return { claimed: true, activation_requested: false, title: tab.title, url: tab.url,
+        ...(visualWarning ? { visual_warning: visualWarning } : {}) };
+    } catch (error) {
+      diagnostics.forget(tabId);
+      sessions.forget(tabId);
+      if (!temporaryTabs.has(tabId)) await api.debugger.detach({ tabId });
+      throw error;
+    }
+  }
+
   async function execute(owner, command, args) {
+    if (command === 'fetch') return await fetches.fetch(owner, args);
     if (command === 'open_tab') {
       const url = httpUrl(args.url);
       if (args.active != null && typeof args.active !== 'boolean') throw new Error('active must be a boolean');
@@ -707,15 +785,16 @@ export function createController(api, notify = () => {}) {
         note: 'List tabs after loading, then claim tab_id with optional exact URL/title guards before controlling this tab.' };
     }
     if (command === 'list_tabs') {
-      const tabs = await api.tabs.query({});
+      const tabs = (await api.tabs.query({})).filter(tab => !temporaryTabs.has(tab.id));
       return { tabs: tabs.map(tab => ({ tab_id: tab.id, window_id: tab.windowId, title: tab.title || '', url: tab.url || '',
         active: tab.active, group_id: tab.groupId, controllable: /^https?:\/\//.test(tab.url || '') })) };
     }
-    if (command === 'release_owner') return await releaseMatching(claim => claim.owner === owner);
+    if (command === 'release_owner') { fetches.forget(owner); return await releaseMatching(claim => claim.owner === owner); }
     const tabId = args.tab_id;
     if (!Number.isInteger(tabId)) throw new Error('Invalid tab ID');
     return await queued(tabId, async () => {
       if (command === 'claim_tab') {
+        if (temporaryTabs.has(tabId)) throw new Error('Tab is already controlled by a fetch operation');
         const tab = await api.tabs.get(tabId);
         if ((args.expected_url != null && tab.url !== args.expected_url) || (args.expected_title != null && tab.title !== args.expected_title)) throw new Error('Tab title/URL changed. List tabs again or omit optional identity guards to claim by tab_id.');
         httpUrl(tab.url);
@@ -724,29 +803,7 @@ export function createController(api, notify = () => {}) {
           if (existing.owner === owner && existing.handle === args.tab_handle) return { claimed: true };
           throw new Error('Tab is already controlled by another session');
         }
-        await api.debugger.attach({ tabId }, '1.3');
-        try {
-          diagnostics.start(tabId);
-          await sessions.start(tabId);
-          const { frameTree } = await cdp(tabId, 'Page.getFrameTree');
-          const state = { mainId: frameTree.frame.id, parents: new Map(), versions: new Map(), sessions: new Map() };
-          const remember = tree => {
-            if (tree.frame.parentId) state.parents.set(tree.frame.id, tree.frame.parentId);
-            (tree.childFrames || []).forEach(remember);
-          };
-          remember(frameTree); frameStates.set(tabId, state);
-          claims.set(tabId, { owner, handle: args.tab_handle });
-          let visualWarning;
-          try { await visuals.install(tabId); }
-          catch (error) { visualWarning = error.message; }
-          return { claimed: true, activation_requested: false, title: tab.title, url: tab.url,
-            ...(visualWarning ? { visual_warning: visualWarning } : {}) };
-        } catch (error) {
-          diagnostics.forget(tabId);
-          sessions.forget(tabId);
-          await api.debugger.detach({ tabId });
-          throw error;
-        }
+        return await attach(tabId, owner, args, tab);
       }
       const claim = claims.get(tabId);
       if (!claim || claim.owner !== owner || claim.handle !== args.tab_handle) throw new Error('Tab is not claimed by this connection');
@@ -780,7 +837,7 @@ export function createController(api, notify = () => {}) {
     });
   }
 
-  return { execute, releaseAll: () => releaseMatching(() => true), claimedCount: () => claims.size };
+  return { execute, releaseAll: () => { fetches.clear(); return releaseMatching(() => true); }, claimedCount: () => claims.size };
 }
 
 function scrollAtPoint(x, y, dx, dy) {

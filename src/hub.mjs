@@ -6,7 +6,7 @@ import { VERSION } from './config.mjs';
 
 const MAX_MESSAGE = 24 * 1024 * 1024;
 const OPERATIONS = new Set(['release_tab', 'activate_tab', 'close_tab', 'snapshot', 'read_text', 'type', 'hover', 'drag', 'wait', 'select_option', 'click', 'fill', 'press_key', 'batch', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'evaluate', 'logs']);
-export const CAPABILITIES = ['tabs', 'open_tab', 'activate_tab', 'close_tab', 'claim', 'ax_snapshot', 'text', 'type', 'hover', 'drag', 'wait', 'select_option', 'click', 'fill', 'keyboard', 'batch', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'visual_indicator', 'evaluate', 'logs'];
+export const CAPABILITIES = ['tabs', 'fetch', 'open_tab', 'activate_tab', 'close_tab', 'claim', 'ax_snapshot', 'text', 'type', 'hover', 'drag', 'wait', 'select_option', 'click', 'fill', 'keyboard', 'batch', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'visual_indicator', 'evaluate', 'logs'];
 export class OperationTimeout extends Error {}
 const send = (ws, data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); };
 
@@ -47,10 +47,10 @@ export async function startHub(config, { port = config.port, operationTimeout = 
       browsers: [...browsers.values()].map(browser => ({ browser_id: browser.id, ...browser.info, capabilities: CAPABILITIES })),
       hint: 'Load the paired extension in each Chrome/Edge profile if empty.',
     };
-    if (method === 'list_tabs' || method === 'claim_tab' || method === 'open_tab') {
+    if (method === 'list_tabs' || method === 'claim_tab' || method === 'open_tab' || method === 'fetch') {
       const browser = browsers.get(args.browser_id);
       if (!browser) throw new Error('Browser is not connected; call browser_discover kind=browsers again');
-      if (method === 'open_tab') return await requestBrowser(browser, owner, method, args);
+      if (method === 'open_tab' || method === 'fetch') return await requestBrowser(browser, owner, method, args);
       if (method === 'list_tabs') {
         const result = await requestBrowser(browser, owner, method, {});
         for (const [key, tab] of observed) if (tab.browser_id === browser.id) observed.delete(key);

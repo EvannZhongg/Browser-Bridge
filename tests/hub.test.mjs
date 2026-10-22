@@ -140,7 +140,7 @@ test('unknown outcome disconnects the client and releases its claims without rep
   assert.equal(f.requests.filter(item => item.command === 'read_text').length, 1);
 });
 
-test('real stdio MCP exposes 22 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
+test('real stdio MCP exposes 23 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
   const failCommands = new Set();
   const f = await fixture(t, { failCommands }), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
@@ -151,7 +151,7 @@ test('real stdio MCP exposes 22 tools including ordered batch, unified logs, sin
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
   const tools = (await mcp.listTools()).tools;
-  assert.equal(tools.length, 22);
+  assert.equal(tools.length, 23);
   assert.ok(!tools.some(tool => ['browser_console_logs', 'browser_network_logs'].includes(tool.name)));
   const logSchema = tools.find(tool => tool.name === 'browser_logs').inputSchema;
   assert.deepEqual(logSchema.properties.kind.enum, ['console', 'network']);
@@ -174,6 +174,20 @@ test('real stdio MCP exposes 22 tools including ordered batch, unified logs, sin
   assert.deepEqual(controlSchema.properties.action.enum, ['release', 'activate', 'close']);
   assert.ok(controlSchema.required.includes('action') && controlSchema.required.includes('tab_handle'));
   const call = (name, args = {}) => mcp.callTool({ name: `browser_${name}`, arguments: args });
+  const fetchSchema = tools.find(tool => tool.name === 'browser_fetch').inputSchema;
+  assert.ok(fetchSchema.required.includes('browser_id'));
+  assert.ok(!fetchSchema.required.includes('url'));
+  assert.deepEqual(fetchSchema.properties.format.enum, ['text', 'html', 'json']);
+  const beforeFetch = f.requests.length;
+  for (const args of [{}, { url: 'file:///a' }, { url: 'https://example.com', max_chars: 0 }, { cursor: 'x', url: 'https://example.com' }, { cursor: 'x', format: 'json' }]) {
+    assert.equal((await call('fetch', { browser_id: browser.id, ...args })).isError, true);
+  }
+  assert.equal(f.requests.length, beforeFetch);
+  assert.ok(!(await call('fetch', { browser_id: browser.id, url: 'https://example.com', wait_until: 'network_idle', format: 'json' })).isError);
+  assert.equal(f.requests.at(-1).command, 'fetch');
+  assert.equal(f.requests.at(-1).arguments.tab_id, undefined);
+  assert.ok(!(await call('fetch', { browser_id: browser.id, cursor: 'cached' })).isError);
+  assert.equal(f.requests.at(-1).arguments.url, undefined);
   const beforeDiscovery = f.requests.length;
   for (const args of [{}, { kind: 'all' }, { kind: 'tabs' }, { kind: 'tabs', browser_id: '' }, { kind: 'browsers', browser_id: browser.id }]) {
     assert.equal((await call('discover', args)).isError, true);

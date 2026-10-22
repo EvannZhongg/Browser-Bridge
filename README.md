@@ -19,7 +19,7 @@ Drive the Chrome / Edge tabs you already have open and already signed in from an
 - Native pointer hover, stepped drags and conditional waits; select HTML options without opening a native popup.
 - Navigate and go back/forward, open or close tabs, handle JavaScript dialogs, upload local files, and capture the whole page or a single element.
 - Evaluate JavaScript expressions in the main page; read console, page-error and network lifecycle logs captured after claiming; opt in to bounded, redacted request/response details when XHR/fetch needs verification.
-- Standard stdio MCP with 22 tools. The Hub listens on loopback only and pairs with the extension through a random key.
+- Standard stdio MCP with 23 tools. The Hub listens on loopback only and pairs with the extension through a random key.
 
 ## Requirements
 

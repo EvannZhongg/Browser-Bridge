@@ -43,9 +43,10 @@ function fixture() {
         }
         if (method === 'Page.createIsolatedWorld') return { executionContextId: 42 };
         if (method === 'Page.navigate') {
-          tabs.get(9).url = args.url; tabs.get(9).title = 'Destination';
+          tabs.get(target.tabId).url = args.url; tabs.get(target.tabId).title = 'Destination';
           api.debugger.onEvent.emit(target, 'Page.frameNavigated', { frame: { id: 'main' } });
           api.debugger.onEvent.emit(target, 'Page.lifecycleEvent', { frameId: 'main', loaderId: 'new', name: 'DOMContentLoaded' });
+          api.debugger.onEvent.emit(target, 'Page.lifecycleEvent', { frameId: 'main', loaderId: 'new', name: 'load' });
           return { frameId: 'main', loaderId: 'new' };
         }
         if (method === 'Input.dispatchMouseEvent' && args.type === 'mouseReleased' && !modalOnClick) {
@@ -1358,4 +1359,118 @@ test('element capture uses its box and retains the document offset instead of fu
   const result=await f.exec('screenshot',{selector:'#box'});
   assert.equal(result.capture.scope,'element');assert.deepEqual(result.capture.image_origin_css,{x:10,y:120});assert.equal(result.capture.css_width,100);
   await assert.rejects(f.exec('screenshot',{selector:'#box',full_page:true}),/mutually exclusive/);
+});
+
+
+function fetchFixture() {
+  const f = fixture(), send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.evaluate' && args.expression.startsWith('(function capturePage')) {
+      f.calls.push({ method: 'capture', target, args });
+      return { result: { value: { url: f.tabs.get(target.tabId).url, title: 'Fetched', contentType: 'text/html', body: 'abcdef', capture_truncated: false } } };
+    }
+    return send(target, method, args);
+  };
+  return f;
+}
+
+test('fetch opens one background tab, navigates once, closes before paginating and keeps existing claims', async () => {
+  const f = fetchFixture(); await f.claim();
+  const page = await f.exec('fetch', { url: 'https://read.test/', max_chars: 2 });
+  assert.equal(page.body, 'ab'); assert.equal(page.truncated, true);
+  assert.deepEqual(f.calls.find(c => c.method === 'tabs.create').args, { url: 'about:blank', active: false });
+  assert.ok(!f.tabs.has(10)); assert.ok(f.tabs.has(9)); assert.equal(f.controller.claimedCount(), 1);
+  const before = f.calls.length;
+  const next = await f.exec('fetch', { cursor: page.next_cursor });
+  assert.equal(next.body, 'cdef'); assert.equal(next.next_cursor, null);
+  assert.equal(f.calls.length, before);
+  assert.equal(f.calls.filter(c => c.method === 'Page.navigate').length, 1);
+  assert.ok(!f.calls.some(c => ['Page.bringToFront', 'tabs.update', 'windows.update'].includes(c.method)));
+  await assert.rejects(f.exec('fetch', { cursor: page.next_cursor }, 'other'), /stale|another connection/);
+});
+
+test('fetch cleans up attach failure, navigation failure, timeout, capture errors and document races without replay', async () => {
+  for (const failure of ['attach', 'Page.navigate', 'timeout', 'capture', 'document', 'detach']) {
+    const f = fetchFixture(), send = f.api.debugger.sendCommand;
+    if (failure === 'attach') f.api.debugger.attach = async () => { throw new Error('attach failed'); };
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      if (method === 'Page.navigate' && failure === 'Page.navigate') throw new Error('navigation failed');
+      if (method === 'Page.navigate' && failure === 'timeout') { f.calls.push({ method }); return new Promise(() => {}); }
+      if (method === 'Runtime.evaluate' && args.expression.startsWith('(function capturePage')) {
+        if (failure === 'capture') return { exceptionDetails: { text: 'invalid JSON' } };
+        if (failure === 'document') f.api.debugger.onEvent.emit(target, 'DOM.documentUpdated');
+        if (failure === 'detach') f.api.debugger.onDetach.emit(target);
+      }
+      return send(target, method, args);
+    };
+    await assert.rejects(f.exec('fetch', { url: 'https://read.test/', timeout_ms: 100 }));
+    assert.ok(!f.tabs.has(10), failure); assert.equal(f.controller.claimedCount(), 0);
+    assert.ok(f.calls.filter(c => c.method === 'Page.navigate').length <= 1);
+  }
+});
+
+test('failed fetch close retains ownership until disconnect cleanup closes the temporary tab', async () => {
+  const f = fetchFixture(), remove = f.api.tabs.remove;
+  f.api.tabs.remove = async () => { throw new Error('close failed'); };
+  await assert.rejects(f.exec('fetch', { url: 'https://read.test/' }), /could not be closed/);
+  assert.equal(f.controller.claimedCount(), 1);
+  assert.ok(!(await f.exec('list_tabs')).tabs.some(t => t.tab_id === 10));
+  await assert.rejects(f.exec('claim_tab', { tab_id: 10 }, 'other'), /already controlled/);
+  f.api.tabs.remove = remove;
+  await f.exec('release_owner');
+  assert.equal(f.controller.claimedCount(), 0); assert.ok(!f.tabs.has(10));
+});
+
+test('disconnect clears fetch captures and discards in-flight captures after closing', async () => {
+  const f = fetchFixture(), send = f.api.debugger.sendCommand;
+  let finish, entered;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.evaluate' && args.expression.startsWith('(function capturePage')) {
+      entered(); await new Promise(resolve => { finish = resolve; });
+    }
+    return send(target, method, args);
+  };
+  const pending = assert.rejects(f.exec('fetch', { url: 'https://read.test/' }), /connection ended/);
+  await waiting;
+  const release = f.exec('release_owner');
+  finish(); await pending; await release;
+  assert.ok(!f.tabs.has(10)); assert.equal(f.controller.claimedCount(), 0);
+});
+
+
+test('fetch initialization deadline closes its tab and late replies cannot resume setup or navigate', async () => {
+  for (const stage of ['attach', 'Runtime.enable', 'Page.getFrameTree']) {
+    const f = fetchFixture(), send = f.api.debugger.sendCommand;
+    let finish;
+    const stalled = () => new Promise(resolve => { finish = resolve; });
+    if (stage === 'attach') f.api.debugger.attach = stalled;
+    else f.api.debugger.sendCommand = async (target, method, args) => method === stage ? stalled() : send(target, method, args);
+    await assert.rejects(f.exec('fetch', { url: 'https://read.test/', timeout_ms: 100 }), /Fetch did not finish/);
+    assert.ok(!f.tabs.has(10));
+    finish(stage === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'main' } } } : {});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.controller.claimedCount(), 0);
+    assert.ok(!f.calls.some(c => c.method === 'Page.navigate'));
+  }
+});
+
+
+test('disconnect during tab creation or initialization cannot dispatch a late navigation', async () => {
+  for (const stage of ['create', 'initialize']) {
+    const f = fetchFixture(), create = f.api.tabs.create, send = f.api.debugger.sendCommand;
+    let finish, entered;
+    const ready = new Promise(resolve => { entered = resolve; });
+    if (stage === 'create') f.api.tabs.create = async args => { entered(); await new Promise(resolve => { finish = resolve; }); return create(args); };
+    else f.api.debugger.sendCommand = async (target, method, args) => {
+      if (method === 'Runtime.enable') { entered(); await new Promise(resolve => { finish = resolve; }); }
+      return send(target, method, args);
+    };
+    const pending = assert.rejects(f.exec('fetch', { url: 'https://read.test/' }), /connection ended/);
+    await ready;
+    const released = f.exec('release_owner');
+    finish(); await pending; await released;
+    assert.ok(!f.tabs.has(10)); assert.equal(f.controller.claimedCount(), 0);
+    assert.ok(!f.calls.some(c => c.method === 'Page.navigate'));
+  }
 });
