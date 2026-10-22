@@ -10,7 +10,7 @@
 
 让 MCP 客户端操作你已经打开、已经登录的 Chrome / Edge 标签页。BrowserAttach 通过本机配对扩展连接浏览器，保留现有登录状态，不需要启动远程调试端口或单独的自动化浏览器。
 
-[npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [使用指南](docs/USAGE.md) · [架构与设计](docs/ARCHITECTURE.md) · [验证报告](docs/TEST-REPORT.md) · [问题反馈](https://github.com/EvannZhongg/BrowserAttach/issues) · [贡献指南](CONTRIBUTING.md)
+[npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [使用指南](docs/USAGE.md) · [架构与设计](docs/ARCHITECTURE.md) · [Agent 集成](docs/AGENT-INTEGRATION.md) · [验证报告](docs/TEST-REPORT.md) · [问题反馈](https://github.com/EvannZhongg/BrowserAttach/issues) · [贡献指南](CONTRIBUTING.md)
 
 ## 能做什么
 
@@ -68,7 +68,7 @@ Windows 客户端若要求完整命令扩展名，使用 `npx.cmd`。已全局�
 
 `@latest` 会在启动时解析 npm 最新版本。MCP 包与已加载扩展必须为同一版本；升级后重新运行 `browser-attach setup` 并在扩展页重新加载扩展，否则 Hub 会拒绝旧扩展连接。
 
-Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置，详见 [Nosis 集成](docs/NOSIS-INTEGRATION.md)。
+各宿主的装配步骤见 [Agent 集成](docs/AGENT-INTEGRATION.md)；其他客户端直接使用上面的 stdio 配置。
 
 ### 3. 开始操作
 
@@ -108,7 +108,7 @@ Nosis 用户可运行 `browser-attach setup --nosis` 自动备份并更新配置
 
 可通过绝对路径 `BROWSER_ATTACH_HOME` 显式覆盖。Windows 默认避开可能被打包宿主虚拟化的 AppData；不会搜索或自动合并其他宿主的私有缓存。目录包含配对配置、Hub 日志及稳定的扩展副本；不依赖 clone 位置、客户端工作目录或 npm 缓存。已有自定义目录请继续使用相同环境变量或 `--config`，不要在新默认目录意外创建另一套配对。
 
-`setup --nosis` 会备份配置并固定当前 Node、CLI 和实际配对文件的绝对路径，同时设置 MCP 的 `BROWSER_ATTACH_HOME`；支持与自定义 `--config` 一起使用。MCP 启动 Hub 时继续传入同一绝对配对路径及目录，避免不同启动环境重新推导出另一份配置。
+宿主装配步骤写入客户端条目时，会固定当前 Node、CLI 和实际配对文件的绝对路径，并设置 MCP 的 `BROWSER_ATTACH_HOME`；支持与自定义 `--config` 一起使用。MCP 启动 Hub 时继续传入同一绝对配对路径及目录，避免不同启动环境重新推导出另一份配置。详见 [Agent 集成](docs/AGENT-INTEGRATION.md)。
 
 ```sh
 browser-attach status
@@ -154,7 +154,7 @@ node bin/browser-attach.mjs setup --extension-dir ./extension
 node bin/browser-attach.mjs mcp
 ```
 
-开发模式有意使用仓库扩展路径。一般安装请使用不带 `--extension-dir` 的 setup，确保移动仓库后仍可运行。Windows 也可运行 `./scripts/install.ps1`，或添加 `-ConfigureNosis`。
+开发模式有意使用仓库扩展路径。一般安装请使用不带 `--extension-dir` 的 setup，确保移动仓库后仍可运行。Windows 也可运行 `./scripts/install.ps1`。
 
 真实浏览器测试需要一个允许命令行加载扩展的 Chromium / Edge 可执行文件，路径由开发者传入：
 

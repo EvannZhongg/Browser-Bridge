@@ -10,7 +10,7 @@
 
 Drive the Chrome / Edge tabs you already have open and already signed in from an MCP client. BrowserAttach connects to the browser through a locally paired extension, keeps your existing sign-in state, and needs neither a remote debugging port nor a separate automation browser.
 
-[npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [Usage guide](docs/USAGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Test report](docs/TEST-REPORT.md) · [Issues](https://github.com/EvannZhongg/BrowserAttach/issues) · [Contributing](CONTRIBUTING.md)
+[npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [Usage guide](docs/USAGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Agent integration](docs/AGENT-INTEGRATION.md) · [Test report](docs/TEST-REPORT.md) · [Issues](https://github.com/EvannZhongg/BrowserAttach/issues) · [Contributing](CONTRIBUTING.md)
 
 ## What it does
 
@@ -68,7 +68,7 @@ On Windows clients that require a full command extension, use `npx.cmd`. With a 
 
 `@latest` resolves the newest npm version at launch. The MCP package and the loaded extension must be the same version; after an upgrade, rerun `browser-attach setup` and reload the extension on the extensions page, otherwise the Hub rejects the old extension connection.
 
-Nosis users can run `browser-attach setup --nosis` to back up and update the configuration automatically; see [Nosis integration](docs/NOSIS-INTEGRATION.md).
+Assembly steps for supported hosts are in [agent integration](docs/AGENT-INTEGRATION.md); other clients use the stdio entry above.
 
 ### 3. Start driving
 
@@ -108,7 +108,7 @@ Claiming and ordinary input never activate a tab or window; call `browser_tab_co
 
 Override it explicitly with the absolute path `BROWSER_ATTACH_HOME`. The Windows default avoids AppData, which packaged hosts may virtualize; no other host's private cache is searched or merged automatically. The directory holds the pairing configuration, Hub logs and the stable extension copy, and depends on neither the clone location, the client working directory nor the npm cache. If you already use a custom directory, keep using the same environment variable or `--config` instead of accidentally creating a second pairing under the new default.
 
-`setup --nosis` backs up the configuration, pins the absolute paths of the current Node, CLI and the actual pairing file, and sets `BROWSER_ATTACH_HOME` for MCP; it works together with a custom `--config`. When the MCP launches the Hub it passes the same absolute pairing path and directory, so different launch environments cannot derive a second configuration.
+A host assembly step that writes the client entry pins the absolute paths of the current Node, CLI and the actual pairing file and sets `BROWSER_ATTACH_HOME`; it works together with a custom `--config`. When the MCP launches the Hub it passes the same absolute pairing path and directory, so different launch environments cannot derive a second configuration. See [agent integration](docs/AGENT-INTEGRATION.md).
 
 ```sh
 browser-attach status
@@ -154,7 +154,7 @@ node bin/browser-attach.mjs setup --extension-dir ./extension
 node bin/browser-attach.mjs mcp
 ```
 
-Development mode deliberately uses the repository extension path. For normal installs, use `setup` without `--extension-dir` so it keeps working after the repository moves. On Windows you can also run `./scripts/install.ps1`, or add `-ConfigureNosis`.
+Development mode deliberately uses the repository extension path. For normal installs, use `setup` without `--extension-dir` so it keeps working after the repository moves. On Windows you can also run `./scripts/install.ps1`.
 
 Real-browser tests need a Chromium / Edge executable that allows loading extensions from the command line; the path is supplied by the developer:
 
