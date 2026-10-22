@@ -15,6 +15,10 @@ test('capture reads rendered text/current DOM/validated JSON and marks capture l
   const capture = (format, cap = 100) => vm.runInNewContext(`(${capturePage.toString()})(${JSON.stringify(format)},${cap})`, { document, location: { href: 'https://final.test', protocol: 'https:' } });
   assert.equal(capture('text').body, 'visible');
   assert.equal(capture('html').body, '<html>current</html>');
+  assert.equal(capture('html').dom, 'rendered');
+  assert.equal(capture('text').dom, undefined);
+  document.title = '';
+  assert.equal(Object.hasOwn(capture('json'), 'title'), false);
   assert.equal(capture('json').body, '{"ok":true}');
   assert.equal(capture('text', 3).capture_truncated, true);
   assert.throws(() => capture('json', 3), /capture limit/);
@@ -40,7 +44,7 @@ test('fetch pagination is immutable, owner-scoped and never reads the URL again'
   await assert.rejects(fetches.fetch('a', { cursor: page.next_cursor }), /stale/);
 });
 
-test('new fetch replaces old capture; disconnect cannot resurrect an in-flight result', async () => {
+test('disconnect cannot resurrect an in-flight result; capture loss is independent of pagination', async () => {
   let finish;
   const fetches = createFetches(() => new Promise(resolve => { finish = resolve; }));
   const pending = fetches.fetch('owner', { url: 'https://example.com' });
@@ -52,5 +56,53 @@ test('new fetch replaces old capture; disconnect cannot resurrect an in-flight r
   const last = await bounded.fetch('owner', { url: 'https://example.com' });
   assert.equal(last.truncated, true);
   assert.equal(last.next_cursor, null);
-  await assert.rejects(bounded.fetch('owner', { cursor: first.next_cursor }), /stale/);
+  assert.equal((await bounded.fetch('owner', { cursor: first.next_cursor })).body, 'bc');
+});
+
+
+test('JSON ignores the page budget and returns one complete parseable string', async () => {
+  const body = JSON.stringify({ text: 'a'.repeat(900000), unicode: '世界😀' });
+  const fetches = createFetches(async () => ({ format: 'json', body, capture_truncated: false }));
+  const result = await fetches.fetch('owner', { url: 'https://fixture.test/json', format: 'json', max_chars: 400 });
+  assert.equal(result.body, body); assert.deepEqual(JSON.parse(result.body), JSON.parse(body));
+  assert.equal(result.truncated, false); assert.equal(result.next_cursor, null);
+});
+
+test('four immutable captures can interleave; a fifth evicts the least recently read capture', async () => {
+  let reads = 0;
+  const fetches = createFetches(async (owner, args) => ({ body: args.url + ':' + ++reads, capture_truncated: false }));
+  const pages = [];
+  for (const name of ['a', 'b', 'c', 'd']) pages.push(await fetches.fetch('owner', { url: 'https://fixture.test/' + name, max_chars: 1 }));
+  pages[0] = await fetches.fetch('owner', { cursor: pages[0].next_cursor, max_chars: 1 });
+  await fetches.fetch('owner', { url: 'https://fixture.test/e', max_chars: 1 });
+  await assert.rejects(fetches.fetch('owner', { cursor: pages[1].next_cursor }), /evicted/);
+  assert.match((await fetches.fetch('owner', { cursor: pages[0].next_cursor })).body, /a:1$/);
+  assert.match((await fetches.fetch('owner', { cursor: pages[2].next_cursor })).body, /c:3$/);
+  assert.match((await fetches.fetch('owner', { cursor: pages[3].next_cursor })).body, /d:4$/);
+  assert.equal(reads, 5);
+});
+
+test('same URL gets independent captures; a failed read leaves other captures intact', async () => {
+  let reads = 0;
+  const fetches = createFetches(async (owner, args) => {
+    if (args.url.endsWith('/fail')) throw new Error('read failed');
+    return { body: 'capture:' + ++reads, capture_truncated: false };
+  });
+  const a = await fetches.fetch('owner', { url: 'https://fixture.test/same', max_chars: 1 });
+  const b = await fetches.fetch('owner', { url: 'https://fixture.test/same', max_chars: 1 });
+  await assert.rejects(fetches.fetch('owner', { url: 'https://fixture.test/fail' }), /read failed/);
+  assert.equal((await fetches.fetch('owner', { cursor: a.next_cursor })).body, 'apture:1');
+  assert.equal((await fetches.fetch('owner', { cursor: b.next_cursor })).body, 'apture:2');
+});
+
+test('completed and failed reads do not evict the four unfinished captures', async () => {
+  const fetches = createFetches(async (owner, args) => {
+    if (args.url.endsWith('/fail')) throw new Error('read failed');
+    return { body: 'abcdef', capture_truncated: false };
+  });
+  const pages = [];
+  for (let i = 0; i < 4; i++) pages.push(await fetches.fetch('owner', { url: 'https://fixture.test/' + i, max_chars: 1 }));
+  await fetches.fetch('owner', { url: 'https://fixture.test/complete' });
+  await assert.rejects(fetches.fetch('owner', { url: 'https://fixture.test/fail' }), /read failed/);
+  for (const page of pages) assert.equal((await fetches.fetch('owner', { cursor: page.next_cursor })).body, 'bcdef');
 });

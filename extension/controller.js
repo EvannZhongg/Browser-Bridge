@@ -739,7 +739,8 @@ export function createController(api, notify = () => {}) {
           expression: `(${capturePage.toString()})(${JSON.stringify(args.format ?? 'text')},${cap})` })));
         if (claims.get(tab.id) !== claim || documents.get(tab.id) !== version) throw new Error('Document or control changed during fetch; capture discarded');
         httpUrl(result.url);
-        return result;
+        const status = diagnostics.documentStatus(tab.id, frameTree.frame);
+        return { ...result, status, ok: status == null ? null : status >= 200 && status < 300 };
       } catch (error) { failure = error; throw error; }
       finally {
         try { await closeTemporary(tab.id); }

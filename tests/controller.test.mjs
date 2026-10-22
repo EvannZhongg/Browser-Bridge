@@ -1365,6 +1365,12 @@ test('element capture uses its box and retains the document offset instead of fu
 function fetchFixture() {
   const f = fixture(), send = f.api.debugger.sendCommand;
   f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Page.navigate') {
+      const result = await send(target, method, args);
+      f.api.debugger.onEvent.emit(target, 'Network.responseReceived', { requestId: 'document', type: 'Document', frameId: 'main', loaderId: 'new', response: { status: 200, url: args.url } });
+      return result;
+    }
+    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', loaderId: 'new', url: f.tabs.get(target.tabId).url } } };
     if (method === 'Runtime.evaluate' && args.expression.startsWith('(function capturePage')) {
       f.calls.push({ method: 'capture', target, args });
       return { result: { value: { url: f.tabs.get(target.tabId).url, title: 'Fetched', contentType: 'text/html', body: 'abcdef', capture_truncated: false } } };
@@ -1378,6 +1384,7 @@ test('fetch opens one background tab, navigates once, closes before paginating a
   const f = fetchFixture(); await f.claim();
   const page = await f.exec('fetch', { url: 'https://read.test/', max_chars: 2 });
   assert.equal(page.body, 'ab'); assert.equal(page.truncated, true);
+  assert.equal(page.status, 200); assert.equal(page.ok, true);
   assert.deepEqual(f.calls.find(c => c.method === 'tabs.create').args, { url: 'about:blank', active: false });
   assert.ok(!f.tabs.has(10)); assert.ok(f.tabs.has(9)); assert.equal(f.controller.claimedCount(), 1);
   const before = f.calls.length;
@@ -1472,5 +1479,24 @@ test('disconnect during tab creation or initialization cannot dispatch a late na
     finish(); await pending; await released;
     assert.ok(!f.tabs.has(10)); assert.equal(f.controller.claimedCount(), 0);
     assert.ok(!f.calls.some(c => c.method === 'Page.navigate'));
+  }
+});
+
+
+test('fetch returns only the captured main document HTTP status, without treating HTTP errors as tool errors', async () => {
+  for (const status of [200, 404, 500, null]) {
+    const f = fetchFixture(), send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      const result = await send(target, method, args);
+      if (method === 'Page.navigate') {
+        if (status == null) f.api.debugger.onEvent.emit(target, 'Network.requestWillBeSent', { requestId: 'unobserved', type: 'Document', frameId: 'main', request: { url: args.url, method: 'GET' } });
+        else f.api.debugger.onEvent.emit(target, 'Network.responseReceived', { requestId: 'document', type: 'Document', frameId: 'main', loaderId: 'new', response: { status, url: args.url } });
+        f.api.debugger.onEvent.emit(target, 'Network.responseReceived', { requestId: 'iframe', type: 'Document', frameId: 'child', loaderId: 'new', response: { status: 403, url: 'https://other.test/' } });
+      }
+      return result;
+    };
+    const result = await f.exec('fetch', { url: 'https://read.test/' });
+    assert.equal(result.status, status); assert.equal(result.ok, status == null ? null : status === 200);
+    assert.equal(result.body, 'abcdef'); assert.ok(!f.tabs.has(10));
   }
 });

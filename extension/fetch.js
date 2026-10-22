@@ -1,4 +1,4 @@
-const CAPTURE_CHARS = 1000000;
+const CAPTURE_CHARS = 1000000, MAX_CAPTURES = 4;
 
 export function fetchOptions(args) {
   if (!Number.isInteger(args.max_chars ?? 20000) || (args.max_chars ?? 20000) < 1 || (args.max_chars ?? 20000) > 100000) throw new Error('max_chars must be 1..100000');
@@ -23,38 +23,55 @@ export function capturePage(format, cap) {
     body = JSON.stringify(JSON.parse(body));
     if (body.length > cap) throw new Error('JSON document exceeds the 1000000 character capture limit');
   }
-  return { url: location.href, title: document.title, contentType: document.contentType, format,
+  return { url: location.href, ...(document.title ? { title: document.title } : {}), contentType: document.contentType, format,
+    ...(format === 'html' ? { dom: 'rendered' } : {}),
     body: body.slice(0, cap), capture_truncated: body.length > cap };
 }
 
-// One bounded immutable capture per owner; closing the temporary tab does not expire it.
+// Cursors identify immutable captures, not URLs whose content may have changed.
 export function createFetches(read) {
   const results = new Map();
   async function fetch(owner, args) {
     fetchOptions(args);
-    let state;
+    let captures = results.get(owner), state;
     if (args.cursor != null) {
-      state = results.get(owner);
-      if (!state?.result || state.cursor !== args.cursor) throw new Error('Fetch cursor is stale or belongs to another connection; a new fetch replaces the previous capture');
+      state = captures && [...captures.values()].find(item => item.result && item.cursor === args.cursor);
+      if (!state) throw new Error('Fetch cursor is stale, evicted or belongs to another connection');
+      captures.delete(state.id); captures.set(state.id, state);
     } else {
-      state = { offset: 0 };
-      results.set(owner, state);
+      if (!captures) { captures = new Map(); results.set(owner, captures); }
+      state = { id: crypto.randomUUID(), offset: 0, format: args.format ?? 'text' };
+      captures.set(state.id, state);
+      const checkConnection = () => {
+        if (results.get(owner) !== captures || captures.get(state.id) !== state) throw new Error('Fetch connection ended or capture evicted; capture discarded');
+      };
       try {
-        const result = await read(owner, args, CAPTURE_CHARS, () => {
-          if (results.get(owner) !== state) throw new Error('Fetch connection ended; capture discarded');
-        });
-        if (results.get(owner) !== state) throw new Error('Fetch connection ended; capture discarded');
+        const result = await read(owner, args, CAPTURE_CHARS, checkConnection);
+        checkConnection();
         state.result = result;
-      } catch (error) { if (results.get(owner) === state) results.delete(owner); throw error; }
+      } catch (error) {
+        captures.delete(state.id);
+        if (!captures.size && results.get(owner) === captures) results.delete(owner);
+        throw error;
+      }
     }
     const { body, ...metadata } = state.result;
-    const end = Math.min(body.length, state.offset + (args.max_chars ?? 20000));
+    const end = state.format === 'json' ? body.length : Math.min(body.length, state.offset + (args.max_chars ?? 20000));
     const chunk = body.slice(state.offset, end);
     state.offset = end;
     state.cursor = end < body.length ? crypto.randomUUID() : null;
     const result = { ...metadata, body: chunk, truncated: end < body.length || metadata.capture_truncated, next_cursor: state.cursor };
-    if (!state.cursor) results.delete(owner);
+    if (!state.cursor) {
+      captures.delete(state.id);
+      if (!captures.size) results.delete(owner);
+    } else {
+      captures.delete(state.id); captures.set(state.id, state);
+      while (captures.size > MAX_CAPTURES) captures.delete(captures.keys().next().value);
+    }
     return result;
   }
-  return { fetch, forget: owner => results.delete(owner), clear: () => results.clear() };
+  return { fetch, forget(owner) { results.get(owner)?.clear(); results.delete(owner); }, clear() {
+    for (const captures of results.values()) captures.clear();
+    results.clear();
+  } };
 }

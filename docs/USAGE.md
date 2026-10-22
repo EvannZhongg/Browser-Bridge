@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.13.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.14.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则；工具 description 说明用途、独有行为与结果语义；参数 schema 及其短说明提供类型、默认值和选择规则。本文保留完整原理、边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -73,17 +73,19 @@
 
 ```js
 browser_fetch({browser_id, url: "https://example.com/article", wait_until: "network_idle", format: "text", max_chars: 20000})
-// → {url, title, contentType, format, body, capture_truncated, truncated, next_cursor}
+// → {url, title?, status, ok, contentType, format, body, capture_truncated, truncated, next_cursor}
 browser_fetch({browser_id, cursor: next_cursor, max_chars: 20000})
 ```
 
 `browser_fetch` 在选定配置中新建 `active=false` 的临时标签，复用该配置的登录态和导航链路，采集后关闭；不需要对临时页显式 discover/claim。它不操作已有标签，不创建浏览器或窗口，不跟随页面链接。后台标签会短暂出现在标签栏，不能保证浏览器完全不可见。网页脚本、子资源、重定向仍照常执行，打开 URL 也可能产生网站状态变化；“读一页”指工具范围，不代表 HTTP 请求无副作用。
 
 - `wait_until=load` 为默认；`network_idle` 在 load 后再等被动请求表中连续 500 ms 无活动请求，复用 `browser_wait` 的网络空闲条件，不保证应用内容全部完成。`timeout_ms` 为 100–30000，默认 15000；调试初始化、导航和读取共享预算，标签创建和关闭受 Hub 超时约束。
-- 只读当前主文档。`text` 使用 `body.innerText`；`html` 返回执行脚本后的当前 DOM `outerHTML`，并非原始 HTTP 响应；`json` 从浏览器呈现的 JSON 正文解析、校验后序列化，不另发 fetch/XHR，也不返回响应头或 HTTP 状态。`contentType` 来自 `document.contentType`，`url` 为采集时的最终地址。非 HTTP(S) 最终文档报错。
-- `body` 始终为字符串，`max_chars` 为 1–100000，默认 20000，按 JavaScript 字符串长度计算。JSON 分页也为字符串片段，应先按顺序拼接再 `JSON.parse`。
-- 一次最多保留 1000000 字符。`next_cursor` 非空表示缓存尚有后续片段；`truncated` 表示尚未返回全部内容或采集有损。`capture_truncated=true` 表示文本/HTML 超出采集上限，丢失的尾部不能通过 cursor 取回；JSON 无法完整捕获或解析时直接报错。
-- 每个连接、每个浏览器配置最多保留一份缓存；新 fetch 替换旧缓存，读完或断连清除。续读只接受 `browser_id`、`cursor` 和可选 `max_chars`，不再打开页面。缓存不因临时页关闭而失效，也不能跨连接读取。
+- 只读当前主文档。`text` 使用 `body.innerText`；`html` 返回当前 DOM `outerHTML`，同时标记 `dom: "rendered"`，包含页面脚本及浏览器扩展对 DOM 的修改，不能用作服务器原始响应或字节存档；不删除或猜测注入来源。`json` 从浏览器呈现的正文解析、校验后序列化。不另发 fetch/XHR，不返回原始响应体或响应头。`contentType` 来自 `document.contentType`，`url` 为最终采集地址；没有文档标题时省略 `title`。非 HTTP(S) 最终文档报错。
+- `status` 来自已有 CDP 网络观察，按采集主文档的 frame 与 loader 匹配最终响应，排除重定向中间响应、子框架和 XHR/fetch。`ok` 仅表示 HTTP 200–299；未观察到匹配状态时两者均为 `null`，不猜成 200。404/500 仍返回正文及 `ok:false`，不因此设置 MCP `isError`。返回 200 的登录墙、验证码页或软错误仍为 `ok:true`，它不代表内容有效、已授权或业务成功。缓存/service worker 响应使用浏览器所报告的文档响应状态，不保证等于服务器本次实际传输的状态行。
+- `body` 始终为字符串。文本/HTML 按 `max_chars` 分页，范围 1–100000、默认 20000，按 JavaScript 字符串长度计算。JSON 忽略分页预算，在 1000000 字符采集上限内整份返回，可直接 `JSON.parse(body)`；`truncated=false`、`next_cursor=null`，不会返回半截 JSON。JSON 超出采集上限或解析失败时直接报错。
+- 文本/HTML 一次最多采集 1000000 字符。`next_cursor` 非空表示缓存尚有后续片段；`truncated` 表示尚未返回全部内容或采集有损。`capture_truncated=true` 表示超出采集上限，丢失的尾部不能通过 cursor 取回。
+- 每个连接、每个浏览器配置最多保留 4 份尚未读完的不可变采集（每份最多 1000000 字符），可交叉续读；第 5 份需要续读的采集会淘汰最久未读取的一份。一次读完或失败的请求不占缓存槽、不淘汰已有采集。相同 URL 的多次采集各自独立，不按 URL 合并，cursor 自身定位对应采集，无需 fetch_id。读完或断连清除；过期/淘汰的 cursor 明确报错，不重新访问 URL。
+- 续读只接受 `browser_id`、`cursor` 和可选 `max_chars`，只读缓存，不打开页面。缓存不因临时页关闭而失效，也不能跨连接读取。
 - 超时、解析错误或断连会清理临时页，不自动重新导航。关闭失败会明确报错并保留清理责任，在断连时再次尝试关闭；不会静默移交给其他连接。临时页不出现在 `discover(kind="tabs")` 的结果中。
 
 ## 观察：快照与引用

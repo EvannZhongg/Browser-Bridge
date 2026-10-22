@@ -8,6 +8,25 @@ function fixture() {
     read: (kind, args = {}) => logs.read(9, { kind, ...args }) };
 }
 
+test('document status matches the frame and loader, survives log eviction and expires with the document or claim', () => {
+  const f = fixture(), main = { id: 'main', loaderId: 'document' };
+  const response = (frameId, loaderId, status, source) => f.emit('Network.responseReceived', { requestId: frameId, type: 'Document', frameId, loaderId, response: { status, url: 'https://fixture.test/' } }, source);
+  assert.equal(f.logs.documentStatus(9, main), null);
+  response('main', 'document', 404);
+  response('child', 'document', 500);
+  response('main', 'document', 403, { tabId: 9, sessionId: 'remote' });
+  assert.equal(f.logs.documentStatus(9, main), 404);
+  assert.equal(f.logs.documentStatus(9, { id: 'main', loaderId: 'other' }), null);
+  assert.equal(f.logs.documentStatus(9, { id: 'main' }), null);
+  for (let i = 0; i < 700; i++) f.emit('Network.responseReceived', { requestId: String(i), type: 'Fetch', response: { status: 200, url: 'https://fixture.test/api' } });
+  assert.equal(f.logs.documentStatus(9, main), 404);
+  f.emit('Network.requestWillBeSent', { requestId: 'next', type: 'Document', frameId: 'main', request: { url: 'https://fixture.test/next', method: 'GET' } });
+  assert.equal(f.logs.documentStatus(9, main), null);
+  response('main', 'document', 200);
+  f.logs.forget(9);
+  assert.equal(f.logs.documentStatus(9, main), null);
+});
+
 test('unified log query requires a kind and refuses irrelevant filters', () => {
   const f = fixture();
   for (const kind of [undefined, '', 'all', '__proto__']) assert.throws(() => f.read(kind), /kind must be console or network/);

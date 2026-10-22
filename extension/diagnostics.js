@@ -52,7 +52,7 @@ function location(frame = {}) {
 
 export function createDiagnostics(cdp) {
   const tabs = new Map();
-  function start(tabId) { tabs.set(tabId, { started: Date.now(), console: buffer(), network: buffer(), requests: new Map(), networkActivity: Date.now(), requestsOverflow: false, contexts: new Map(), capture: { enabled: false, max_body_bytes: 65536 }, captureVersion: 0, detailed: new Set(), pending: new Set() }); }
+  function start(tabId) { tabs.set(tabId, { started: Date.now(), console: buffer(), network: buffer(), requests: new Map(), documentResponses: new Map(), networkActivity: Date.now(), requestsOverflow: false, contexts: new Map(), capture: { enabled: false, max_body_bytes: 65536 }, captureVersion: 0, detailed: new Set(), pending: new Set() }); }
   function event(source, method, params) {
     const state = tabs.get(source.tabId);
     if (!state) return;
@@ -88,6 +88,7 @@ export function createDiagnostics(cdp) {
       let request = state.requests.get(key);
       const add = (event, extra = {}) => state.network.add({ ...origin, event, request_id: id, timestamp, ...request, ...extra });
       if (method === 'Network.requestWillBeSent') {
+        if (params.type === 'Document') state.documentResponses.delete(JSON.stringify([source.sessionId ?? null, params.frameId]));
         if (params.redirectResponse) add('redirect', { ...(state.capture.enabled ? { headers: redactHeaders(params.redirectResponse.headers) } : {}), status: params.redirectResponse.status,
           url: clip(params.redirectResponse.url), redirect_to: clip(params.request.url) });
         request = { url: clip(params.request.url), method: clip(params.request.method, 50), resource_type: clip(params.type, 50),
@@ -104,6 +105,12 @@ export function createDiagnostics(cdp) {
         if (request && Number.isFinite(params.dataLength) && params.dataLength > 0) request.decodedBytes += params.dataLength;
       } else if (method === 'Network.responseReceived') {
         const response = params.response;
+        if (params.type === 'Document') {
+          const documentKey = JSON.stringify([source.sessionId ?? null, params.frameId]);
+          state.documentResponses.delete(documentKey);
+          state.documentResponses.set(documentKey, { loaderId: params.loaderId, status: response.status });
+          if (state.documentResponses.size > MAX_ENTRIES) state.documentResponses.delete(state.documentResponses.keys().next().value);
+        }
         add('response', { ...(state.detailed.has(key) ? { headers: redactHeaders(response.headers) } : {}), url: clip(response.url), status: response.status, status_text: clip(response.statusText, 200),
           mime_type: clip(response.mimeType, 200), protocol: clip(response.protocol, 50),
           from_cache: !!(response.fromDiskCache || response.fromPrefetchCache), from_service_worker: !!response.fromServiceWorker });
@@ -167,7 +174,10 @@ export function createDiagnostics(cdp) {
     if (args.kind === 'network' && state) await Promise.allSettled([...state.pending]);
     return read(tabId, args);
   }
-  return { start, event, read, readDetails, networkOptions, networkStatus(tabId) {
+  return { start, event, read, readDetails, networkOptions, documentStatus(tabId, frame) {
+    const response = tabs.get(tabId)?.documentResponses.get(JSON.stringify([null, frame.id]));
+    return frame.loaderId && response?.loaderId === frame.loaderId && Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : null;
+  }, networkStatus(tabId) {
     const state = tabs.get(tabId);
     if (!state) throw new Error('Tab control ended while waiting for network idle');
     return { inflight: state.requests.size, idle_ms: Date.now() - state.networkActivity, tracking_overflow: state.requestsOverflow };
@@ -175,7 +185,7 @@ export function createDiagnostics(cdp) {
     const state = tabs.get(tabId);
     if (!state) return;
     for (const key of state.detailed) if (JSON.parse(key)[0] === sessionId) state.detailed.delete(key);
-    for (const map of [state.contexts, state.requests]) for (const key of map.keys()) if (JSON.parse(key)[0] === sessionId) map.delete(key);
+    for (const map of [state.contexts, state.requests, state.documentResponses]) for (const key of map.keys()) if (JSON.parse(key)[0] === sessionId) map.delete(key);
   }, forget: tabId => tabs.delete(tabId) };
 }
 

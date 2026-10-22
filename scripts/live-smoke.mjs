@@ -45,10 +45,20 @@ document.querySelector('#name').oninput=sync;sync();</script>`;
 let fetchVisits = 0, crawled = 0;
 const fixture = http.createServer((request, response) => {
   const port = fixture.address().port;
+  if (request.url === '/fetch/error/404' || request.url === '/fetch/error/500') {
+    const status = Number(request.url.split('/').at(-1));
+    response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
+    response.end('<title>HTTP error fixture</title><h1>Error ' + status + '</h1><p>' + 'error message '.repeat(80) + '</p>'); return;
+  }
+  if (request.url === '/fetch/softwall') { response.setHeader('Content-Type', 'text/html'); response.end('<title>Sign in</title><h1>Login required to view this document</h1>'); return; }
+  if (request.url === '/fetch/status-frame') { response.setHeader('Content-Type', 'text/html'); response.end('<title>Main document</title><h1>Main frame</h1><iframe src="/fetch/error/404"></iframe>'); return; }
+  if (request.url === '/fetch/large-json' || request.url === '/fetch/oversized-json') {
+    response.setHeader('Content-Type', 'application/json; charset=utf-8'); response.end(JSON.stringify({ text: 'a'.repeat(request.url === '/fetch/large-json' ? 900000 : 1000020) })); return;
+  }
   if (request.url === '/fetch/redirect') { response.writeHead(302, { Location: '/fetch/page', 'Set-Cookie': 'fetch_session=local; HttpOnly; Path=/' }); response.end(); return; }
   if (request.url === '/fetch/page') {
     fetchVisits++; response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    response.end(`<title>Fetch fixture</title><h1>Read once</h1><span hidden>SECRET_HIDDEN</span><a href="/fetch/link">Link</a><p>${request.headers.cookie?.includes('fetch_session=local') ? 'SIGNED_IN' : 'SIGNED_OUT'}</p><script>fetch('/fetch/data').then(r=>r.text()).then(text=>{const p=document.createElement('p');p.textContent=text;document.body.append(p)})</script>`); return;
+    response.end(`<title>Fetch fixture</title><h1>Read once</h1><span hidden>SECRET_HIDDEN</span><a href="/fetch/link">Link</a><p>${request.headers.cookie?.includes('fetch_session=local') ? 'SIGNED_IN' : 'SIGNED_OUT'}</p><script>const injected=document.createElement('script');injected.dataset.fixtureInjected='true';injected.textContent='/* rendered insertion */';document.head.append(injected);fetch('/fetch/data').then(r=>r.text()).then(text=>{const p=document.createElement('p');p.textContent=text;document.body.append(p)})</script>`); return;
   }
   if (request.url === '/fetch/data') { setTimeout(() => response.end('LATE_CONTENT'), 150); return; }
   if (request.url === '/fetch/link') { crawled++; response.end('not requested'); return; }
@@ -142,17 +152,36 @@ try {
   const activeBefore = (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.filter(t => t.active).map(t => t.tab_id);
   let fetched = await call('fetch', { ...fetchArgs, url: url + 'fetch/redirect', wait_until: 'network_idle', max_chars: 5 });
   assert.equal(fetched.url, url + 'fetch/page'); assert.equal(fetched.title, 'Fetch fixture'); assert.equal(fetched.contentType, 'text/html');
+  assert.equal(fetched.status, 200); assert.equal(fetched.ok, true);
   let fetchedText = fetched.body;
   while (fetched.next_cursor) { fetched = await call('fetch', { ...fetchArgs, cursor: fetched.next_cursor, max_chars: 9 }); fetchedText += fetched.body; }
   assert.match(fetchedText, /Read once/); assert.match(fetchedText, /SIGNED_IN/); assert.match(fetchedText, /LATE_CONTENT/);
   assert.doesNotMatch(fetchedText, /SECRET_HIDDEN/); assert.equal(fetchVisits, 1); assert.equal(crawled, 0);
   const fetchedHtml = await call('fetch', { ...fetchArgs, url: url + 'fetch/page', format: 'html' });
   assert.match(fetchedHtml.body, /<h1>Read once<\/h1>/); assert.match(fetchedHtml.body, /SECRET_HIDDEN/);
-  let jsonPage = await call('fetch', { ...fetchArgs, url: url + 'fetch/json', format: 'json', max_chars: 4 });
-  assert.equal(jsonPage.contentType, 'application/json');
-  let jsonText = jsonPage.body;
-  while (jsonPage.next_cursor) { jsonPage = await call('fetch', { ...fetchArgs, cursor: jsonPage.next_cursor, max_chars: 4 }); jsonText += jsonPage.body; }
-  assert.deepEqual(JSON.parse(jsonText), { ok: true, text: '你好😀' });
+  assert.equal(fetchedHtml.dom, 'rendered'); assert.match(fetchedHtml.body, /data-fixture-injected="true"/);
+  const jsonPage = await call('fetch', { ...fetchArgs, url: url + 'fetch/json', format: 'json', max_chars: 4 });
+  assert.equal(jsonPage.contentType, 'application/json'); assert.equal(jsonPage.status, 200); assert.equal(jsonPage.ok, true);
+  assert.deepEqual(JSON.parse(jsonPage.body), { ok: true, text: '你好😀' });
+  assert.equal(jsonPage.next_cursor, null); assert.equal(jsonPage.truncated, false); assert.equal(Object.hasOwn(jsonPage, 'title'), false);
+  const wholeJson = await call('fetch', { ...fetchArgs, url: url + 'fetch/large-json', format: 'json', max_chars: 400 });
+  assert.equal(JSON.parse(wholeJson.body).text.length, 900000); assert.equal(wholeJson.next_cursor, null);
+  assert.equal((await rawCall('fetch', { ...fetchArgs, url: url + 'fetch/oversized-json', format: 'json' })).isError, true);
+  for (const status of [404, 500]) {
+    const errorPage = await call('fetch', { ...fetchArgs, url: url + 'fetch/error/' + status });
+    assert.equal(errorPage.status, status); assert.equal(errorPage.ok, false); assert.match(errorPage.body, new RegExp('Error ' + status));
+  }
+  const wall = await call('fetch', { ...fetchArgs, url: url + 'fetch/softwall' });
+  assert.equal(wall.status, 200); assert.equal(wall.ok, true); assert.match(wall.body, /Login required/);
+  const mainWithErrorFrame = await call('fetch', { ...fetchArgs, url: url + 'fetch/status-frame' });
+  assert.equal(mainWithErrorFrame.status, 200); assert.equal(mainWithErrorFrame.ok, true);
+  const retained = [];
+  for (const path of ['page', 'status-frame', 'softwall', 'error/404']) retained.push(await call('fetch', { ...fetchArgs, url: url + 'fetch/' + path, max_chars: 5 }));
+  retained[0] = await call('fetch', { ...fetchArgs, cursor: retained[0].next_cursor, max_chars: 5 });
+  retained.push(await call('fetch', { ...fetchArgs, url: url + 'fetch/error/500', max_chars: 5 }));
+  const evicted = await rawCall('fetch', { ...fetchArgs, cursor: retained[1].next_cursor });
+  assert.equal(evicted.isError, true); assert.match(evicted.content[0].text, /evicted/);
+  for (const index of [0, 2, 3, 4]) assert.equal((await call('fetch', { ...fetchArgs, cursor: retained[index].next_cursor })).next_cursor, null);
   const invalidJson = await rawCall('fetch', { ...fetchArgs, url: url + 'fetch/invalid', format: 'json' });
   assert.equal(invalidJson.isError, true);
   const slow = await rawCall('fetch', { ...fetchArgs, url: url + 'fetch/slow', timeout_ms: 250 }); assert.equal(slow.isError, true);
@@ -163,7 +192,7 @@ try {
   const afterFetch = (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs;
   assert.deepEqual(afterFetch.filter(t => t.active).map(t => t.tab_id), activeBefore);
   assert.ok(!afterFetch.some(t => t.url.startsWith(url + 'fetch/')));
-  checks.push('fetch background cleanup/no activation, one navigation, redirect/login cookie, network idle, no crawling, text/DOM/JSON, immutable pagination, capture cap, malformed JSON and timeout');
+  checks.push('fetch background cleanup/no activation, redirect/login cookie, network idle, no crawling, rendered DOM marker/insertion, whole JSON/budget override/capture cap, 404/500/main-frame status, HTTP 200 soft wall, four interleaved captures/LRU eviction, omitted empty title, malformed JSON and timeout');
   const tab = await until(async () => (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Attach upload fixture'), 'fixture tab');
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };
