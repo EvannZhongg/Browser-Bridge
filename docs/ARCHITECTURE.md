@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.15.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.16.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -26,6 +26,7 @@ MCP 客户端
 | `extension/{click,input,actionability,scroll}.js` | 原生/DOM 输入、逐字按键、可操作性、容器滚动与有界查找 |
 | `extension/{drag,wait}.js` | 复用鼠标准备和严格定位的拖拽、只读条件等待；网络空闲复用被动请求表 |
 | `extension/batch.js` | 有限输入序列的参数预检；执行复用 controller 的单步流程与标签队列 |
+| `extension/motion.js` | 无状态的可选落点/延迟/拖拽参数校验、区间采样及拖拽插值；不维护动作历史或改变焦点 |
 | `extension/outcomes.js` | 临时 DOM 变动观察器与有界只读探测，不推断业务成功 |
 | `extension/fetch.js` | 单页读取的参数、隔离世界采集与每 owner 有界缓存分页；临时页生命周期复用 controller 的 attach、导航和标签队列 |
 | `extension/{snapshot,navigation,evaluate,diagnostics}.js` | 观察、导航、有界求值结果缓存与分页、日志缓冲 |
@@ -91,6 +92,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **焦点信号边界**：OS 窗口失焦、遮挡或 document.visibilityState=hidden 不一定阻止 CDP 输入；document.hasFocus() 在 iframe 导航后也可能为 false。这些值作为 page_state 诊断，不独立拒绝点击。实际送达仍由隔离世界的可信事件回执校验；没有回执时不自动重放。
 - **送达预算**：原生 click/hover/press_key 的派发及可信回执另有 1250 ms 上限，清理最多 250 ms；系统菜单捕获输入时快速释放队列，仍报告结果未知并提示 Esc，不自动重放。
 - **hover 与 drag**：hover 复用点击准备与隔离校验，仅派发一次 mouseMoved，清理不移走指针。drag 显式区分 pointer 与 HTML5；后者从真实 dragstart 截获 DragData，再用 CDP 派发 dragover/drop，校验可信 dragstart/drop/dragend。目的节点在按住后滚入视口；所有步骤共用标签队列和总预算，失败时只取消/释放本次手势。
+- **可选输入参数**：显式 offset 在元素 content quad 上插值后沿用命中与 OOPIF 边界检查；settle_ms 在 click/drag 首次派发前等待并复查就绪。drag trajectory 只替换既有插值段，采用法向控制点、平滑进度及随机间隔权重；type 的 delay_ms 可逐间隔独立区间采样。所有等待共用总预算，超时后没有继续派发的链；省略参数时不使用随机数，沿用既有确定性路径。不新增 tab 级历史、冷却、自动激活或重放路径。
 - **条件等待**：wait 复用严格 selector、可操作性和命中检查，支持出现、可见、可操作、文本/URL 子串及网络空闲；只读轮询，错误附带条件和最后状态。
 - **原生下拉**：select_option 直接用 selectedIndex setter 和合成 input/change 设置一个 HTML 选项，核验保留结果并返回 events_trusted=false。native click 的 select 命中（含 UA shadow 内部节点和关联 label）在派发前拒绝。
 - **命中提示**：普通命中保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。CSSPseudoElement 先解析为事件所属的 originating element，提示标记 pseudo_element=true，并使用该元素安装事件校验。语义候选不会被用于替换点击目标。

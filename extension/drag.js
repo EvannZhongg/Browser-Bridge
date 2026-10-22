@@ -1,14 +1,18 @@
 import { deadline, delivery } from './actionability.js';
 import { targetOptions } from './locator.js';
+import { offsetOption, timingOption, pause, trajectoryOption, dragPath } from './motion.js';
 
 export function dragOptions(args) {
   if (!args.source || !args.destination) throw new Error('drag requires source and destination');
   for (const target of [args.source, args.destination]) {
     targetOptions(target, { coordinates: true });
+    offsetOption(target);
     if (target.coordinate_space === 'document' && (target.x < 0 || target.y < 0)) throw new Error('Document coordinates must be finite and nonnegative');
   }
   if (!['pointer', 'html5'].includes(args.mode ?? 'pointer')) throw new Error('drag mode must be pointer or html5');
   if (!Number.isInteger(args.steps ?? 20) || (args.steps ?? 20) < 2 || (args.steps ?? 20) > 100) throw new Error('steps must be 2..100');
+  timingOption(args.settle_ms ?? 0, 'settle_ms');
+  trajectoryOption(args.trajectory);
 }
 
 export function createDrag(cdp, value, mouse, viewport) {
@@ -87,6 +91,7 @@ export function createDrag(cdp, value, mouse, viewport) {
     try {
       await guard(source, 'source');
       if (html5) { interceptEnabled = true; await send('Input.setInterceptDrags', { enabled: true }); }
+      await pause(budget, args.settle_ms);
       await mouse.assertReady(tabId, budget);
       budget.dispatch();
       await move(point);
@@ -100,12 +105,19 @@ export function createDrag(cdp, value, mouse, viewport) {
       const destination = await mouse.prepare(tabId, await resolve(args.destination, budget), { ...args.destination, budget });
       await guard(destination, 'destination');
       const from = point;
+      const path = dragPath(from, destination.point, steps, args.trajectory);
+      if (args.trajectory) {
+        const view = await budget.run(() => viewport(tabId));
+        if (path.some(({ point }) => point.x < 0 || point.y < 0 || point.x >= view.width || point.y >= view.height)) {
+          throw new Error('Drag trajectory leaves the viewport. Outcome is unknown; observe before continuing.');
+        }
+      }
       if (html5) await send('Input.dispatchDragEvent', { type: 'dragEnter', ...point, data });
-      for (let index = 1; index <= steps; index++) {
-        point = { x: from.x + (destination.point.x - from.x) * index / steps, y: from.y + (destination.point.y - from.y) * index / steps };
+      for (const sample of path) {
+        point = sample.point;
         if (html5) await send('Input.dispatchDragEvent', { type: 'dragOver', ...point, data });
         else await move(point);
-        await budget.run(() => new Promise(resolve => setTimeout(resolve, 16)));
+        await budget.run(() => new Promise(resolve => setTimeout(resolve, sample.dt)));
       }
       if (html5) await send('Input.dispatchDragEvent', { type: 'drop', ...point, data });
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });

@@ -10,6 +10,8 @@ import { scrollOptions } from '../extension/scroll.js';
 import { selectOptions, typeOptions } from '../extension/input.js';
 import { targetOptions } from '../extension/locator.js';
 import { fetchOptions } from '../extension/fetch.js';
+import { clickOptions } from '../extension/click.js';
+import { offsetOption } from '../extension/motion.js';
 
 const text = data => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 function integerRange(name, min, max) {
@@ -34,6 +36,10 @@ export function createMcp(client) {
   const target = { ...frameScope, ref: z.string().optional(), ...selector, frame_id: z.string().optional().describe('Selector scope; defaults to main frame.'),
     nth: integerRange('nth', 0, Number.MAX_SAFE_INTEGER).optional().describe('Zero-based selector match index in document order.') };
   const inputTimeout = { ...dialogPolicy, timeout_ms: integerRange('timeout_ms', 100, 30000).default(5000).describe('Covers preparation, dispatch and verification.') };
+  const timing = name => z.union([integerRange(name, 0, 1000), z.tuple([integerRange(name, 0, 1000), integerRange(name, 0, 1000)]).refine(([min, max]) => min <= max, 'Use an ordered [min, max] pair')]);
+  const offset = { offset: z.object({ x_ratio: z.number().min(0).max(1), y_ratio: z.number().min(0).max(1) }).strict().optional().describe('Native element only: ratios within its content quad; offscreen/covered points fail.') };
+  const settle = { settle_ms: timing('settle_ms').optional().describe('Pause after target preparation, before dispatch: fixed ms or uniform [min, max].') };
+  const typeDelay = timing('delay_ms').default(0).describe('Between characters: fixed ms or independently sampled uniform [min, max].');
   function tool(name, description, schema, method, transform) {
     server.registerTool(`browser_${name}`, { description, inputSchema: z.object(schema) }, async args => {
       try {
@@ -122,17 +128,21 @@ export function createMcp(client) {
     return args;
   });
   tool('click', 'Click one ref, selector or x/y; element targets auto-scroll. Native mode verifies the hit target; native select hits require select_option.', {
+    ...offset, ...settle,
     ...handle, ...inputTimeout, ...target, button: z.enum(['left', 'middle', 'right']).default('left'), click_count: z.union([z.literal(1), z.literal(2)]).default(1), modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).default([]), x: z.number().optional(), y: z.number().optional(), coordinate_space: z.enum(['viewport', 'document']).optional().describe('Coordinates only; document scrolls the top-level page first.'), mode: z.enum(['native', 'dom']).default('native').describe('DOM click requires an element target and a left single click without modifiers.'),
   }, null, args => {
     targetOptions(args, { coordinates: true });
+    clickOptions(args);
     if (args.mode === 'dom' && !args.ref && !args.selector) throw new Error('DOM click requires ref or selector; coordinates are unsupported.');
     return args;
   });
   tool('hover', 'Move the native pointer to a ref, selector or x/y without clicking; verify trusted mousemove and leave it at the target.', {
+    ...offset,
     ...handle, ...inputTimeout, ...target, x: z.number().optional(), y: z.number().optional(), coordinate_space: z.enum(['viewport', 'document']).optional(),
-  }, null, args => { targetOptions(args, { coordinates: true }); return args; });
-  const dragTarget = z.object({ ...target, x: z.number().optional(), y: z.number().optional(), coordinate_space: z.enum(['viewport', 'document']).optional() }).strict();
+  }, null, args => { targetOptions(args, { coordinates: true }); offsetOption(args); return args; });
+  const dragTarget = z.object({ ...target, ...offset, x: z.number().optional(), y: z.number().optional(), coordinate_space: z.enum(['viewport', 'document']).optional() }).strict();
   tool('drag', 'Perform one native pointer or HTML5 drag; destination auto-scrolls into view while held.', {
+    ...settle, trajectory: z.object({ curve_px: z.number().min(-100).max(100), duration_ms: integerRange('duration_ms', 100, 5000) }).strict().optional().describe('Opt in to curved, variable-speed steps and varied intervals. Signed curve control-point offset in CSS px; duration covers interpolation waits only.'),
     ...handle, ...inputTimeout, source: dragTarget, destination: dragTarget, mode: z.enum(['pointer', 'html5']).default('pointer').describe('pointer for mouse-driven dragging; html5 for HTML drag-and-drop.'), steps: integerRange('steps', 2, 100).default(20),
   }, null, args => { dragOptions(args); return args; });
   tool('wait', 'Wait without scrolling or input. actionable requires a stable, visible, enabled, unobscured target in the viewport; network_idle uses observed page requests. Timeout includes the last observed state.', {
@@ -142,7 +152,7 @@ export function createMcp(client) {
   tool('select_option', 'Set one HTML select option without native UI, using synthetic input/change (events_trusted=false). Verifies retained selection only.', {
     ...handle, ...inputTimeout, ...target, value: z.string().optional().describe('Choose exactly one of value, label or zero-based index; value/label match exactly.'), label: z.string().optional(), index: integerRange('index', 0, Number.MAX_SAFE_INTEGER).optional(),
   }, null, args => { targetOptions(args); selectOptions(args); return args; });
-  tool('type', 'Type printable characters at the current selection using trusted key events, without clearing the field. Stops on lost focus or detachment.', { ...handle, ...inputTimeout, ...target, text: z.string().max(10000), delay_ms: integerRange('delay_ms', 0, 1000).default(0).describe('Pause between characters.') }, null, args => { targetOptions(args); typeOptions(args); return args; });
+  tool('type', 'Type printable characters at the current selection using trusted key events, without clearing the field. Stops on lost focus or detachment.', { ...handle, ...inputTimeout, ...target, text: z.string().max(10000), delay_ms: typeDelay }, null, args => { targetOptions(args); typeOptions(args); return args; });
   tool('fill', 'Replace input/textarea/contenteditable text. Native mode focuses/selects and inserts text without character keydown; DOM mode sets text without focus and emits input/change. Does not blur or commit dropdown selections.', { ...handle, ...inputTimeout, ...target, text: z.string(), mode: z.enum(['native', 'dom']).default('native') }, null, args => { targetOptions(args); return args; });
   const batchTarget = { ...selector, selector: z.string().min(1).max(10000), ...frameScope, nth: target.nth };
   const scrollFields = { until: z.object({ text: z.string().min(1).max(2000), selector: z.string().min(1).optional() }).strict().optional(), max_steps: integerRange('max_steps', 1, 500).default(100), mode: z.enum(['dom', 'wheel']).default('dom'), delta_y: z.number().optional().describe('Positive scrolls down.'), delta_x: z.number().default(0), x: z.number().optional(), y: z.number().optional() };
@@ -151,10 +161,11 @@ export function createMcp(client) {
     ...handle, ...dialogPolicy, start_at: integerRange('start_at', 0, 19).default(0).describe('Explicitly skip a reviewed completed prefix.'), timeout_ms: integerRange('timeout_ms', 100, 30000).default(15000),
     steps: z.array(z.discriminatedUnion('action', [
       z.object({ action: z.literal('click'), ...stepOptions, ...batchTarget, mode: z.enum(['native', 'dom']).default('native'),
+        ...offset, ...settle,
         button: z.enum(['left', 'middle', 'right']).default('left'), click_count: z.union([z.literal(1), z.literal(2)]).default(1), modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).default([]) }).strict(),
       z.object({ action: z.literal('fill'), ...stepOptions, ...batchTarget, text: z.string(), mode: z.enum(['native', 'dom']).default('native') }).strict(),
-      z.object({ action: z.literal('type'), ...stepOptions, ...batchTarget, text: z.string().max(10000), delay_ms: integerRange('delay_ms', 0, 1000).default(0) }).strict(),
-      z.object({ action: z.literal('hover'), ...stepOptions, ...batchTarget }).strict(),
+      z.object({ action: z.literal('type'), ...stepOptions, ...batchTarget, text: z.string().max(10000), delay_ms: typeDelay }).strict(),
+      z.object({ action: z.literal('hover'), ...stepOptions, ...batchTarget, ...offset }).strict(),
       z.object({ action: z.literal('select_option'), ...stepOptions, ...batchTarget, value: z.string().optional(), label: z.string().optional(), index: integerRange('index', 0, Number.MAX_SAFE_INTEGER).optional() }).strict(),
       z.object({ action: z.literal('scroll'), ...stepOptions, ...selector, ...frameScope, nth: target.nth, ...scrollFields }).strict(),
       z.object({ action: z.literal('wait'), ...stepOptions, ...selector, ...frameScope, nth: target.nth, condition: z.enum(['attached', 'visible', 'actionable', 'text', 'url', 'network_idle']), expected: z.string().optional(), previous: z.string().optional(), idle_ms: integerRange('idle_ms', 100, 10000).default(500) }).strict(),

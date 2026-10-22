@@ -1,5 +1,6 @@
 import { deadline, waitForTarget, delivery } from './actionability.js';
 import { clickOptions } from './click.js';
+import { timingOption, pause } from './motion.js';
 
 const BUSY = 'Browser UI may be capturing input (a tab drag or native menu). Finish that interaction, then observe the page before deciding whether to try again. Never replay an unknown outcome automatically.';
 
@@ -157,7 +158,7 @@ export function createInput(cdp, value, sessions) {
       try { await pressKey(tabId, character, { budget, character, expectedNode: node }); }
       catch (error) { error.message = `Typing stopped after ${typed} verified characters; the current character may already have been delivered. ${error.message}`; throw error; }
       typed++;
-      if (args.delay_ms && typed < length) await budget.run(() => new Promise(resolve => setTimeout(resolve, args.delay_ms)));
+      if (typed < length) await pause(budget, args.delay_ms);
     }
     return { typed, method: 'native', events_trusted: true, delivery_verified: true, application_result: 'not_checked', observe_again: true };
   }
@@ -304,7 +305,7 @@ export function selectElement(choice) {
 
 export function typeOptions(args) {
   if (typeof args.text !== 'string' || args.text.length > 10000 || /[\r\n\t\x00-\x1f]/.test(args.text)) throw new Error('type text must contain at most 10000 characters');
-  if (!Number.isInteger(args.delay_ms ?? 0) || (args.delay_ms ?? 0) < 0 || (args.delay_ms ?? 0) > 1000) throw new Error('delay_ms must be 0..1000');
+  timingOption(args.delay_ms ?? 0, 'delay_ms');
 }
 
 export function characterParameters(character) {

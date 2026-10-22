@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.15.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.16.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则；工具 description 说明用途、独有行为与结果语义；参数 schema 及其短说明提供类型、默认值和选择规则。本文保留完整原理、边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -158,6 +158,8 @@ ref 每次用 frame/session + backendNodeId 重新解析，并以局部 AX 查�
 | `button` | `left`（默认）/ `middle` / `right` | |
 | `click_count` | `1`（默认）/ `2` | 双击按顺序重复 down/up |
 | `modifiers` | `Alt` / `Control` / `Meta` / `Shift` | 默认空数组 |
+| `offset` | `{x_ratio, y_ratio}`，两项均为 0–1 | 原生元素目标的 content quad 内落点；省略沿用可见区域中心 |
+| `settle_ms` | 0–1000 或 `[min,max]` | 原生点击准备后的派发前等待；区间每次均匀抽样，省略为 0 |
 | `mode` | `native`（默认）/ `dom` | DOM 模式接受 ref 或 selector |
 
 原生模式按序派发 move → down → up，显式设置 `buttons` 与修饰键，并在隔离世界安装命中校验：成功返回 `target_verified: true`、`application_result: "not_checked"`。左键单击 / 双击分别校验 `click` / `dblclick`，中键校验 `auxclick`，右键校验 `contextmenu`。目标被遮挡、在 hover 后移动或派发中变化时会明确报错并阻止不匹配事件；已送达的前序事件可能已有副作用，不能撤销或自动重试。
@@ -189,6 +191,18 @@ hover 接受与原生 click 相同的目标，执行一次 mouseMoved，不派�
 随后调用 `browser_click({tab_handle, selector:'#menu .child'})`。需要等待菜单出现时可组合 browser_wait。
 
 drag 的 source / destination 各自接受 ref、严格 selector（可带 frame_id/nth）或 x/y（可带 coordinate_space）。mode 必须按页面交互选择，默认 pointer；steps 默认 20，范围 2–100，每步间隔约 16 ms。
+
+可选参数不改变默认输入路径：
+
+- click、hover 以及 drag 的 source/destination 元素目标可指定 `offset: {x_ratio: 0.3, y_ratio: 0.65}`。比例沿 content quad 两个方向插值，支持旋转/倾斜元素；指定点不在视口或被遮挡时失败，不改投中心。多行元素按浏览器返回的 quad 顺序选择第一个落点在视口内的片段。坐标目标和 DOM click 不接受 offset。
+- 原生 click 与 drag 可传 `settle_ms: [80,250]`，也可传固定毫秒数；在目标准备和校验器安装后、首次鼠标派发前等待，之后重新检查标签就绪。不引入自动激活。hover 不增加停留等待。
+- drag 可传 `trajectory: {curve_px: 12, duration_ms: 600}`，并沿用 `steps` 控制采样数。curve_px 为二次曲线控制点相对路径法线的有符号偏移（−100–100 CSS px），实际曲线最大偏移约为其一半；duration_ms 为插值段等待总和（100–5000 ms）。采用平滑变速和独立随机权重分配间隔，最后一点严格等于目标。源点到起拖阈值的移动仍沿用现有实现，HTML5 仍使用真实截获的拖拽数据。总耗时还包含准备、CDP 和收尾；曲线离开视口时停止并释放本次手势。
+
+```json
+{"tab_handle":"...","source":{"selector":"#card","offset":{"x_ratio":0.3,"y_ratio":0.6}},"destination":{"selector":"#column"},"steps":24,"settle_ms":[80,250],"trajectory":{"curve_px":12,"duration_ms":600}}
+```
+
+这些参数复用原有总 timeout、命中校验和失败清理，不保证满足网站的行为验证。省略时不采样随机数，保持原有落点、拖拽直线和 16 ms 间隔。batch 的 click/hover 支持对应 offset，click 支持 settle_ms。
 
 两端均为 document 坐标且能同时容纳于一个顶层视口时，在按下前统一滚动位置，保留两端的 x/y 差值。已在视口内的 document 坐标不重复居中；需要滚动时只调整越界的轴。跨屏目标仍在按住后滚入视口，因此返回的 from/to 是各自派发时的视口坐标，不能用两者之差推断跨屏的文档距离。
 
@@ -243,7 +257,7 @@ fill 是替换文本，原生路径用 insertText，不制造逐字 keydown。�
 {"tab_handle":"...","selector":"input[role=combobox]","text":"上海","delay_ms":50}
 ```
 
-delay_ms 为 0–1000，是字符之间的最小额外间隔，准备与协议开销会增加实际耗时；整串 text 最多 10000 个 UTF-16 单位，仍受同一 30 秒以内的总预算约束。换行/Tab/控制字符用显式 press_key。检查原字段连接与焦点，观察到失焦或替换后停止；失败报告已核验字符数，当前字符仍可能已送达，不能重放整串。delivery_verified 证明 keydown，不证明站点接受文本或保存。
+delay_ms 接受固定的 0–1000 毫秒数（默认 0），或有序区间 `[min,max]`（两端均为 0–1000 整数），如 `[40,180]`；区间在每两个字符之间独立均匀抽样，末字符后不额外等待。它是字符之间的最小额外间隔，准备与协议开销会增加实际耗时；整串 text 最多 10000 个 UTF-16 单位，仍受同一 30 秒以内的总预算约束。batch 的 type 步骤接受相同参数。换行/Tab/控制字符用显式 press_key。检查原字段连接与焦点，观察到失焦或替换后停止；失败报告已核验字符数，当前字符仍可能已送达，不能重放整串。delivery_verified 证明 keydown，不证明站点接受文本或保存。
 
 ### browser_batch
 

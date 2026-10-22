@@ -1,4 +1,5 @@
 import { deadline, waitForTarget, delivery } from './actionability.js';
+import { offsetOption, timingOption, pause } from './motion.js';
 
 // Native mouse dispatch stays in protocol order without serial compositor acknowledgments.
 export function createClick(cdp, value, viewport, position, sessions, getTab, getWindow) {
@@ -45,6 +46,7 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
   }
   function cancel(tabId) { pending.get(tabId)?.reject(new Error('Tab detached during click; outcome is unknown. Observe before retrying.')); }
   async function prepare(tabId, node, args) {
+    offsetOption(args);
     if (!!node === (args.x != null || args.y != null)) throw new Error('Provide either ref/selector or x/y');
     if (args.coordinate_space != null && !['viewport', 'document'].includes(args.coordinate_space)) throw new Error('coordinate_space must be viewport or document');
     if (node && args.coordinate_space != null) throw new Error('coordinate_space applies to coordinate clicks only');
@@ -62,7 +64,7 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       const { quads } = await send('DOM.getContentQuads', { backendNodeId: node.backendNodeId });
       view = await budget.run(() => viewport(target));
       for (const quad of quads || []) {
-        point = clippedPoint(quad, view);
+        point = clippedPoint(quad, view, args.offset);
         if (point) break;
       }
       if (!point) throw new Error('Element has no visible click point. Inspect a screenshot.');
@@ -163,7 +165,8 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
     if (!options.hover && hitTarget.native_select) throw new Error("Native select popup is unsupported. No input was dispatched. Use browser_select_option by label/value/index; press Esc if a native popup is already open.");
     const name = `__attachClick_${crypto.randomUUID().replaceAll('-', '')}`;
     const guards = [], contexts = new Set();
-    const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, contexts, resolve, reject }));
+    let failure;
+    const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, contexts, resolve, reject(error) { failure = error; reject(error); } }));
     receipt.catch(() => {});
     try {
       const targets = [{ target, frameId: node?.frameId || frameId, backendNodeId: node?.backendNodeId || backendNodeId, leaf: true }, ...boundaries];
@@ -185,7 +188,10 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
       }
       // Recheck the root page after target preparation: a user may have changed
       // tabs/focus while we resolved a frame or installed the event guards.
+      await pause(budget, args.settle_ms);
+      if (failure) throw failure;
       const pageState = await assertReady(tabId, budget);
+      if (failure) throw failure;
       budget.dispatch();
       const dispatch = params => budget.run(() => cdp(tabId, 'Input.dispatchMouseEvent', { ...params, ...rootPoint }));
       const commands = [dispatch({ type: 'mouseMoved', button: 'none', buttons: 0, modifiers: options.modifiers })];
@@ -271,7 +277,13 @@ function installGuard(name, options, expiryMs, verifyDelivery) {
   return { stop };
 }
 
-export function clippedPoint(quad, view) {
+export function clippedPoint(quad, view, offset) {
+  if (offset) {
+    const { x_ratio: x, y_ratio: y } = offset;
+    const point = { x: (1 - y) * ((1 - x) * quad[0] + x * quad[2]) + y * ((1 - x) * quad[6] + x * quad[4]),
+      y: (1 - y) * ((1 - x) * quad[1] + x * quad[3]) + y * ((1 - x) * quad[7] + x * quad[5]) };
+    return point.x >= 0 && point.y >= 0 && point.x < view.width && point.y < view.height ? point : null;
+  }
   let polygon = Array.from({ length: 4 }, (_, i) => ({ x: quad[i * 2], y: quad[i * 2 + 1] }));
   for (const [axis, bound, lower] of [['x', 0, true], ['x', view.width - 0.01, false], ['y', 0, true], ['y', view.height - 0.01, false]]) {
     const input = polygon; polygon = [];
@@ -299,6 +311,11 @@ export function clippedPoint(quad, view) {
 }
 
 export function clickOptions(args) {
+  offsetOption(args);
+  if (args.settle_ms != null) {
+    timingOption(args.settle_ms, 'settle_ms');
+    if (args.mode === 'dom') throw new Error('settle_ms requires native pointer input');
+  }
   const button = args.button ?? 'left', click_count = args.click_count ?? 1, modifiers = args.modifiers ?? [];
   const buttons = { left: [1, 0], middle: [4, 1], right: [2, 2] }, masks = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
   if (!Object.hasOwn(buttons, button)) throw new Error('button must be left, middle or right');

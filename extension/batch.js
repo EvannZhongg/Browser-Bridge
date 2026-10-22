@@ -3,6 +3,7 @@ import { clickOptions } from './click.js';
 import { inputMode, keyParameters, selectOptions, typeOptions } from './input.js';
 import { scrollOptions } from './scroll.js';
 import { waitOptions } from './wait.js';
+import { offsetOption } from './motion.js';
 
 export function validateSteps(steps, startAt = 0) {
   if (!Array.isArray(steps) || steps.length < 1 || steps.length > 20) throw new Error('steps must contain 1..20 actions');
@@ -24,6 +25,7 @@ export function validateSteps(steps, startAt = 0) {
       targetOptions(step);
       if (['click', 'fill'].includes(step.action)) inputMode(step);
       if (step.action === 'click') clickOptions(step);
+      if (step.action === 'hover') offsetOption(step);
       if (step.action === 'fill' && typeof step.text !== 'string') throw new Error('Batch fill requires text');
       if (step.action === 'type') typeOptions(step);
       if (step.action === 'select_option') selectOptions(step);

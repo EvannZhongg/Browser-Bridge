@@ -1,8 +1,16 @@
 # 验证报告
 
-当前版本 **0.15.1**（2026-10-22）。浏览器验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
+当前版本 **0.16.0**（2026-10-22）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：184 项通过。新增 offset 的变换/越界处理、延迟区间校验、默认路径不采样随机数、拖拽曲线与精确终点、batch 参数预检、真实 stdio MCP 参数转发，以及 settle/拖拽超时后停止和调试分离取消待点击的回归。
+- Chromium 156 与 Edge 155 headless 输入集成：各 19 个场景通过（扩展 → 独立 Hub 客户端）。新增非中心可信点击、offset hover、settle、区间逐字输入、曲线 pointer 与 HTML5 拖拽；实际记录移动坐标、可信事件和按键时间，保留原有默认路径及跨屏拖拽验证。不据此声称能通过任意网站的行为验证。
+- Chromium 156 完整 stdio MCP 集成：244 次调用通过，保留发现/接管、输入、导航、OOPIF、日志、分页及临时页清理覆盖。
+- `npm run test:package`：仓库外安装运行通过，23 个工具、48 个发布文件，版本 0.16.0；无新增依赖或扩展权限，不包含本机配对密钥。
+- 本机部署：Hub 已从工作区重启，健康接口返回 0.16.0；扩展同步至 `F:\.nosis\browser-attach\extension`，29 个源码/资源文件哈希一致，manifest 版本为 0.16.0。Chrome 与 Edge 均已重新连接并上报 0.16.0；MCP 客户端需刷新连接以获取新 schema。
+
+## 0.15.1 验证
 
 - `npm test`：176 项通过。新增 AX 字面查询（名称/合并正文/value、预览前匹配、interactive 视图、零命中）、查询分页与新旧 ref 生命周期、默认精简/verbose 元数据、当前/祖先 frame 的遮挡诊断、诊断节点失效保留主错误，以及 drag 已派发预算不能误报“未派发”的回归。
 - Chromium 156 与 Edge 155 headless 完整 stdio MCP 集成：各 244 次调用通过。新增真实 AX 查询返回的 ref 可用于原生 hover、查询分页和 verbose 续页、零命中及 ancestor frame 的实际遮挡文字；保留输入、导航、OOPIF、日志、分页和临时页关闭链路。

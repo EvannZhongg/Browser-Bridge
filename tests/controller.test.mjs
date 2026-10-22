@@ -1253,6 +1253,60 @@ test('native drag keeps ordering, includes all requested moves and releases only
   assert.ok(!f.calls.some(c => c.method === 'Input.dispatchDragEvent'));
 });
 
+test('optional click offset uses the verified hit point; settle timeout cannot dispatch late input', async () => {
+  const f = fixture(); await f.claim();
+  const result = await f.exec('click', { selector: '#go', offset: { x_ratio: .25, y_ratio: .75 }, settle_ms: [1, 1] });
+  assert.deepEqual(result.clicked, { x: 32.5, y: 40 });
+  assert.equal(result.target_verified, true);
+  const events = f.calls.filter(c => c.method === 'Input.dispatchMouseEvent');
+  assert.equal(events.length, 3);
+  assert.ok(events.every(c => c.args.x === 32.5 && c.args.y === 40));
+  f.calls.length = 0;
+  await assert.rejects(f.exec('click', { x: 10, y: 10, settle_ms: 200, timeout_ms: 100 }), /no input was dispatched/);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.ok(!f.calls.some(c => c.method.startsWith('Input.')));
+});
+
+test('detach during an optional settle cancels the pending click before dispatch', async () => {
+  const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installGuard')) {
+      setTimeout(() => f.api.debugger.onDetach.emit({ tabId: 9 }), 10);
+    }
+    return result;
+  };
+  await assert.rejects(f.exec('click', { x: 10, y: 10, settle_ms: 80 }), /detached during click/);
+  assert.ok(!f.calls.some(c => c.method.startsWith('Input.')));
+});
+
+test('optional drag trajectory reaches the requested point and a timeout releases without resuming moves', async () => {
+  for (const timeout of [false, true]) {
+    const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      const result = await send(target, method, args);
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installDragReceipt')) return { result: { objectId: 'drag-guard' } };
+      if (method === 'Input.dispatchMouseEvent') {
+        const binding = f.calls.findLast(c => c.method === 'Runtime.addBinding')?.args.name;
+        f.api.debugger.onEvent.emit(target, 'Runtime.bindingCalled', { name: binding, executionContextId: 42,
+          payload: JSON.stringify({ type: { mousePressed: 'pointerdown', mouseReleased: 'pointerup', mouseMoved: 'pointermove' }[args.type] }) });
+      }
+      return result;
+    };
+    const operation = f.exec('drag', { source: { x: 50, y: 50 }, destination: { x: 200, y: 50 }, steps: 8,
+      trajectory: { curve_px: 12, duration_ms: timeout ? 600 : 100 }, timeout_ms: timeout ? 150 : 5000 });
+    if (timeout) await assert.rejects(operation, /Outcome is unknown/);
+    else assert.deepEqual((await operation).to, { x: 200, y: 50 });
+    const events = f.calls.filter(c => c.method === 'Input.dispatchMouseEvent').map(c => c.args);
+    assert.equal(events.filter(e => e.type === 'mouseReleased').length, 1);
+    assert.equal(events.at(-1).type, 'mouseReleased');
+    assert.ok(events.some(e => e.type === 'mouseMoved' && e.y > 50));
+    const count = events.length;
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.equal(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent').length, count);
+  }
+});
+
 test('document drag endpoints share a viewport and preserve both coordinate deltas before dispatch', async () => {
   for (const [a, b, initial] of [
     [{x:200,y:1000},{x:200,y:1200},{x:0,y:0}],

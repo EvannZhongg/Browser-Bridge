@@ -273,6 +273,41 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
     assert.ok(f.requests.some(r=>r.command===name));
   }
   for(const input of [{text:'bad\nline',selector:'input'},{text:'x',selector:'input',delay_ms:-1}])assert.equal((await call('type',{tab_handle:handle,...input})).isError,true);
+  for (const [name, input] of [
+    ['click', { selector: '#go', offset: { x_ratio: .25, y_ratio: .75 }, settle_ms: [80, 250] }],
+    ['hover', { selector: '#menu', offset: { x_ratio: .75, y_ratio: .5 } }],
+    ['type', { selector: '#edit', text: 'abc', delay_ms: [40, 180] }],
+    ['drag', { source: { selector: '#a', offset: { x_ratio: .25, y_ratio: .5 } }, destination: { x: 200, y: 200 }, trajectory: { curve_px: 12, duration_ms: 600 }, steps: 30, settle_ms: 120 }],
+    ['batch', { steps: [{ action: 'click', selector: '#go', offset: { x_ratio: .25, y_ratio: .5 }, settle_ms: [80, 250] }, { action: 'type', selector: '#edit', text: 'abc', delay_ms: [40, 180] }] }],
+  ]) {
+    const before = f.requests.length;
+    const result = await call(name, { tab_handle: handle, ...input });
+    if (name !== 'batch') assert.ok(!result.isError);
+    assert.equal(f.requests.length, before + 1);
+    const forwarded = f.requests.at(-1).arguments;
+    if (name === 'batch') {
+      assert.deepEqual(forwarded.steps[0].offset, input.steps[0].offset);
+      assert.deepEqual(forwarded.steps[0].settle_ms, input.steps[0].settle_ms);
+      assert.deepEqual(forwarded.steps[1].delay_ms, input.steps[1].delay_ms);
+    } else {
+      for (const [key, value] of Object.entries(input)) {
+        if (key === 'source') assert.deepEqual(forwarded.source.offset, value.offset);
+        else assert.deepEqual(forwarded[key], value);
+      }
+    }
+  }
+  for (const [name, input] of [
+    ['click', { x: 10, y: 10, offset: { x_ratio: .5, y_ratio: .5 } }],
+    ['click', { selector: '#go', mode: 'dom', settle_ms: 10 }],
+    ['hover', { selector: '#menu', offset: { x_ratio: -1, y_ratio: .5 } }],
+    ['type', { selector: '#edit', text: 'x', delay_ms: [180, 40] }],
+    ['drag', { source: { selector: '#a' }, destination: { x: 20, y: 20 }, trajectory: { curve_px: 5, duration_ms: 99 } }],
+    ['batch', { steps: [{ action: 'type', selector: '#edit', text: 'x', delay_ms: [180, 40] }] }],
+  ]) {
+    const before = f.requests.length;
+    assert.equal((await call(name, { tab_handle: handle, ...input })).isError, true);
+    assert.equal(f.requests.length, before);
+  }
   const clickCount = f.requests.filter(item => item.command === 'click').length;
   assert.equal((await call('click', { tab_handle: handle, x: 1, y: 1, mode: 'dom' })).isError, true);
   assert.equal(f.requests.filter(item => item.command === 'click').length, clickCount);
