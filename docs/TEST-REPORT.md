@@ -1,8 +1,15 @@
 # 验证报告
 
-当前版本 **0.14.0**（2026-10-22）。验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
+当前版本 **0.15.0**（2026-10-22）。验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
 
 ## 当前版本
+
+- `npm test`：172 项通过。新增 commit / DOMContentLoaded、等待超时后的降级采集、主文档替换后跟随 loader、采集期间只读重试、等待完成后换文档的身份核对、HTTP 错误响应关联及空体判断，以及标签创建/关闭超时和迟到清理；保留断连、控制权变化与不重放导航的回归覆盖。
+- Chromium 156 与 Edge 155 headless 完整 stdio MCP 集成：各 238 次调用通过。新增阻塞 load 时的早期等待及超时降级、load 前 location.replace、SSE 阻塞 network_idle，以及空体 418/500/503 的状态码和正文来源；同时验证既有输入、导航、OOPIF、分页与临时页关闭链路。
+- Chromium 临时配置访问真实 URL：`https://httpbin.org/status/500` 与 `/status/503` 分别在约 689 ms、384 ms 返回对应状态、`ok=false`、空正文及 `http_error_response` 标记。`https://chatgpt.com/` 在约 2253 ms 返回 403 验证页的文档结果，未复现客户端跳转，不将该结果视为登录应用验收。
+- `npm run test:package`：仓库外安装运行通过，23 个工具、46 个发布文件，版本为 0.15.0；无新增扩展权限与依赖。
+
+## 0.14.0 验证
 
 - `npm test`：165 项通过。新增主文档 frame/loader 状态匹配、未知状态、日志淘汰后状态保留、HTTP 错误正文、渲染后 DOM 标记、空标题省略、JSON 整份返回、四份缓存交叉续读与 LRU 淘汰；读完/失败的请求不淘汰已有缓存，同 URL 独立采集，保留断连及迟到回执不续跑的回归覆盖。
 - Chromium 156 与 Edge 155 headless 完整 stdio MCP 集成：各 230 次调用通过。实际验证重定向后的 HTTP 200、404/500 保留正文并返回 ok=false、200 登录墙不误判成 HTTP 错误、子框架 404 不污染主文档状态、动态 DOM 插入与 dom=rendered、900000 字符 JSON 在 max_chars=400 下整份返回、超限 JSON 报错、四份缓存交叉续读与第 5 份 LRU 淘汰，以及临时页关闭和不激活。
@@ -54,6 +61,7 @@ node scripts/interaction-smoke.mjs --extended --headless --executable /path/to/b
 - `select_option` 不制造可信事件；`network_idle` 只覆盖 claim 后观察到的页面/iframe 请求。
 - Monaco / CodeMirror 5 分支通过接口级测试，未针对第三方生产编辑器或特定 React/Vue 版本做站点验收。
 - 计时数据仅代表本机 fixture，不构成对任意网站的耗时承诺。
+- 未针对已登录 Gmail / Overleaf / ChatGPT 生产页面验收；这些页面可受登录状态、验证页、网络与应用初始化影响。降级保证以实际可读文档为准，不保证业务正文在期限内出现。
 
 ## 历史验证
 

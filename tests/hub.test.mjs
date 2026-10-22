@@ -178,6 +178,7 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   assert.ok(fetchSchema.required.includes('browser_id'));
   assert.ok(!fetchSchema.required.includes('url'));
   assert.deepEqual(fetchSchema.properties.format.enum, ['text', 'html', 'json']);
+  assert.deepEqual(fetchSchema.properties.wait_until.enum, ['commit', 'domcontentloaded', 'load', 'network_idle']);
   const beforeFetch = f.requests.length;
   for (const args of [{}, { url: 'file:///a' }, { url: 'https://example.com', max_chars: 0 }, { cursor: 'x', url: 'https://example.com' }, { cursor: 'x', format: 'json' }]) {
     assert.equal((await call('fetch', { browser_id: browser.id, ...args })).isError, true);

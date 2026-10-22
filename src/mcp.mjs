@@ -67,13 +67,13 @@ export function createMcp(client) {
   tool('open_tab', 'Open an HTTP(S) tab in the selected profile. Returns tab_id; discover tabs after loading before claiming it.', {
     browser_id: z.string(), url: z.string(), active: z.boolean().default(false),
   });
-  tool('fetch', 'Read a URL\'s main document in a temporary background tab using the profile\'s sign-in, then close it. status/ok describe HTTP only (unknown=null), not content validity. body is a string; JSON returns whole. next_cursor reads immutable cache without revisiting the URL; up to 4 captures per connection/profile, evicted by LRU.', {
+  tool('fetch', 'Read a URL\'s main document in a temporary background tab using the profile\'s sign-in, then close it. status/ok describe HTTP only (unknown=null). ready_state, wait_satisfied, degraded and document_changed report capture readiness. body is a string; JSON returns whole. next_cursor reads immutable cache without revisiting the URL; up to 4 captures per connection/profile, evicted by LRU.', {
     browser_id: z.string().min(1), url: z.string().optional().describe('HTTP(S), no URL credentials; required unless cursor is supplied.'),
     cursor: z.string().optional().describe('Continuation accepts only browser_id, cursor and max_chars.'),
-    wait_until: z.enum(['load', 'network_idle']).optional().describe('Default load; network_idle adds 500ms with no observed requests after load.'),
+    wait_until: z.enum(['commit', 'domcontentloaded', 'load', 'network_idle']).optional().describe('Default load; network_idle waits for load then 500ms without observed requests. Unmet waits return a degraded capture if readable.'),
     format: z.enum(['text', 'html', 'json']).optional().describe('Default text (rendered); html=current DOM with dom=rendered; json=complete validated JSON.'),
     max_chars: integerRange('max_chars', 1, 100000).default(20000).describe('Text/HTML page budget; JSON ignores this and returns whole, up to 1M chars. capture_truncated means text/HTML loss; oversized JSON errors.'),
-    timeout_ms: integerRange('timeout_ms', 100, 30000).optional().describe('Default 15000; preparation/navigation/read budget.'),
+    timeout_ms: integerRange('timeout_ms', 100, 30000).optional().describe('Default 15000; total deadline including creation/cleanup, with time reserved for capture after an unmet wait.'),
   }, null, args => { fetchOptions(args); return args; });
   tool('claim_tab', 'Exclusively claim a tab_id from this connection\'s latest tab discovery. Optional expected_url/title must match exactly. Returns the current identity.', {
     browser_id: z.string(), tab_id: z.number().int(), expected_url: z.string().optional(), expected_title: z.string().optional(),

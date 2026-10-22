@@ -8,6 +8,30 @@ function fixture() {
     read: (kind, args = {}) => logs.read(9, { kind, ...args }) };
 }
 
+test('HTTP error metadata correlates failure, response headers and late ExtraInfo without crossing sessions or redirect statuses', () => {
+  const f = fixture();
+  f.emit('Network.responseReceived', { requestId: 'r', type: 'Document', frameId: 'main', loaderId: 'original',
+    response: { status: 503, url: 'https://fixture.test/error', mimeType: 'text/html' } });
+  f.emit('Network.loadingFailed', { requestId: 'r', errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' });
+  assert.equal(f.logs.failedDocument(9, 'main').empty_body, false);
+  f.emit('Network.responseReceivedExtraInfo', { requestId: 'r', statusCode: 302, headers: { 'Content-Length': '0' } });
+  f.emit('Network.responseReceivedExtraInfo', { requestId: 'r', statusCode: 503, headers: { 'Content-Length': '0' } }, { tabId: 9, sessionId: 'other' });
+  assert.equal(f.logs.failedDocument(9, 'main').empty_body, false);
+  f.emit('Network.responseReceivedExtraInfo', { requestId: 'r', statusCode: 503, headers: { 'content-length': '0' } });
+  const failed = f.logs.failedDocument(9, 'main');
+  assert.equal(failed.status, 503); assert.equal(failed.empty_body, true); assert.equal(failed.contentType, 'text/html');
+  assert.equal(f.logs.documentStatus(9, { id: 'main', loaderId: 'error-page' }), null);
+  f.emit('Network.loadingFailed', { requestId: 'r', errorText: 'net::ERR_ABORTED' });
+  assert.equal(f.logs.failedDocument(9, 'main').error, 'net::ERR_HTTP_RESPONSE_CODE_FAILURE');
+  f.emit('Network.requestWillBeSent', { requestId: 'next', type: 'Document', frameId: 'main', request: { url: 'https://fixture.test/next', method: 'GET' } });
+  assert.equal(f.logs.failedDocument(9, 'main'), null);
+  f.emit('Network.requestWillBeSent', { requestId: 'early', type: 'Document', frameId: 'main', request: { url: 'https://fixture.test/early', method: 'GET' } });
+  f.emit('Network.responseReceivedExtraInfo', { requestId: 'early', statusCode: 503, headers: { 'content-length': '0' } });
+  f.emit('Network.responseReceived', { requestId: 'early', type: 'Document', frameId: 'main', loaderId: 'early', response: { status: 503, url: 'https://fixture.test/early', mimeType: 'text/html' } });
+  f.emit('Network.loadingFailed', { requestId: 'early', errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' });
+  assert.equal(f.logs.failedDocument(9, 'main').empty_body, true);
+});
+
 test('document status matches the frame and loader, survives log eviction and expires with the document or claim', () => {
   const f = fixture(), main = { id: 'main', loaderId: 'document' };
   const response = (frameId, loaderId, status, source) => f.emit('Network.responseReceived', { requestId: frameId, type: 'Document', frameId, loaderId, response: { status, url: 'https://fixture.test/' } }, source);

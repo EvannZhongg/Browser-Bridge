@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.14.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.15.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -57,11 +57,11 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 
 ## 单页读取
 
-`browser_fetch` 是一次 URL 读取：Hub 按显式 `browser_id` 把请求交给配对扩展；controller 创建后台 `about:blank` 临时标签，在其队列内复用 attach/session 初始化后只导航一次，按 load 或 load + network_idle 等待，在隔离世界读取主文档，再于 finally 关闭。它不接管已有页面，不创建浏览器或窗口。临时标签在扩展内记录 owner，并从标签发现列表排除；即使关闭或初始化失败，也不能被其他连接接管。关闭失败保留临时页记录并报告，release_owner/releaseAll 再次尝试关闭；正常已有标签的 detach 边界保持不变。
+`browser_fetch` 是一次 URL 读取：Hub 按显式 `browser_id` 把请求交给配对扩展；controller 创建后台 `about:blank` 临时标签，在其队列内复用 attach/session 初始化后只导航一次，按显式 commit / domcontentloaded / load / network_idle 等待，在隔离世界读取主文档，再于 finally 关闭。总 deadline 预留读取与清理时间；等待未满足时可采集当前文档并标记降级，创建和关闭也有界。创建的迟到回执只能触发清理。它不接管已有页面，不创建浏览器或窗口。临时标签在扩展内记录 owner，并从标签发现列表排除；即使关闭或初始化失败，也不能被其他连接接管。关闭失败保留临时页记录并报告，release_owner/releaseAll 再次尝试关闭；正常已有标签的 detach 边界保持不变。
 
-正文按 owner 保留至多 4 份各最多 1000000 字符的不可变采集，cursor 定位采集而非 URL；LRU 淘汰最久未读取的未完成采集，读完、owner 或扩展断连清除。一次读完和失败的请求不淘汰已有缓存。分页不执行脚本、不导航，临时标签关闭不会删除缓存。JSON 在采集上限内整份返回，不按 max_chars 拆分。读取期间文档或控制权变化会丢弃结果，断连后的迟到结果不能复活缓存。格式、采集上限与分页语义见使用指南。
+正文按 owner 保留至多 4 份各最多 1000000 字符的不可变采集，cursor 定位采集而非 URL；LRU 淘汰最久未读取的未完成采集，读完、owner 或扩展断连清除。一次读完和失败的请求不淘汰已有缓存。分页不执行脚本、不导航，临时标签关闭不会删除缓存。JSON 在采集上限内整份返回，不按 max_chars 拆分。导航等待跟随同一标签后续主文档 loader，完成时保留实际满足条件的文档身份；采集期间文档变化最多只读重采 3 次，状态码始终匹配本次采集的 frame/loader。控制权变化立即失败，断连后的迟到结果不能复活缓存。格式、采集上限与分页语义见使用指南。
 
-HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档 frame/loader 精确匹配；独立于可淘汰的日志正文保留至多 500 项文档状态元数据，断连/detach 清理。不新增 webRequest 或 host 权限，不重复请求页面。未匹配时 status/ok 返回 null；ok 仅表示 HTTP 2xx。HTML 标记 dom=rendered，保留观察到的 DOM，不声称是服务器原文；空标题省略。
+HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档 frame/loader 精确匹配；额外保留 requestId、响应 URL、MIME、空体证据和加载错误码，只从匹配状态的 ExtraInfo 补充 Content-Length，防止重定向 hop、跨 session 请求和缓存 304 混淆。独立于可淘汰的日志正文保留至多 500 项文档状态元数据，断连/detach 清理。不新增 webRequest 或 host 权限，不重复请求页面。未匹配时 status/ok 返回 null；ok 仅表示 HTTP 2xx。ERR_HTTP_RESPONSE_CODE_FAILURE 若有已匹配的 HTTP 响应，返回状态及已确认的空体；不能证明正文为空时标记 unavailable，不采集浏览器错误页为目标正文。其他传输错误仍失败。HTML 标记 dom=rendered，保留观察到的 DOM，不声称是服务器原文；空标题省略。
 
 ## 观察模型
 

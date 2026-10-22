@@ -52,7 +52,7 @@ function location(frame = {}) {
 
 export function createDiagnostics(cdp) {
   const tabs = new Map();
-  function start(tabId) { tabs.set(tabId, { started: Date.now(), console: buffer(), network: buffer(), requests: new Map(), documentResponses: new Map(), networkActivity: Date.now(), requestsOverflow: false, contexts: new Map(), capture: { enabled: false, max_body_bytes: 65536 }, captureVersion: 0, detailed: new Set(), pending: new Set() }); }
+  function start(tabId) { tabs.set(tabId, { started: Date.now(), console: buffer(), network: buffer(), requests: new Map(), documentResponses: new Map(), pendingDocumentExtraInfo: new Map(), networkActivity: Date.now(), requestsOverflow: false, contexts: new Map(), capture: { enabled: false, max_body_bytes: 65536 }, captureVersion: 0, detailed: new Set(), pending: new Set() }); }
   function event(source, method, params) {
     const state = tabs.get(source.tabId);
     if (!state) return;
@@ -108,14 +108,37 @@ export function createDiagnostics(cdp) {
         if (params.type === 'Document') {
           const documentKey = JSON.stringify([source.sessionId ?? null, params.frameId]);
           state.documentResponses.delete(documentKey);
-          state.documentResponses.set(documentKey, { loaderId: params.loaderId, status: response.status });
+          const header = name => Object.entries(response.headers || {}).find(([key]) => key.toLowerCase() === name)?.[1];
+          const pendingKey = JSON.stringify([source.sessionId ?? null, id, response.status]);
+          const extra = state.pendingDocumentExtraInfo.get(pendingKey);
+          const length = extra?.length ?? header('content-length');
+          state.pendingDocumentExtraInfo.delete(pendingKey);
+          state.documentResponses.set(documentKey, { requestId: id, loaderId: params.loaderId, status: response.status, url: response.url,
+            contentType: response.mimeType || String(header('content-type') || '').split(';')[0] || null, empty_body: String(length ?? '').trim() === '0' });
           if (state.documentResponses.size > MAX_ENTRIES) state.documentResponses.delete(state.documentResponses.keys().next().value);
         }
         add('response', { ...(state.detailed.has(key) ? { headers: redactHeaders(response.headers) } : {}), url: clip(response.url), status: response.status, status_text: clip(response.statusText, 200),
           mime_type: clip(response.mimeType, 200), protocol: clip(response.protocol, 50),
           from_cache: !!(response.fromDiskCache || response.fromPrefetchCache), from_service_worker: !!response.fromServiceWorker });
+      } else if (method === 'Network.responseReceivedExtraInfo') {
+        // ExtraInfo can arrive on either side of responseReceived. Enrich only
+        // its matching status, never a redirect hop or a wire-level cache 304.
+        const length = Object.entries(params.headers || {}).find(([key]) => key.toLowerCase() === 'content-length')?.[1];
+        if (length != null) {
+          let matched = false;
+          for (const [documentKey, response] of state.documentResponses) if (JSON.parse(documentKey)[0] === (source.sessionId ?? null) && response.requestId === id && response.status === params.statusCode) {
+            response.empty_body = String(length).trim() === '0'; matched = true;
+          }
+          if (!matched && state.requests.get(key)?.resource_type === 'Document') {
+            state.pendingDocumentExtraInfo.set(JSON.stringify([source.sessionId ?? null, id, params.statusCode]), { length });
+            if (state.pendingDocumentExtraInfo.size > MAX_ENTRIES) state.pendingDocumentExtraInfo.delete(state.pendingDocumentExtraInfo.keys().next().value);
+          }
+        }
       } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
         const failed = method === 'Network.loadingFailed';
+        if (failed) for (const [documentKey, response] of state.documentResponses) {
+          if (JSON.parse(documentKey)[0] === (source.sessionId ?? null) && response.requestId === id && (!response.error || params.errorText === 'net::ERR_HTTP_RESPONSE_CODE_FAILURE')) response.error = params.errorText;
+        }
         add(failed ? 'failed' : 'finished', failed ? { error: clip(params.errorText), canceled: !!params.canceled,
           blocked_reason: clip(params.blockedReason) } : { encoded_data_length: params.encodedDataLength });
         if (!failed && state.detailed.has(key) && state.capture.enabled && cdp) {
@@ -177,6 +200,9 @@ export function createDiagnostics(cdp) {
   return { start, event, read, readDetails, networkOptions, documentStatus(tabId, frame) {
     const response = tabs.get(tabId)?.documentResponses.get(JSON.stringify([null, frame.id]));
     return frame.loaderId && response?.loaderId === frame.loaderId && Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : null;
+  }, failedDocument(tabId, frameId) {
+    const response = tabs.get(tabId)?.documentResponses.get(JSON.stringify([null, frameId]));
+    return response?.error === 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' && Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? { ...response } : null;
   }, networkStatus(tabId) {
     const state = tabs.get(tabId);
     if (!state) throw new Error('Tab control ended while waiting for network idle');
@@ -185,7 +211,7 @@ export function createDiagnostics(cdp) {
     const state = tabs.get(tabId);
     if (!state) return;
     for (const key of state.detailed) if (JSON.parse(key)[0] === sessionId) state.detailed.delete(key);
-    for (const map of [state.contexts, state.requests, state.documentResponses]) for (const key of map.keys()) if (JSON.parse(key)[0] === sessionId) map.delete(key);
+    for (const map of [state.contexts, state.requests, state.documentResponses, state.pendingDocumentExtraInfo]) for (const key of map.keys()) if (JSON.parse(key)[0] === sessionId) map.delete(key);
   }, forget: tabId => tabs.delete(tabId) };
 }
 

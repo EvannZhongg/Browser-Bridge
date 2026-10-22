@@ -26,7 +26,7 @@ export function createNavigation(cdp) {
       if (!['http:', 'https:'].includes(destination.protocol) || destination.username || destination.password) throw new Error('History entry is outside supported HTTP(S) scope; no navigation was dispatched');
       mainId = (await prepare('Page.getFrameTree')).frameTree.frame.id;
     }
-    let result, resolveDone, rejectDone, timer;
+    let result, currentDocument, completedDocument, resolveDone, rejectDone, timer;
     const events = [];
     const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
     function check() {
@@ -40,25 +40,34 @@ export function createNavigation(cdp) {
         }
         return;
       }
-      // A successful reply without loaderId denotes a same-document navigation.
-      if (wait_until === 'commit' || !result.loaderId || events.some(event =>
-        event.frameId === result.frameId && event.loaderId === result.loaderId &&
-        event.name === (wait_until === 'load' ? 'load' : 'DOMContentLoaded'))) resolveDone(result);
+      // A client-side redirect can replace the loader before the original reply.
+      const current = currentDocument || result;
+      if (wait_until === 'commit' || !current.loaderId || events.some(event =>
+        event.frameId === current.frameId && event.loaderId === current.loaderId &&
+        event.name === (wait_until === 'load' ? 'load' : 'DOMContentLoaded'))) {
+        completedDocument ??= current;
+        resolveDone(result);
+      }
     }
     pending.set(tabId, {
-      event(method, params) { if (['Page.lifecycleEvent', 'Page.frameNavigated', 'Page.navigatedWithinDocument'].includes(method)) { events.push({ method, ...params }); check(); } },
+      event(method, params) {
+        if (!direction && method === 'Page.frameNavigated' && !params.frame.parentId && params.frame.loaderId) currentDocument = { frameId: params.frame.id, loaderId: params.frame.loaderId };
+        if (['Page.lifecycleEvent', 'Page.frameNavigated', 'Page.navigatedWithinDocument'].includes(method)) { events.push({ method, ...params }); check(); }
+      },
       cancel(reason) { rejectDone(reason || new Error('Tab detached during navigation; outcome is unknown.')); },
     });
-    timer = setTimeout(() => rejectDone(new Error(`Navigation did not reach ${wait_until} within ${timeout_ms} ms. It may still be loading; observe the tab before another action.`)), Math.max(0, end - Date.now()));
+    timer = setTimeout(() => rejectDone(Object.assign(new Error(`Navigation did not reach ${wait_until} within ${timeout_ms} ms. It may still be loading; observe the tab before another action.`), { code: 'NAVIGATION_TIMEOUT' })), Math.max(0, end - Date.now()));
     try {
       // Attach rejection handlers immediately, including when the deadline wins first.
       const command = cdp(tabId, direction ? 'Page.navigateToHistoryEntry' : 'Page.navigate', direction ? { entryId: entry.id } : { url }).then(reply => {
-        if (reply.errorText) throw new Error(`Navigation failed: ${reply.errorText}`);
+        if (reply.errorText) throw Object.assign(new Error(`Navigation failed: ${reply.errorText}`), { code: 'NAVIGATION_FAILED', navigation_error: reply.errorText });
         if (reply.isDownload) throw new Error('Navigation started a download instead of a document.');
         result = direction ? {} : reply; check(); return done;
       });
       await Promise.race([command, done]);
-      return { navigated_to: entry?.url || url, ...(direction ? { direction } : {}), wait_until, same_document: !result.loaderId };
+      const document = completedDocument || result;
+      return { navigated_to: entry?.url || url, ...(direction ? { direction } : {}), wait_until, same_document: !result.loaderId,
+        document: { frameId: document.frameId, loaderId: document.loaderId } };
     } finally { clearTimeout(timer); pending.delete(tabId); }
   }
   return { event, cancel, navigate };

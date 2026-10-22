@@ -5,15 +5,19 @@ import { capturePage, createFetches, fetchOptions } from '../extension/fetch.js'
 
 test('fetch validates initial and continuation arguments before creating a tab', () => {
   for (const url of ['file:///tmp/a', 'chrome://settings', 'https://user:pass@example.com', 'bad']) assert.throws(() => fetchOptions({ url }));
-  for (const args of [{}, { url: 'https://example.com', format: 'xml' }, { url: 'https://example.com', wait_until: 'commit' }, { url: 'https://example.com', timeout_ms: 30001 }, { cursor: 'x', url: 'https://example.com' }, { cursor: 'x', format: 'json' }, { cursor: 'x', max_chars: 0 }]) assert.throws(() => fetchOptions(args));
+  for (const args of [{}, { url: 'https://example.com', format: 'xml' }, { url: 'https://example.com', wait_until: 'interactive' }, { url: 'https://example.com', timeout_ms: 30001 }, { cursor: 'x', url: 'https://example.com' }, { cursor: 'x', format: 'json' }, { cursor: 'x', max_chars: 0 }]) assert.throws(() => fetchOptions(args));
   fetchOptions({ url: 'https://example.com' });
+  fetchOptions({ url: 'https://example.com', wait_until: 'commit' });
+  fetchOptions({ url: 'https://example.com', wait_until: 'domcontentloaded' });
   fetchOptions({ cursor: 'x', max_chars: 1 });
 });
 
 test('capture reads rendered text/current DOM/validated JSON and marks capture loss', () => {
-  const document = { title: 'Page', contentType: 'text/html', body: { innerText: 'visible', textContent: ' {"ok": true} ' }, documentElement: { outerHTML: '<html>current</html>' }, querySelector: () => null };
+  const document = { title: 'Page', contentType: 'text/html', readyState: 'complete', body: { innerText: 'visible', textContent: ' {"ok": true} ' }, documentElement: { outerHTML: '<html>current</html>' }, querySelector: () => null };
   const capture = (format, cap = 100) => vm.runInNewContext(`(${capturePage.toString()})(${JSON.stringify(format)},${cap})`, { document, location: { href: 'https://final.test', protocol: 'https:' } });
   assert.equal(capture('text').body, 'visible');
+  assert.equal(capture('text').ready_state, 'complete');
+  assert.equal(capture('text').body_source, 'rendered_document');
   assert.equal(capture('html').body, '<html>current</html>');
   assert.equal(capture('html').dom, 'rendered');
   assert.equal(capture('text').dom, undefined);

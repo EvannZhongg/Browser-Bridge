@@ -9,7 +9,7 @@ export function fetchOptions(args) {
   const url = new URL(args.url);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('fetch requires an HTTP(S) URL without credentials');
   if (!['text', 'html', 'json'].includes(args.format ?? 'text')) throw new Error('format must be text, html or json');
-  if (!['load', 'network_idle'].includes(args.wait_until ?? 'load')) throw new Error('wait_until must be load or network_idle');
+  if (!['commit', 'domcontentloaded', 'load', 'network_idle'].includes(args.wait_until ?? 'load')) throw new Error('wait_until must be commit, domcontentloaded, load or network_idle');
   if (!Number.isInteger(args.timeout_ms ?? 15000) || (args.timeout_ms ?? 15000) < 100 || (args.timeout_ms ?? 15000) > 30000) throw new Error('timeout_ms must be 100..30000');
 }
 
@@ -24,6 +24,7 @@ export function capturePage(format, cap) {
     if (body.length > cap) throw new Error('JSON document exceeds the 1000000 character capture limit');
   }
   return { url: location.href, ...(document.title ? { title: document.title } : {}), contentType: document.contentType, format,
+    ready_state: document.readyState, body_source: 'rendered_document',
     ...(format === 'html' ? { dom: 'rendered' } : {}),
     body: body.slice(0, cap), capture_truncated: body.length > cap };
 }

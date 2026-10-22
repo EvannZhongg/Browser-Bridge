@@ -62,3 +62,27 @@ test('history same-document and BFCache restoration complete without waiting for
     assert.equal((await navigation.navigate(9,undefined,{direction:'back',timeout_ms:100})).same_document,same);
   }
 });
+
+test('URL navigation follows a replacement main loader, ignoring old and child lifecycle events', async () => {
+  let navigation, calls = 0;
+  navigation = createNavigation(async () => {
+    calls++;
+    navigation.event(9, 'Page.frameNavigated', { frame: { id: 'main', loaderId: 'first' } });
+    navigation.event(9, 'Page.frameNavigated', { frame: { id: 'main', loaderId: 'final' } });
+    navigation.event(9, 'Page.lifecycleEvent', { frameId: 'main', loaderId: 'first', name: 'load' });
+    navigation.event(9, 'Page.lifecycleEvent', { frameId: 'child', loaderId: 'final', name: 'load' });
+    setTimeout(() => navigation.event(9, 'Page.lifecycleEvent', { frameId: 'main', loaderId: 'final', name: 'load' }), 25);
+    return { frameId: 'main', loaderId: 'first' };
+  });
+  await navigation.navigate(9, 'https://fixture.test/', { wait_until: 'load', timeout_ms: 100 });
+  assert.equal(calls, 1);
+});
+
+test('a later commit cannot claim the lifecycle satisfied by the preceding document', async () => {
+  const navigation = createNavigation(async () => ({ frameId: 'main', loaderId: 'first' }));
+  const pending = navigation.navigate(9, 'https://fixture.test/', { wait_until: 'load', timeout_ms: 100 });
+  await new Promise(resolve => setImmediate(resolve));
+  navigation.event(9, 'Page.lifecycleEvent', { frameId: 'main', loaderId: 'first', name: 'load' });
+  navigation.event(9, 'Page.frameNavigated', { frame: { id: 'main', loaderId: 'later' } });
+  assert.equal((await pending).document.loaderId, 'first');
+});

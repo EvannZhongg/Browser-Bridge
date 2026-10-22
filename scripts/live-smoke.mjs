@@ -45,6 +45,13 @@ document.querySelector('#name').oninput=sync;sync();</script>`;
 let fetchVisits = 0, crawled = 0;
 const fixture = http.createServer((request, response) => {
   const port = fixture.address().port;
+  if (request.url === '/fetch/hang') return;
+  if (request.url === '/fetch/events') { response.writeHead(200, { 'Content-Type': 'text/event-stream' }); response.write('data: connected\n\n'); return; }
+  if (request.url === '/fetch/stall') { response.setHeader('Content-Type', 'text/html'); response.end('<title>Incomplete load</title><h1>Readable before load</h1><img src="/fetch/hang">'); return; }
+  if (request.url === '/fetch/replace') { response.setHeader('Content-Type', 'text/html'); response.end('<title>Redirecting</title><h1>First document</h1><img src="/fetch/hang"><script>setTimeout(()=>location.replace("/fetch/final"),100)</script>'); return; }
+  if (request.url === '/fetch/final') { response.setHeader('Content-Type', 'text/html'); response.end('<title>Final SPA document</title><h1>Final SPA content</h1>'); return; }
+  if (request.url === '/fetch/sse') { response.setHeader('Content-Type', 'text/html'); response.end('<title>Streaming app</title><h1>Readable with a stream</h1><script>new EventSource("/fetch/events")</script>'); return; }
+  if (request.url.startsWith('/fetch/empty/')) { response.writeHead(Number(request.url.split('/').at(-1)), { 'Content-Type': 'text/html', 'Content-Length': '0' }); response.end(); return; }
   if (request.url === '/fetch/error/404' || request.url === '/fetch/error/500') {
     const status = Number(request.url.split('/').at(-1));
     response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -175,6 +182,27 @@ try {
   assert.equal(wall.status, 200); assert.equal(wall.ok, true); assert.match(wall.body, /Login required/);
   const mainWithErrorFrame = await call('fetch', { ...fetchArgs, url: url + 'fetch/status-frame' });
   assert.equal(mainWithErrorFrame.status, 200); assert.equal(mainWithErrorFrame.ok, true);
+  for (const wait_until of ['commit', 'domcontentloaded', 'load']) {
+    const started = Date.now();
+    const readable = await call('fetch', { ...fetchArgs, url: url + 'fetch/stall', wait_until, timeout_ms: 1200 });
+    assert.equal(readable.status, 200); assert.match(readable.body, /Readable before load/);
+    assert.equal(readable.wait_until, wait_until); assert.equal(readable.wait_satisfied, wait_until !== 'load');
+    assert.equal(readable.degraded, wait_until === 'load'); assert.equal(readable.document_changed, false);
+    assert.ok(['loading', 'interactive', 'complete'].includes(readable.ready_state)); assert.ok(Date.now() - started < 1500);
+  }
+  const redirectedClient = await call('fetch', { ...fetchArgs, url: url + 'fetch/replace', timeout_ms: 4000 });
+  assert.equal(redirectedClient.url, url + 'fetch/final'); assert.equal(redirectedClient.status, 200);
+  assert.match(redirectedClient.body, /Final SPA content/); assert.equal(redirectedClient.document_changed, true);
+  assert.equal(redirectedClient.wait_satisfied, true); assert.equal(redirectedClient.degraded, false);
+  const streaming = await call('fetch', { ...fetchArgs, url: url + 'fetch/sse', wait_until: 'network_idle', timeout_ms: 1200 });
+  assert.equal(streaming.status, 200); assert.match(streaming.body, /Readable with a stream/);
+  assert.equal(streaming.degraded, true); assert.equal(streaming.degraded_reason, 'wait_timeout');
+  for (const status of [418, 500, 503]) {
+    const empty = await call('fetch', { ...fetchArgs, url: url + 'fetch/empty/' + status, timeout_ms: 1200 });
+    assert.equal(empty.status, status); assert.equal(empty.ok, false); assert.equal(empty.body, '');
+    assert.equal(empty.body_source, 'http_response'); assert.equal(empty.ready_state, null);
+    assert.equal(empty.degraded_reason, 'http_error_response'); assert.equal(empty.body_unavailable, undefined);
+  }
   const retained = [];
   for (const path of ['page', 'status-frame', 'softwall', 'error/404']) retained.push(await call('fetch', { ...fetchArgs, url: url + 'fetch/' + path, max_chars: 5 }));
   retained[0] = await call('fetch', { ...fetchArgs, cursor: retained[0].next_cursor, max_chars: 5 });
@@ -192,6 +220,7 @@ try {
   const afterFetch = (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs;
   assert.deepEqual(afterFetch.filter(t => t.active).map(t => t.tab_id), activeBefore);
   assert.ok(!afterFetch.some(t => t.url.startsWith(url + 'fetch/')));
+  checks.push('fetch commit/DOMContentLoaded, stalled-load and persistent-stream degraded captures within deadline, client-side document replacement, empty 418/500/503 HTTP responses');
   checks.push('fetch background cleanup/no activation, redirect/login cookie, network idle, no crawling, rendered DOM marker/insertion, whole JSON/budget override/capture cap, 404/500/main-frame status, HTTP 200 soft wall, four interleaved captures/LRU eviction, omitted empty title, malformed JSON and timeout');
   const tab = await until(async () => (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.find(tab => tab.url === url && tab.title === 'Attach upload fixture'), 'fixture tab');
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });

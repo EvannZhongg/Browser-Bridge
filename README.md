@@ -19,6 +19,7 @@ Drive the Chrome / Edge tabs you already have open and already signed in from an
 - Native pointer hover, stepped drags and conditional waits; select HTML options without opening a native popup.
 - Navigate and go back/forward, open or close tabs, handle JavaScript dialogs, upload local files, and capture the whole page or a single element.
 - Evaluate JavaScript expressions in the main page; read console, page-error and network lifecycle logs captured after claiming; opt in to bounded, redacted request/response details when XHR/fetch needs verification.
+- Read one HTTP(S) URL in a temporary background tab with the profile's sign-in, returning rendered text, current DOM, or complete JSON with the main-document HTTP status when observed.
 - Standard stdio MCP with 23 tools. The Hub listens on loopback only and pairs with the extension through a random key.
 
 ## Requirements
@@ -88,6 +89,7 @@ Claiming and ordinary input never activate a tab or window; call `browser_tab_co
 | `browser_discover` | `kind=browsers/tabs`; discover browser profiles, tab identity and control status |
 | `browser_claim_tab` | Exclusively claim a discovered tab |
 | `browser_open_tab` / `browser_tab_control` | Create a tab; explicit `release/activate/close` of a claimed tab |
+| `browser_fetch` | Read one HTTP(S) URL in a temporary background tab using the profile's sign-in; `text`/`html`/`json`, optional HTTP status and cursor continuation |
 | `browser_snapshot` / `browser_read_text` | AX snapshot, element refs and page text |
 | `browser_wait` | Read-only wait for an element, text, URL or network idle |
 | `browser_click` / `browser_hover` / `browser_drag` / `browser_select_option` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_scroll` | Native/DOM input, pointer hover and drag, option selection, character typing and scrolling |

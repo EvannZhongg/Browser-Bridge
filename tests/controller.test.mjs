@@ -1368,12 +1368,13 @@ function fetchFixture() {
     if (method === 'Page.navigate') {
       const result = await send(target, method, args);
       f.api.debugger.onEvent.emit(target, 'Network.responseReceived', { requestId: 'document', type: 'Document', frameId: 'main', loaderId: 'new', response: { status: 200, url: args.url } });
+      f.api.debugger.onEvent.emit(target, 'Page.frameNavigated', { frame: { id: 'main', loaderId: 'new', url: args.url } });
       return result;
     }
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', loaderId: 'new', url: f.tabs.get(target.tabId).url } } };
     if (method === 'Runtime.evaluate' && args.expression.startsWith('(function capturePage')) {
       f.calls.push({ method: 'capture', target, args });
-      return { result: { value: { url: f.tabs.get(target.tabId).url, title: 'Fetched', contentType: 'text/html', body: 'abcdef', capture_truncated: false } } };
+      return { result: { value: { url: f.tabs.get(target.tabId).url, title: 'Fetched', contentType: 'text/html', body: 'abcdef', ready_state: 'complete', body_source: 'rendered_document', capture_truncated: false } } };
     }
     return send(target, method, args);
   };
@@ -1385,6 +1386,7 @@ test('fetch opens one background tab, navigates once, closes before paginating a
   const page = await f.exec('fetch', { url: 'https://read.test/', max_chars: 2 });
   assert.equal(page.body, 'ab'); assert.equal(page.truncated, true);
   assert.equal(page.status, 200); assert.equal(page.ok, true);
+  assert.equal(page.wait_satisfied, true); assert.equal(page.degraded, false); assert.equal(page.ready_state, 'complete');
   assert.deepEqual(f.calls.find(c => c.method === 'tabs.create').args, { url: 'about:blank', active: false });
   assert.ok(!f.tabs.has(10)); assert.ok(f.tabs.has(9)); assert.equal(f.controller.claimedCount(), 1);
   const before = f.calls.length;
@@ -1499,4 +1501,91 @@ test('fetch returns only the captured main document HTTP status, without treatin
     assert.equal(result.status, status); assert.equal(result.ok, status == null ? null : status === 200);
     assert.equal(result.body, 'abcdef'); assert.ok(!f.tabs.has(10));
   }
+});
+
+
+test('fetch respects commit/DOMContentLoaded and degrades an unmet load without navigating again', async () => {
+  for (const wait_until of ['commit', 'domcontentloaded', 'load']) {
+    const f = fetchFixture(), send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      if (method === 'Page.navigate') {
+        f.calls.push({ method, args }); f.tabs.get(10).url = args.url;
+        f.api.debugger.onEvent.emit(target, 'Network.responseReceived', { requestId: 'r', type: 'Document', frameId: 'main', loaderId: 'new', response: { status: 200, url: args.url } });
+        f.api.debugger.onEvent.emit(target, 'Page.frameNavigated', { frame: { id: 'main', loaderId: 'new', url: args.url } });
+        f.api.debugger.onEvent.emit(target, 'Page.lifecycleEvent', { frameId: 'main', loaderId: 'new', name: 'DOMContentLoaded' });
+        return { frameId: 'main', loaderId: 'new' };
+      }
+      const result = await send(target, method, args);
+      if (method === 'Runtime.evaluate' && args.expression.startsWith('(function capturePage')) result.result.value.ready_state = 'interactive';
+      return result;
+    };
+    const started = Date.now(), result = await f.exec('fetch', { url: 'https://read.test/', wait_until, timeout_ms: 600 });
+    assert.equal(result.body, 'abcdef'); assert.equal(result.status, 200); assert.equal(result.ready_state, 'interactive');
+    assert.equal(result.wait_satisfied, wait_until !== 'load'); assert.equal(result.degraded, wait_until === 'load');
+    assert.equal(result.degraded_reason, wait_until === 'load' ? 'wait_timeout' : null);
+    assert.equal(result.document_changed, false); assert.ok(Date.now() - started < 750);
+    assert.equal(f.calls.filter(c => c.method === 'Page.navigate').length, 1); assert.ok(!f.tabs.has(10));
+  }
+});
+
+test('fetch retries only the read on a document swap and pairs new body with new response metadata', async () => {
+  const f = fetchFixture(), send = f.api.debugger.sendCommand;
+  let captures = 0, changed = false;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Page.getFrameTree' && changed) return { frameTree: { frame: { id: 'main', loaderId: 'final', url: 'https://read.test/final' } } };
+    const result = await send(target, method, args);
+    if (method === 'Runtime.evaluate' && args.expression.startsWith('(function capturePage')) {
+      captures++;
+      if (!changed) {
+        changed = true; f.tabs.get(10).url = 'https://read.test/final';
+        f.api.debugger.onEvent.emit(target, 'Page.frameNavigated', { frame: { id: 'main', loaderId: 'final', url: 'https://read.test/final' } });
+        f.api.debugger.onEvent.emit(target, 'Network.responseReceived', { requestId: 'final', type: 'Document', frameId: 'main', loaderId: 'final', response: { status: 201, url: 'https://read.test/final' } });
+      } else result.result.value.body = 'final document';
+    }
+    return result;
+  };
+  const result = await f.exec('fetch', { url: 'https://read.test/', timeout_ms: 600 });
+  assert.equal(captures, 2); assert.equal(result.url, 'https://read.test/final'); assert.equal(result.body, 'final document');
+  assert.equal(result.status, 201); assert.equal(result.document_changed, true);
+  assert.equal(result.degraded, true); assert.equal(result.degraded_reason, 'document_changed');
+  assert.equal(f.calls.filter(c => c.method === 'Page.navigate').length, 1);
+});
+
+test('fetch returns confirmed empty HTTP errors and distinguishes unavailable bodies from network failures', async () => {
+  for (const [status, empty] of [[418, true], [500, true], [503, true], [503, false]]) {
+    const f = fetchFixture(), send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      if (method === 'Page.navigate') {
+        f.calls.push({ method });
+        f.api.debugger.onEvent.emit(target, 'Network.responseReceived', { requestId: 'failed', type: 'Document', frameId: 'main', loaderId: 'failed', response: { status, url: args.url, mimeType: 'text/html', headers: empty ? { 'Content-Length': '0' } : {} } });
+        f.api.debugger.onEvent.emit(target, 'Network.loadingFailed', { requestId: 'failed', errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' });
+        return { frameId: 'main', errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' };
+      }
+      return send(target, method, args);
+    };
+    const result = await f.exec('fetch', { url: 'https://read.test/error' });
+    assert.equal(result.status, status); assert.equal(result.ok, false); assert.equal(result.body, '');
+    assert.equal(result.ready_state, null); assert.equal(result.body_source, empty ? 'http_response' : 'unavailable');
+    assert.equal(result.body_unavailable, empty ? undefined : true); assert.equal(result.degraded_reason, 'http_error_response');
+    assert.ok(!f.calls.some(c => c.method === 'capture')); assert.ok(!f.tabs.has(10));
+  }
+  const f = fetchFixture(), send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => method === 'Page.navigate' ? { errorText: 'net::ERR_NAME_NOT_RESOLVED' } : send(target, method, args);
+  await assert.rejects(f.exec('fetch', { url: 'https://read.test/' }), /ERR_NAME_NOT_RESOLVED/);
+});
+
+test('fetch bounds creation and close; late completion cleans up without any late navigation', async () => {
+  const f = fetchFixture(), create = f.api.tabs.create;
+  let finish;
+  f.api.tabs.create = async args => { await new Promise(resolve => { finish = resolve; }); return create(args); };
+  await assert.rejects(f.exec('fetch', { url: 'https://read.test/', timeout_ms: 100 }), /Fetch did not finish/);
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!f.tabs.has(10)); assert.ok(!f.calls.some(c => c.method === 'Page.navigate'));
+  const g = fetchFixture(), remove = g.api.tabs.remove;
+  g.api.tabs.remove = async id => { await new Promise(resolve => { finish = resolve; }); return remove(id); };
+  const started = Date.now();
+  await assert.rejects(g.exec('fetch', { url: 'https://read.test/', timeout_ms: 200 }), /could not be closed/);
+  assert.ok(Date.now() - started < 350); assert.equal(g.controller.claimedCount(), 1);
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(g.controller.claimedCount(), 0); assert.ok(!g.tabs.has(10));
 });
