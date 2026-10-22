@@ -148,8 +148,18 @@ try {
   await call('click',{selector:'#child'});
   assert.equal(await page('window.enters'),1);assert.equal(await page('window.leaves'),0);assert.equal(await page('window.childClicks'),1);
   results.cases.push({scenario:'hover_then_child',enters:1,leaves:0,clicks:1});
+  await page(`(()=>{const section=document.createElement('section');section.id='density';section.setAttribute('role','region');section.setAttribute('aria-label','Density controls');for(let i=0;i<200;i++){const p=document.createElement('p');p.textContent='Reading row '+i+': '+ 'long prose '.repeat(25);section.append(p)}const button=document.createElement('button');button.setAttribute('aria-label','Density action');button.textContent='Extra context '.repeat(30);section.append(button);document.body.append(section);return true})()`);
+  const fullView=await call('snapshot'),interactiveView=await call('snapshot',{profile:'interactive'});
+  assert.equal(fullView.truncated,true);assert.equal(interactiveView.truncated,false);
+  assert.doesNotMatch(interactiveView.snapshot,/Reading row/);assert.match(interactiveView.snapshot,/region "Density controls"/);
+  assert.match(interactiveView.snapshot,/button "Density action"/);assert.ok(interactiveView.snapshot.includes('Extra context '.repeat(30).slice(0,80)+'…'));
+  assert.ok(interactiveView.snapshot.length<fullView.snapshot.length/5);
+  const noTextView=await call('snapshot',{profile:'interactive',text:false});
+  assert.doesNotMatch(noTextView.snapshot,/StaticText|Extra context/);assert.match(noTextView.snapshot,/button "Density action"/);
+  results.cases.push({scenario:'snapshot_interactive_density',full_chars:fullView.snapshot.length,interactive_chars:interactiveView.snapshot.length,full_has_more:fullView.truncated,interactive_has_more:interactiveView.truncated});
+  await page('document.querySelector("#density").remove();true');
   // One observation, two inputs and an intervening expression evaluation.
-  const snap=await call('snapshot');const ref=snap.snapshot.match(/\[([^\]]+)\] textbox "Edit"/)[1];
+  const snap=await call('snapshot',{profile:'interactive'});const ref=snap.snapshot.match(/\[([^\]]+)\] textbox "Edit"/)[1];
   await call('fill',{ref,text:'first'});await call('evaluate',{expression:'document.title'});await call('fill',{ref,text:'second'});
   assert.equal(await page('document.querySelector("#edit").value'),'second');
   results.cases.push({scenario:'ref_two_inputs_one_snapshot',survives_evaluation:true});

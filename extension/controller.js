@@ -1,7 +1,7 @@
 // Browser operations live here; the WebSocket transport never exposes raw CDP.
 import { createVisuals } from './visuals.js';
 import { createClickVisuals } from './click-visuals.js';
-import { renderAX, snapshotPage } from './snapshot.js';
+import { renderAX, snapshotOptions, snapshotPage } from './snapshot.js';
 import { createNavigation } from './navigation.js';
 import { createClick, clickOptions, framePoint } from './click.js';
 import { createInput, inputMode, selectOptions, typeOptions } from './input.js';
@@ -291,6 +291,7 @@ export function createController(api, notify = () => {}) {
       if (!state) throw new Error('Snapshot cursor is stale or unknown. Take a new browser_snapshot.');
       return snapshotPage(state, args);
     }
+    const options = snapshotOptions(args);
     snapshots.delete(tabId);
     const documentVersion = documents.get(tabId);
     const versions = new Map(frameStates.get(tabId)?.versions);
@@ -329,12 +330,12 @@ export function createController(api, notify = () => {}) {
         knownFrames.add(childId); frames.push({ id: childId, url });
       }
       entries.push({ node: false, frameId: frame.id, line: `Frame ${frame.id} ${frame.url}` });
-      entries.push(...renderAX(nodes, token, refs, frame.id, target.sessionId));
+      entries.push(...renderAX(nodes, token, refs, frame.id, target.sessionId, options));
     }
     const metadata = value(await send(tabId, 'Runtime.evaluate', {
       expression: '({title: document.title, url: location.href})', returnByValue: true,
     }));
-    const state = { id: token, refs, entries, invalidFrames: new Set(), totalNodes: entries.filter(entry => entry.node).length,
+    const state = { id: token, options, refs, entries, invalidFrames: new Set(), totalNodes: entries.filter(entry => entry.node).length,
       metadata: { title: metadata.title, url: metadata.url, viewport: await (budget ? budget.run(() => viewport(tabId)) : viewport(tabId)), omitted_frames: omittedFrames } };
     if (documentVersion !== documents.get(tabId)) throw new Error('Document changed while reading the snapshot. Take a new browser_snapshot.');
     for (const frame of frames) if (versions.get(frame.id) !== frameStates.get(tabId)?.versions.get(frame.id)) {

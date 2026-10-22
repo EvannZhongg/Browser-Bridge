@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.11.3**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.12.0**：Node.js 22+、Chrome / Edge 125+、22 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则，各工具 description 和参数 schema 说明自身行为与约束，本文保留完整边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -35,7 +35,7 @@
 
 | 工具 | 主要参数 | 说明 |
 |---|---|---|
-| `browser_snapshot` | `max_nodes=600`, `max_chars=24000`, `cursor` | AX 语义树、元素 ref、frame 覆盖、待处理文件选择器 |
+| `browser_snapshot` | `profile`, `text`, `text_limit`, `max_nodes=600`, `max_chars=24000`, `cursor` | AX 语义树、元素 ref、frame 覆盖、待处理文件选择器 |
 | `browser_wait` | `condition`, `selector`, `expected` / `previous`, `idle_ms=500`, `timeout_ms=5000` | 只读等待元素、文本、URL 或被动网络空闲 |
 | `browser_read_text` | `mode`, `selector`, `offset=0`, `max_chars=20000` | 主 frame 的 DOM、字段值或支持的编辑器模型 |
 
@@ -72,7 +72,11 @@
 
 - 渲染时移除 `InlineTextBox`，合并纯文本列表项与段落名称，保留 `disabled`、`focused`、`expanded`、`checked`、`selected`、`required`、`invalid`、`level` 等状态，以及浏览器提供的 `value`；`[token:n]` 即后续动作使用的 `ref`。未提供 invalid/selected 等属性不代表有效或已提交；value 也可能只是下拉框的过滤文本。
 - `max_nodes` 为 1–3000（默认 600）；`max_chars` 为 1–2000000（默认 24000），按行序列化长度累计，与节点数是两个独立预算。
+- `profile` 默认为 `full`。`interactive` 保留 AX 控件角色、可聚焦/可编辑节点及其祖先链和控件内的文本，略去无关正文；禁用控件仍保留。仅按是否有 ref 筛选无法有效压缩，因为段落、列表项等也可能有 ref。自定义控件未提供可访问角色或可聚焦/可编辑属性时可能被省略，需用 `full` 观察。
+- `text` 默认 `true`；`false` 隐去独立文本和纯文本段落/列表项的合并正文，仍保留可访问名称及控件值。`text_limit` 为 0–10000，限制每个文本/合并正文名称并以 `…` 标明省略；`interactive` 默认 80，`full` 默认不截断。需要更多正文时重新请求 `full`，或显式提高 `text_limit`。控件名称、值及 ref 校验所用身份始终完整。
+- 返回 `profile` / `text` / `text_limit` 表明本次视图；`node_count` 和 `total_node_count` 统计筛选后的节点。`truncated` / `next_cursor` 只表示该视图尚有分页，不表示视图包含全部网页正文。筛选发生在完整 AX 树读取后，减少返回内容与分页次数，不减少 CDP 的 AX 树采集量。
 - `truncated: true` 时把 `next_cursor` 传回同一个工具继续读取同一份观察，refs 在续读期间保持有效；也可以调整预算。单个超长节点放不下时会明确报出所需预算，不静默丢尾部。
+- 续读可省略视图参数，沿用原 `profile` / `text` / `text_limit`；显式提供时必须与原观察相同。调整视图须请求新快照，并按下表使旧 ref 失效。
 - 覆盖主 frame、同进程 iframe 与递归 OOPIF；读取失败、读取期间变化或附着失败的 frame 列入 `omitted_frames`。
 
 失效规则：

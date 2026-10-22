@@ -79,9 +79,12 @@ export function createMcp(client) {
     if (args.focus_window != null) throw new Error('focus_window is only valid for action=activate');
     return { tab_handle: args.tab_handle };
   });
-  tool('snapshot', 'Read a semantic AX tree with refs and frame coverage. Pass next_cursor as cursor to continue the same observation.', {
+  tool('snapshot', 'Read a semantic AX tree with refs and frame coverage. profile=interactive keeps controls and ancestor context. Pass next_cursor as cursor to continue the same observation; view options remain fixed.', {
     ...handle, max_nodes: integerRange('max_nodes', 1, 3000).default(600),
     max_chars: integerRange('max_chars', 1, 2000000).default(24000), cursor: z.string().optional(),
+    profile: z.enum(['full', 'interactive']).optional().describe('Default full. Interactive keeps AX controls, focusable/editable nodes and their ancestors; omits unrelated reading content.'),
+    text: z.boolean().optional().describe('Default true. False omits standalone text and merged prose, preserving accessible names and control values.'),
+    text_limit: integerRange('text_limit', 0, 10000).optional().describe('Limit each text/prose name, marking truncation with …; accessible control names and values stay complete. Default 80 for interactive, unlimited for full.'),
   });
   tool('read_text', 'Read whole-page rendered text when selector is omitted; optionally scope a frame or selector. Also read field value or a supported Monaco/CodeMirror 5 model. Optional selector scopes the read. complete_source reports completeness; next_offset continues live text, which may change between reads.', {
     ...handle, ...selector, ...frameScope, mode: z.enum(['visible', 'text_content', 'value', 'editor']).default('visible'),

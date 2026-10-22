@@ -783,6 +783,36 @@ test('compact AX represents 200 list items without duplicate inline text or lost
   assert.match(page.snapshot, /button "Go"/);
 });
 
+test('interactive snapshot reduces round trips and keeps one immutable view across pages', async () => {
+  const f = fixture(); await f.claim();
+  const nodes = [{ nodeId: 'root', role: { value: 'RootWebArea' }, childIds: [] }];
+  for (let i = 1; i <= 200; i++) {
+    nodes[0].childIds.push(`p${i}`);
+    nodes.push({ nodeId: `p${i}`, role: { value: 'paragraph' }, backendDOMNodeId: i, childIds: [`t${i}`] },
+      { nodeId: `t${i}`, role: { value: 'StaticText' }, name: { value: 'Long prose '.repeat(25) } });
+  }
+  nodes[0].childIds.push('button', 'edit');
+  nodes.push({ nodeId: 'button', backendDOMNodeId: 500, role: { value: 'button' }, name: { value: 'Go' } },
+    { nodeId: 'edit', backendDOMNodeId: 501, role: { value: 'textbox' }, name: { value: 'Edit' } });
+  f.nodes(nodes);
+  const full = await f.exec('snapshot');
+  assert.equal(full.truncated, true);
+  const compact = await f.exec('snapshot', { profile: 'interactive' });
+  assert.equal(compact.profile, 'interactive'); assert.equal(compact.text_limit, 80);
+  assert.equal(compact.total_node_count, 3); assert.equal(compact.truncated, false);
+  assert.ok(compact.snapshot.length < full.snapshot.length / 20);
+  assert.doesNotMatch(compact.snapshot, /paragraph/);
+  const ref = f.ref(compact);
+  await f.exec('click', { ref, mode: 'dom' }); await f.exec('click', { ref, mode: 'dom' });
+  await assert.rejects(f.exec('snapshot', { profile: 'typo' }), /profile/);
+  await f.exec('click', { ref, mode: 'dom' });
+  const first = await f.exec('snapshot', { profile: 'interactive', text: false, max_nodes: 1 });
+  await assert.rejects(f.exec('snapshot', { cursor: first.next_cursor, profile: 'full' }), /original profile/);
+  const next = await f.exec('snapshot', { cursor: first.next_cursor });
+  assert.equal(next.profile, 'interactive'); assert.equal(next.text, false);
+  assert.equal(next.snapshot_id, first.snapshot_id); assert.equal(next.node_count, 2);
+});
+
 test('mouse acknowledgments cannot serialize dispatch; mismatched events never report clicked', async () => {
   const f = fixture(); await f.claim();
   const send = f.api.debugger.sendCommand;

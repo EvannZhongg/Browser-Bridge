@@ -1,12 +1,12 @@
 # 验证报告
 
-当前版本 **0.11.3**（2026-10-22）。验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
+当前版本 **0.12.0**（2026-10-22）。验证使用本地 fixture 和临时 profile，链路为扩展 → 本机 Hub → stdio MCP。
 
 ## 当前版本
 
-- `npm test`：146 项通过。覆盖独占控制、快照/ref 生命周期、严格 selector 与有界歧义候选、原生/DOM 输入、逐字输入、hover、pointer/HTML5 拖拽、document 拖拽坐标差值与按轴滚动、滚动边界后的延迟加载、条件等待、HTML select、batch、历史导航、OOPIF、日志、上传、截图、对话框和未知结果不重放。
-- `npm run test:package`：仓库外含空格路径安装运行通过，22 个 MCP 工具、45 个发布文件；包含 `drag.js` / `wait.js` / `scroll.js` / `outcomes.js`，不包含配对密钥。版本为 0.11.3，示例配置使用 `@latest`。
-- Chromium headless `--primitives`：15 个场景通过，包含 document 坐标纵向 pointer/HTML5 拖拽、普通 pointer/HTML5 拖拽、取消 pointerdown 默认行为后的可信回执、滚动边界后延迟增长和歧义候选。
+- `npm test`：149 项通过。覆盖 interactive 快照的控件/祖先筛选、文本预览与原始 ref 身份、视图绑定分页、独占控制、快照/ref 生命周期、严格 selector 与有界歧义候选、原生/DOM 输入、逐字输入、hover、pointer/HTML5 拖拽、document 拖拽坐标差值与按轴滚动、滚动边界后的延迟加载、条件等待、HTML select、batch、历史导航、OOPIF、日志、上传、截图、对话框和未知结果不重放。
+- `npm run test:package`：仓库外含空格路径安装运行通过，22 个 MCP 工具、45 个发布文件；包含 `drag.js` / `wait.js` / `scroll.js` / `outcomes.js`，不包含配对密钥。版本为 0.12.0，示例配置使用 `@latest`。
+- Chromium headless `--primitives`：16 个场景通过，包含 interactive 快照、document 坐标纵向 pointer/HTML5 拖拽、普通 pointer/HTML5 拖拽、取消 pointerdown 默认行为后的可信回执、滚动边界后延迟增长和歧义候选。含 200 段正文的 fixture 中，默认 full 首屏 23302 字符且仍需续页，interactive 为 947 字符且无需续页；该比较只衡量返回内容，不代表 AX 采集提速。
 
 ## 升级前的浏览器验证
 
