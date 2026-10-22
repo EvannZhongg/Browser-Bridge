@@ -65,7 +65,8 @@ test('loopback endpoints reject missing auth, website origins and unpaired exten
   const headers = { Authorization: `Bearer ${f.config.token}`, Origin: 'https://evil.test' };
   assert.equal((await fetch(`${url}/health`, { headers })).status, 403);
   assert.equal((await fetch(`${url}/shutdown`, { method: 'POST', headers })).status, 403);
-  for (const [path, settings] of [['extension', { origin: 'https://evil.test' }], ['client', { headers }], ['client', {}]]) {
+  for (const [path, settings] of [['extension', { origin: 'https://evil.test' }], ['client', { headers }], ['client', {}],
+    ['client', { headers: { Authorization: `Bearer ${f.config.token}`, 'X-Browser-Attach-Version': '0.16.9' } }]]) {
     const ws = new WebSocket(`${url.replace('http:', 'ws:')}/${path}`, settings);
     await assert.rejects(once(ws, 'open'), /403/);
   }
@@ -146,7 +147,7 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const path = join(temp, 'config.json'), file = join(temp, '中文 empty.txt');
-  await writeJson(path, f.config); await writeFile(file, '');
+  await writeJson(path, { ...f.config, extension_dir: join(temp, 'extension') }); await writeFile(file, '');
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'bin/browser-attach.mjs'), 'mcp', '--config', path], cwd: temp });
   const mcp = new Client({ name: 'test', version: '1' });
   await mcp.connect(transport); t.after(() => mcp.close());
@@ -366,7 +367,7 @@ test('upload rejects directories, relative and missing files; handles empty file
   await assert.rejects(validateFiles([join(temp, 'missing')]), /ENOENT/);
 });
 
-test('setup installs stable extension data outside package, and preserves current pairing on repeated setup', async t => {
+test('setup preserves pairing and the Hub installs the stable extension while holding its port', async t => {
   const temp = await mkdtemp(join(tmpdir(), 'attach-setup-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const configPath = join(temp, 'config.json');
@@ -374,6 +375,8 @@ test('setup installs stable extension data outside package, and preserves curren
   assert.equal(a.config.token, b.config.token);
   assert.equal(a.config.extension_id.length, 32);
   assert.equal(a.extensionDir, join(temp, 'extension'));
+  const hub = await startHub(a.config, { port: 0 });
+  t.after(() => hub.close());
   assert.ok((await readFile(join(a.extensionDir, 'config.generated.js'), 'utf8')).includes(a.config.token));
   assert.equal(JSON.parse(await readFile(join(a.extensionDir, 'manifest.json'), 'utf8')).version, VERSION);
 });

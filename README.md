@@ -67,7 +67,7 @@ Merge the following into your client's MCP configuration, or see [mcp-config.jso
 
 On Windows clients that require a full command extension, use `npx.cmd`. With a global install you can also configure `"command": "browser-attach", "args": ["mcp"]`. Restart the MCP client to discover the tools.
 
-`@latest` resolves the newest npm version at launch. The MCP package and the loaded extension must be the same version; after an upgrade, rerun `browser-attach setup` and reload the extension on the extensions page, otherwise the Hub rejects the old extension connection.
+`@latest` selects the npm package at launch. For a pair already running 0.17 or newer, startup coordinates an idle Hub upgrade, synchronizes the paired extension directory and asks older connected extensions to reload themselves. First-time extension loading and the first upgrade from a pre-0.17 pair still require one manual extension reload; a pre-0.17 Hub must be stopped once before the new MCP can start. If another MCP connection is using the Hub, close it and reconnect to retry the upgrade.
 
 Assembly steps for supported hosts are in [agent integration](docs/AGENT-INTEGRATION.md); other clients use the stdio entry above.
 
@@ -113,13 +113,12 @@ Override it explicitly with the absolute path `BROWSER_ATTACH_HOME`. The Windows
 A host assembly step that writes the client entry pins the absolute paths of the current Node, CLI and the actual pairing file and sets `BROWSER_ATTACH_HOME`; it works together with a custom `--config`. When the MCP launches the Hub it passes the same absolute pairing path and directory, so different launch environments cannot derive a second configuration. See [agent integration](docs/AGENT-INTEGRATION.md).
 
 ```sh
-browser-attach status
-browser-attach stop
 npm install --global @evan_zhong/browser-attach
-browser-attach setup
 ```
 
-After upgrading, reload the extension on the extensions page, then restart the MCP connection. Hub and extension versions must match. The first time you use this project's new name, stop any previously running Hub and pair again; the default port is `47831` and `setup --port` changes it.
+Then restart the MCP connection. With `@latest`, restarting MCP is sufficient for later upgrades once Hub and extension are on 0.17 or newer; `setup` and `start` use the same coordination when run explicitly. Upgrading from an older pair first requires `browser-attach stop`, a restart and one manual extension reload. Custom pairing paths, ports and extension directories are retained. Closed browser profiles update when they next connect. An older MCP package cannot downgrade a newer Hub or installed extension.
+
+An upgrade waits for extension cleanup and confirms the new version after reload; cleanup or reload failures are reported instead of replaying page actions. Manual reload remains available on the extension options page for recovery. Hub and extension versions must match for page control. The default port is `47831`; choose another port with `setup --port` when creating a pairing.
 
 ## Architecture and boundaries
 
@@ -164,6 +163,7 @@ Real-browser tests need a Chromium / Edge executable that allows loading extensi
 npm run test:live -- --executable /path/to/chromium --family chromium
 npm run test:interaction -- --executable /path/to/chromium --family chromium
 npm run test:interaction -- --tab-indicators --executable /path/to/chromium --family chromium
+npm run test:upgrade -- --executable /path/to/chromium
 ```
 
 These tests use temporary profiles and local fixtures. Coverage and limits: [test report](docs/TEST-REPORT.md); implementation and design trade-offs: [architecture](docs/ARCHITECTURE.md).

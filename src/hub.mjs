@@ -3,6 +3,8 @@ import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { VERSION } from './config.mjs';
+import { syncExtension } from './setup.mjs';
+import { compareVersions } from '../extension/version.js';
 
 const MAX_MESSAGE = 24 * 1024 * 1024;
 const OPERATIONS = new Set(['release_tab', 'activate_tab', 'close_tab', 'snapshot', 'read_text', 'type', 'hover', 'drag', 'wait', 'select_option', 'click', 'fill', 'press_key', 'batch', 'scroll', 'navigate', 'screenshot', 'handle_dialog', 'upload_file', 'evaluate', 'logs']);
@@ -12,6 +14,8 @@ const send = (ws, data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.
 
 export async function startHub(config, { port = config.port, operationTimeout = HUB_OPERATION_TIMEOUT_MS } = {}) {
   const browsers = new Map(), clients = new Set(), claims = new Map(), tabClaims = new Map(), queues = new Map();
+  const cleanups = new Set();
+  let state = 'starting', upgradeError;
   const authorized = token => typeof token === 'string' && Buffer.byteLength(token) === Buffer.byteLength(config.token)
     && timingSafeEqual(Buffer.from(token), Buffer.from(config.token));
   const bearer = request => authorized(request.headers.authorization?.replace(/^Bearer /, ''));
@@ -28,13 +32,13 @@ export async function startHub(config, { port = config.port, operationTimeout = 
     result.then(done, done);
     return result;
   }
-  function requestBrowser(browser, owner, command, args) {
+  function requestBrowser(browser, owner, command, args, timeout = operationTimeout) {
     return new Promise((resolve, reject) => {
       const id = randomUUID();
       const timer = setTimeout(() => {
         browser.pending.delete(id);
         reject(new OperationTimeout('Browser operation timed out; outcome may be unknown. Connection will release its tabs. List and claim again.'));
-      }, operationTimeout);
+      }, timeout);
       browser.pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } });
       if (browser.ws.readyState !== WebSocket.OPEN) {
         clearTimeout(timer); browser.pending.delete(id); reject(new Error('Browser disconnected')); return;
@@ -44,12 +48,13 @@ export async function startHub(config, { port = config.port, operationTimeout = 
   }
   async function execute(owner, observed, method, args) {
     if (method === 'list_browsers') return {
-      browsers: [...browsers.values()].map(browser => ({ browser_id: browser.id, ...browser.info, capabilities: CAPABILITIES })),
+      browsers: [...browsers.values()].filter(browser => browser.ready).map(browser => ({ browser_id: browser.id, ...browser.info, capabilities: CAPABILITIES })),
+      upgrades: [...browsers.values()].filter(browser => !browser.ready).map(browser => ({ instance_id: browser.info.instance_id, version: browser.info.extension_version, error: browser.upgradeError })),
       hint: 'Load the paired extension in each Chrome/Edge profile if empty.',
     };
     if (method === 'list_tabs' || method === 'claim_tab' || method === 'open_tab' || method === 'fetch') {
       const browser = browsers.get(args.browser_id);
-      if (!browser) throw new Error('Browser is not connected; call browser_discover kind=browsers again');
+      if (!browser?.ready) throw new Error('Browser is not connected; call browser_discover kind=browsers again');
       if (method === 'open_tab' || method === 'fetch') return await requestBrowser(browser, owner, method, args);
       if (method === 'list_tabs') {
         const result = await requestBrowser(browser, owner, method, {});
@@ -93,10 +98,36 @@ export async function startHub(config, { port = config.port, operationTimeout = 
   }
 
   let closing;
-  const server = http.createServer((request, response) => {
+  const server = http.createServer(async (request, response) => {
     if (request.headers.origin || !bearer(request)) { response.writeHead(403).end(); return; }
     response.setHeader('Content-Type', 'application/json');
-    if (request.url === '/health' && request.method === 'GET') response.end(JSON.stringify({ service: 'browser-attach', version: VERSION, browsers: browsers.size }));
+    if (request.url === '/health' && request.method === 'GET') response.end(JSON.stringify({ service: 'browser-attach', version: VERSION, state,
+      browsers: [...browsers.values()].filter(browser => browser.ready).length, clients: clients.size, upgrade_error: upgradeError,
+      extensions: [...browsers.values()].map(browser => ({ instance_id: browser.info.instance_id, version: browser.info.extension_version, ready: browser.ready, error: browser.upgradeError })) }));
+    else if (request.url === '/upgrade' && request.method === 'POST') {
+      try {
+        const target = request.headers['x-browser-attach-version'];
+        if (compareVersions(target, VERSION) <= 0) { response.writeHead(409).end(JSON.stringify({ error: 'Upgrade target must be newer than this Hub' })); return; }
+        if (state !== 'ready' || clients.size || cleanups.size || [...browsers.values()].some(browser => browser.pending.size)) {
+          response.writeHead(409).end(JSON.stringify({ error: 'Hub is in use; close other MCP connections and retry the upgrade' })); return;
+        }
+        state = 'upgrading';
+        upgradeError = undefined;
+        const connected = [...browsers.values()];
+        const outcomes = await Promise.allSettled(connected.map(async browser => {
+          const result = await requestBrowser(browser, null, 'prepare_upgrade', {}, 8000);
+          if (result.errors?.length || result.prepared !== true) throw new Error(result.errors?.join('; ') || 'Extension did not confirm cleanup');
+        }));
+        const failed = outcomes.find(item => item.status === 'rejected');
+        if (failed) {
+          await Promise.allSettled(connected.map(browser => requestBrowser(browser, null, 'resume', {}, 1000)));
+          upgradeError = `Extension cleanup failed: ${failed.reason.message}`;
+          state = 'ready'; throw new Error(upgradeError);
+        }
+        response.end(JSON.stringify({ stopping: true, extensions: connected.map(browser => browser.info.instance_id) }));
+        setImmediate(() => close());
+      } catch (error) { response.writeHead(409).end(JSON.stringify({ error: error.message })); }
+    }
     else if (request.url === '/shutdown' && request.method === 'POST') {
       response.end('{"stopping":true}'); setImmediate(() => close());
     } else response.writeHead(404).end();
@@ -105,8 +136,9 @@ export async function startHub(config, { port = config.port, operationTimeout = 
   server.on('upgrade', (request, socket, head) => {
     const extension = request.url === '/extension';
     const valid = extension ? request.headers.origin === `chrome-extension://${config.extension_id}`
-      : request.url === '/client' && !request.headers.origin && bearer(request);
+      : request.url === '/client' && !request.headers.origin && bearer(request) && request.headers['x-browser-attach-version'] === VERSION;
     if (!valid) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
+    if (state !== 'ready') { socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return; }
     wss.handleUpgrade(request, socket, head, ws => {
       ws.on('pong', () => { ws.isAlive = true; });
       if (extension) connectExtension(ws); else connectClient(ws);
@@ -120,18 +152,23 @@ export async function startHub(config, { port = config.port, operationTimeout = 
       try {
         const data = JSON.parse(raw.toString());
         if (!browser) {
+          if (state !== 'ready') { ws.close(1013, 'Hub is preparing an upgrade'); return; }
           const info = data.browser;
-          if (data.type !== 'hello' || !authorized(data.token) || !info || info.extension_version !== VERSION || !['chrome', 'edge'].includes(info.family) ||
+          if (data.type !== 'hello' || !authorized(data.token) || !info || !['chrome', 'edge'].includes(info.family) ||
               !['instance_id', 'run_id', 'profile_name'].every(key => typeof info[key] === 'string' && info[key].length >= 1 && info[key].length <= 128))
             throw new Error('Invalid pairing or browser identity');
           const id = `${info.instance_id}:${info.run_id}`;
           if (browsers.has(id)) throw new Error('Browser instance is already connected');
-          browser = { id, ws, info, pending: new Map() };
+          const comparison = compareVersions(info.extension_version, VERSION);
+          if (comparison > 0) throw new Error('Extension is newer than this Hub');
+          browser = { id, ws, info, ready: comparison === 0, pending: new Map() };
           browsers.set(id, browser); clearTimeout(helloTimer);
-          send(ws, { type: 'connected', browser_id: id }); return;
+          if (browser.ready) send(ws, { type: 'connected', browser_id: id });
+          else requestBrowser(browser, null, 'reload_extension', { version: VERSION }).catch(error => { browser.upgradeError = error.message; });
+          return;
         }
         if (data.type === 'ping') send(ws, { type: 'pong' });
-        else if (data.type === 'detached') forget(tabClaims.get(keyFor(browser.id, data.tab_id)));
+        else if (browser.ready && data.type === 'detached') forget(tabClaims.get(keyFor(browser.id, data.tab_id)));
         else if (browser.pending.has(data.id)) {
           const pending = browser.pending.get(data.id); browser.pending.delete(data.id);
           if ('error' in data) pending.reject(new Error(String(data.error))); else pending.resolve(data.result || {});
@@ -168,10 +205,13 @@ export async function startHub(config, { port = config.port, operationTimeout = 
     });
     ws.on('close', () => {
       disconnected = true; clients.delete(ws);
-      chain.finally(async () => {
-        await Promise.allSettled([...browsers.values()].map(browser => requestBrowser(browser, owner, 'release_owner', {})));
-        for (const [handle, claim] of claims) if (claim.owner === owner) forget(handle);
-      });
+      const cleanup = chain.then(async () => {
+        await Promise.allSettled([...browsers.values()].filter(browser => browser.ready).map(async browser => {
+          const result = await requestBrowser(browser, owner, 'release_owner', {});
+          if (!result.errors?.length) for (const [handle, claim] of claims) if (claim.owner === owner && claim.browser_id === browser.id) forget(handle);
+        }));
+      }).finally(() => cleanups.delete(cleanup));
+      cleanups.add(cleanup);
     });
   }
   const heartbeat = setInterval(() => {
@@ -183,6 +223,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
   async function close() {
     if (closing) return closing;
     closing = (async () => {
+      state = 'stopping';
       clearInterval(heartbeat);
       for (const ws of wss.clients) ws.close(1001, 'Hub stopped');
       const timer = setTimeout(() => { for (const ws of wss.clients) ws.terminate(); }, 1000);
@@ -191,7 +232,11 @@ export async function startHub(config, { port = config.port, operationTimeout = 
     })();
     return closing;
   }
-  try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); }); }
-  catch (error) { clearInterval(heartbeat); wss.close(); throw error; }
+  try {
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+    config.port = server.address().port;
+    if (config.extension_dir) await syncExtension(config);
+    state = 'ready';
+  } catch (error) { await close(); throw error; }
   return { server, close, port: server.address().port, claims, browsers };
 }

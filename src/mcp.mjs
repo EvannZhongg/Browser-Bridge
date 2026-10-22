@@ -194,6 +194,7 @@ export function createMcp(client) {
 
 export async function runMcp(configPath) {
   const client = new AttachClient(await ensureHub(configPath));
+  await client.connect();
   const server = createMcp(client);
   const transport = new StdioServerTransport();
   transport.onclose = () => client.close();

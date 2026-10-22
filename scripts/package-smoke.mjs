@@ -1,14 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 import { once } from 'node:events';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ROOT, VERSION } from '../src/config.mjs';
-import { startHub } from '../src/hub.mjs';
 
 if (!process.env.npm_execpath) throw new Error('Run through npm run test:package');
 const npm = args => execFileSync(process.execPath, [process.env.npm_execpath, ...args], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
@@ -22,15 +21,17 @@ try {
   const installed = process.platform === 'win32' ? join(prefix, 'node_modules/@evan_zhong/browser-attach') : join(prefix, 'lib/node_modules/@evan_zhong/browser-attach');
   const home = join(temp, 'user data'), env = { ...process.env, BROWSER_ATTACH_HOME: home };
   // This setup must use the INSTALLED package, never the source checkout.
-  const config = { port: 47831, token: 'package-smoke-secret-'.repeat(4), extension_id: 'a'.repeat(32) };
-  hub = await startHub(config, { port: 0 }); config.port = hub.port;
-  const configPath = join(temp, 'config.json'); await writeFile(configPath, JSON.stringify(config));
   execFileSync(process.execPath, [join(installed, 'bin/browser-attach.mjs'), '--help'], { cwd: temp, env, stdio: 'pipe' });
-  // Use the installed setup function without spawning another long-lived Hub.
   const { pathToFileURL } = await import('node:url');
   const { setup } = await import(pathToFileURL(join(installed, 'src/setup.mjs')).href);
-  const paired = await setup({ configPath: join(home, 'config.json'), port: config.port });
+  const { startHub } = await import(pathToFileURL(join(installed, 'src/hub.mjs')).href);
+  const paired = await setup({ configPath: join(home, 'config.json') });
+  const { config, configPath } = paired;
+  hub = await startHub(config, { port: 0 });
+  await writeFile(configPath, JSON.stringify(config));
   assert.equal(paired.extensionDir, join(home, 'extension'));
+  assert.equal(JSON.parse(await readFile(join(paired.extensionDir, 'manifest.json'))).version, VERSION);
+  assert.equal(await readFile(join(paired.extensionDir, 'connection.js'), 'utf8'), await readFile(join(installed, 'extension/connection.js'), 'utf8'));
   ws = new WebSocket(`ws://127.0.0.1:${config.port}/extension`, { origin: `chrome-extension://${config.extension_id}` });
   await once(ws, 'open'); const hello = once(ws, 'message');
   ws.send(JSON.stringify({ type: 'hello', token: config.token, browser: { family: 'chrome', instance_id: 'package', run_id: 'one', profile_name: 'test', extension_version: VERSION } }));

@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.16.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.17.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -17,11 +17,12 @@ MCP 客户端
 |---|---|
 | `bin/browser-attach.mjs` | `setup` / `mcp` / `hub` / `status` / `stop` 入口 |
 | `src/config.mjs` | 数据目录、配对文件校验、版本常量 |
-| `src/setup.mjs` | 生成配对密钥、复制稳定扩展目录、写 Nosis 配置 |
+| `src/setup.mjs` | 生成配对密钥、暂存并替换稳定扩展目录、写 Nosis 配置 |
 | `src/hub.mjs` | 浏览器与会话注册、独占 claim、每标签串行队列、超时 |
-| `src/client.mjs` | MCP 进程到 Hub 的 WebSocket 客户端，按需拉起 Hub |
+| `src/client.mjs` | MCP 到 Hub 的 WebSocket 客户端、启动升级协调与就绪检查 |
 | `src/mcp.mjs` | 23 个工具的 schema、结果与图片封装 |
 | `extension/controller.js` | 操作实现；传输层从不暴露原始 CDP |
+| `extension/connection.js` | 扩展连接、重连清理、升级维护与自行重载 |
 | `extension/sessions.js` | 扁平 debugger session 与 frame/OOPIF 归属 |
 | `extension/{click,input,actionability,scroll}.js` | 原生/DOM 输入、逐字按键、可操作性、容器滚动与有界查找 |
 | `extension/{drag,wait}.js` | 复用鼠标准备和严格定位的拖拽、只读条件等待；网络空闲复用被动请求表 |
@@ -119,7 +120,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 ## 安全与隐私
 
 - Hub 只监听 `127.0.0.1`；HTTP 端点拒绝任何带 `Origin` 的请求，客户端必须携带 Bearer 密钥。
-- 扩展连接固定校验 `chrome-extension://<extension_id>` Origin、随机 token 与版本号，三者任一不符即断开。
+- 扩展连接固定校验 `chrome-extension://<extension_id>` Origin 与随机 token。同版本才注册为可控浏览器；已配对的较旧扩展仅进入维护连接，收到重载请求后校验本机文件、完成清理再自行重载。客户端握手同样要求版本一致。
 - 配对文件 `config.json` 与生成的 `extension/config.generated.js` 含密钥：目录在 Windows 上用当前用户 SID 收紧 ACL，在 POSIX 上为 `0700`/`0600`；发布包检查会拒绝包含 `config.generated.js`。
 - 扩展具备 `debugger` 与 `tabGroups` 权限，操作使用用户现有登录态；只应接入信任的 MCP 客户端。网页内容、控制台与网络日志均视为非可信数据。
 - 文件上传只传路径，Hub 与模型都不接触文件内容；选择文件可能立即把内容发给网站，因此只传任务明确指定的文件。
@@ -142,4 +143,6 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 
 ## 版本与兼容
 
-`package.json`、`src/config.mjs`、`extension/manifest.json` 的版本必须一致；Hub 会拒绝版本不同的扩展，`hubIsRunning` 也会拒绝版本不同的 Hub。MCP 示例配置使用 `@latest`，升级流程：停止旧 Hub → `browser-attach setup` → 在扩展管理页重新加载扩展 → 重连 MCP。
+`package.json`、`src/config.mjs`、`extension/manifest.json` 的版本必须一致。MCP 示例配置使用 `@latest`，MCP 启动、`start` 和 `setup` 共用升级协调：检查已配对 Hub → 空闲 Hub 暂停接入并确认扩展清理 → 旧 Hub 退出 → 新 Hub 独占端口后同步扩展 → 旧扩展自行重载 → 确认新版重连。该自动路径要求 Hub 与扩展已经具备 0.17 的 `connection.js` 维护协议；更旧版本的首次升级必须先停止 Hub、重启 MCP 并手动重载扩展（旧 Hub 没有升级端点，旧扩展也不处理重载命令）。MCP 在 stdio 就绪前即连接 Hub，尚未调用工具的 MCP 会话也会阻止升级。有客户端、断连清理或在途请求时返回占用错误，关闭其他 MCP 连接后重试；不强制打断页面动作。
+
+Hub 的监听端口同时保证同一配对的文件同步只有一个执行者。扩展先完整暂存，保留稳定目录本身，逐文件替换并最后提交 manifest；替换失败恢复旧文件，进程在替换中退出时通过 `.previous` 副本恢复。配对密钥、端口和自定义目录保留，旧包不得降级新版 Hub 或扩展。扩展重载记录尝试，防止失败后无限循环；派发重载不代表升级成功，启动协调仍等待实际版本。未打开的 profile 在下次连接时处理；首次安装仍需手动加载扩展。此流程不热替换正在运行的 MCP 进程。

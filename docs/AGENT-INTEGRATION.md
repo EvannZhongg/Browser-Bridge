@@ -26,7 +26,7 @@ node <安装位置>/bin/browser-attach.mjs mcp --config <配对文件绝对路�
 
 - `BROWSER_ATTACH_HOME` 指向配对文件所在目录。
 - Node 可执行文件、CLI 与配对文件一律使用绝对路径。宿主的启动环境（PATH、工作目录、AppData 重定向）不同，重新推导会得到第二份配对。
-- 安装位置变化或升级后重新执行 `setup` 并更新宿主条目。MCP 包与已加载扩展必须同版本，否则 Hub 直接拒绝连接。
+- 安装位置变化后重新执行 `setup` 并更新宿主条目。Hub 与扩展已经运行 0.17 或更高版本时，安装新版后重连 MCP 会协调空闲 Hub 与扩展自动升级；从更旧版本首次升级需先停止 Hub、重启 MCP 并手动重载一次扩展。其他 MCP 仍连接时关闭它们后重试。正常页面控制要求同版本。
 
 工具前缀由宿主决定，原始工具名不变（`browser_discover`、`browser_claim_tab` 等）。装配后的最小验证在各宿主一致：`browser_discover(kind="browsers")` → `kind="tabs"` → `browser_claim_tab` → `browser_snapshot` → `browser_tab_control(action="release")`。
 
@@ -110,7 +110,7 @@ npm root -g       # 全局安装目录；CLI 位于 <root>/@evan_zhong/browser-a
 - `web` profile 开启 HMR，修改条目会就地重连；`headless`、`sdk`、`acp` 关闭 HMR，需要重启 harness。
 - MCP 工具与原生工具一样经过 DSH 的权限检查与审批策略。
 
-升级后重新加载扩展并重启 harness；包与扩展版本必须一致。
+安装新版后重启或重连 harness，由 MCP 启动流程协调 0.17+ 的后续 Hub 与扩展升级；首次加载扩展以及从更旧版本首次升级仍需手动重载。
 
 ## 新增宿主
 
@@ -122,4 +122,4 @@ npm root -g       # 全局安装目录；CLI 位于 <root>/@evan_zhong/browser-a
 - 失效句柄不能跨连接复用，错误后应重新 discover + claim。
 - 文件上传只在浏览器本机读取路径，内容不经过 Hub 或模型。
 - 宿主把大结果保存为 Artifact 时，嵌套 JSON 长行可能被宿主的读取工具截断；这是宿主的分页行为，不能靠调大 Attach 的预算解决，也不等同于快照游标分页。
-- `Connection closed` 时依次检查：宿主的 stderr、配对文件是否可见、`hub.log`、以及 Hub 与扩展的版本是否一致（版本不一致会直接拒绝连接）。
+- `Connection closed` 时依次检查：宿主的 stderr、配对文件是否可见、`hub.log`、是否有其他 MCP 连接阻止升级，以及扩展清理或自动重载是否失败。扩展设置页可手动重新加载以恢复。

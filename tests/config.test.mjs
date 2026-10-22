@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DEFAULT_CONFIG, ROOT } from '../src/config.mjs';
+import { DEFAULT_CONFIG, ROOT, loadConfig } from '../src/config.mjs';
 import { configureNosis, mcpSettings } from '../src/setup.mjs';
 
 const configModule = new URL('../src/config.mjs', import.meta.url).href;
@@ -59,4 +59,13 @@ test('generated MCP pins Node, CLI and the exact pairing file; Nosis custom conf
   assert.deepEqual(updated.mcp.servers.other, original.mcp.servers.other);
   assert.deepEqual(updated.mcp.servers.browser_attach.args, launch.args);
   assert.deepEqual(updated.mcp.servers.browser_attach.env, launch.env);
+});
+
+test('legacy pairing without extension_dir defaults to the sibling extension directory', async t => {
+  const temp = await mkdtemp(join(tmpdir(), 'attach-legacy-config-'));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const configPath = join(temp, 'config.json');
+  await writeFile(configPath, JSON.stringify({ token: 'x'.repeat(48), port: 47831, extension_id: 'a'.repeat(32) }));
+  const loaded = await loadConfig(configPath);
+  assert.equal(loaded.extension_dir, join(temp, 'extension'));
 });

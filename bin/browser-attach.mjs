@@ -6,7 +6,7 @@ import { ensureHub, hubIsRunning, AttachClient } from '../src/client.mjs';
 try {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     config: { type: 'string', default: DEFAULT_CONFIG },
-    'extension-dir': { type: 'string' }, port: { type: 'string', default: '47831' },
+    'extension-dir': { type: 'string' }, port: { type: 'string' },
     nosis: { type: 'boolean', default: false }, help: { type: 'boolean', short: 'h' },
   } });
   const action = positionals[0] || 'mcp', configPath = values.config;
@@ -20,10 +20,10 @@ try {
     const stop = () => hub.close(); process.once('SIGINT', stop); process.once('SIGTERM', stop);
   } else if (action === 'setup') {
     const { setup, configureNosis } = await import('../src/setup.mjs');
-    const result = await setup({ configPath, extensionDir: values['extension-dir'], port: Number(values.port) });
+    const result = await setup({ configPath, extensionDir: values['extension-dir'], port: values.port === undefined ? undefined : Number(values.port) });
     console.log(`Extension folder: ${result.extensionDir}\nExtension ID: ${result.config.extension_id}\nPairing: ${result.configPath}`);
     if (values.nosis) console.log(JSON.stringify(await configureNosis(undefined, { configPath: result.configPath })));
-    await ensureHub(result.configPath); console.log('Local hub started. Load/reload the extension in Chrome/Edge.');
+    await ensureHub(result.configPath); console.log('Local hub ready. Load the extension in each Chrome/Edge profile on first use; subsequent upgrades reload it automatically.');
   } else if (action === 'start') { await ensureHub(configPath); console.log('Local hub started.'); }
   else if (action === 'status') {
     const config = await loadConfig(configPath);

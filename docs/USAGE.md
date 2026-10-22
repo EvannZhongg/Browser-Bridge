@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.16.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.17.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)；内部实现与安全模型见 [架构说明](ARCHITECTURE.md)。
 
 工具发现采用三层说明：初始化 `instructions` 提供跨工具规则；工具 description 说明用途、独有行为与结果语义；参数 schema 及其短说明提供类型、默认值和选择规则。本文保留完整原理、边界和示例。客户端集成时应把 MCP 初始化响应中的 instructions 传入模型上下文；仅读取 tools/list 不会包含完整的通用调用规则。
 
@@ -30,6 +30,8 @@
 | `browser_tab_control(action="close")` | `tab_handle` | 关闭标签并作废句柄，可能丢失未保存状态 |
 
 `discover.kind` 与 `tab_control.action` 必填，无默认值。`browser_id` 仅在 `kind=tabs` 时使用且必填；`focus_window` 仅在 `action=activate` 时使用，省略时为 `true`。其他分支传入这些参数会在派发前报错。新建标签仍需加载后发现并显式接管，不会自动取得控制权。
+
+`discover(kind="browsers")` 仅在 `browsers` 中列出同版本、可接受页面操作的扩展。0.17+ 的较旧扩展自动重载期间列在 `upgrades` 中，失败时附带 `error`；维护连接不提供可用于接管的浏览器身份。从 0.17 之前版本升级时，旧扩展不具备自动重载能力，需要手动重载一次。
 
 ### 观察
 
