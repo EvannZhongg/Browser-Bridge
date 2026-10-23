@@ -91,6 +91,19 @@ function fixture() {
   return { controller, exec, claim, ref, calls, api, notices, tabs, block: () => { blocked = true; }, modal: () => { modalOnClick = true; }, nodes: value => { customNodes = value; } };
 }
 
+test('large AX observations page without exceeding the function argument limit', async () => {
+  const f = fixture(); await f.claim();
+  const count = 150000;
+  f.nodes([{ nodeId: 'root', role: { value: 'RootWebArea' }, childIds: Array.from({ length: count }, (_, i) => String(i)) },
+    ...Array.from({ length: count }, (_, i) => ({ nodeId: String(i), role: { value: 'button' }, name: { value: `Item ${i}` }, backendDOMNodeId: i + 1 }))]);
+  const first = await f.exec('snapshot', { max_nodes: 1 });
+  assert.equal(first.total_node_count, count + 1); assert.equal(first.node_count, 1); assert.equal(first.truncated, true);
+  const second = await f.exec('snapshot', { cursor: first.next_cursor, max_nodes: 2 });
+  assert.equal(second.total_node_count, count + 1);
+  assert.match(second.snapshot, /button "Item 0"[\s\S]*button "Item 1"/);
+  assert.equal(second.node_count, 2); assert.equal(second.truncated, true);
+});
+
 test('tab_id claim tolerates title drift; explicitly supplied identity guards still fail', async () => {
   const f = fixture(); f.tabs.get(9).title = 'New title';
   await assert.rejects(f.claim(), /changed/);

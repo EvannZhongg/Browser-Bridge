@@ -63,10 +63,25 @@ test('network idle uses passive request tracking and does not claim quiet while 
 
 
 test('text waits can observe any change from full previous text without knowing the next value', () => {
-  const field={textContent:'Before'},query=()=>field;
+  const field={innerText:'Before'},query=()=>field;
   assert.equal(inspectWait(query,null,{condition:'text',previous:'Before'}).satisfied,false);
-  field.textContent='After';
+  field.innerText='After';
   assert.equal(inspectWait(query,null,{condition:'text',previous:'Before'}).satisfied,true);
   waitOptions({condition:'text',selector:'#state',previous:''});
   assert.throws(()=>waitOptions({condition:'text',selector:'#state',previous:'old',expected:'new'}),/exactly one/);
+});
+
+test('text waits use rendered text for both substring and full previous-value comparisons', () => {
+  const field = { innerText: 'Loading', textContent: 'Loading window.ready = true; Ready' }, query = () => field;
+  assert.equal(inspectWait(query, null, { condition: 'text', expected: 'Ready' }).satisfied, false);
+  assert.equal(inspectWait(query, null, { condition: 'text', previous: 'Loading' }).satisfied, false);
+  field.innerText = 'Ready';
+  assert.equal(inspectWait(query, null, { condition: 'text', expected: 'Ready' }).satisfied, true);
+  assert.equal(inspectWait(query, null, { condition: 'text', previous: 'Loading' }).satisfied, true);
+  field.innerText = 'x'.repeat(600) + ' Ready';
+  assert.equal(inspectWait(query, null, { condition: 'text', expected: 'Ready' }).satisfied, true);
+  assert.equal(inspectWait(query, null, { condition: 'text', previous: field.innerText }).satisfied, false);
+  assert.equal(inspectWait(query, null, { condition: 'text', expected: 'Ready' }).text.length, 500);
+  field.innerText = '';
+  assert.equal(inspectWait(query, null, { condition: 'text', expected: 'Ready' }).satisfied, false);
 });

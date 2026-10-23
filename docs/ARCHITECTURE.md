@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.17.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.17.2**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -67,7 +67,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 
 ## 观察模型
 
-- **AX 渲染**：从 `Accessibility.getFullAXTree` 读取，移除 `InlineTextBox`，合并纯文本列表项与段落名称，丢弃 `generic` / `none` 且无名称无状态的节点，只保留少量状态属性和浏览器提供的 value、invalid。每行 `[token:n] role "name"`，`token` 是本次观察的随机前缀；这些字段不证明应用已保存。
+- **AX 渲染**：从 `Accessibility.getFullAXTree` 读取，移除 `InlineTextBox`，合并纯文本列表项与段落名称，丢弃 `generic` / `none` 且无名称无状态的节点，只保留少量状态属性和浏览器提供的 value、invalid。树遍历、交互视图筛选和正文合并使用迭代，跨 frame 逐项合并结果，避免深树递归和大数组参数展开溢出；分页前仍采集并渲染完整 AX 树，max_nodes 不限制采集成本。每行 `[token:n] role "name"`，`token` 是本次观察的随机前缀；这些字段不证明应用已保存。
 - **交互视图**：可选 `profile=interactive` 在同一渲染器中仅保留 AX 控件角色、可聚焦/可编辑节点及其祖先链和控件内文本，不以 backendNodeId/ref 是否存在判断交互性。独立文本和合并正文可隐藏或截取预览，控件名称、值和 ref 的原始 AX 身份保留；默认 `full` 行为不变。筛选仍读取完整 AX 树，只降低输出与分页成本；视图参数绑定分页观察。
 - **文本查询与精简输出**：`snapshot(query=...)` 复用同一次 AX 渲染，按当前视图中节点的完整名称（含合并正文）或 value 做不区分大小写的字面子串筛选，只输出匹配行和对应 frame 标题；不搜索 role/ref 或任意 DOM 属性，不新增索引缓存。新查询仍采集新观察并使旧 refs 失效，query 与分页绑定。默认省略 viewport、snapshot_id 和重复规则说明，`verbose=true` 返回前两项；frame 覆盖、视图、预算和游标语义保留。
 - **ref 解析**：ref 保存 `backendNodeId`、所属 frame/session 和观察时的 AX role/name；动作时重新 `DOM.resolveNode` 并用局部 AX 查询核对语义身份。输入与求值不清空 refs，只使快照分页失效；原节点仍连接时可复用，节点替换、role/name 改变、文档或 frame 变化时安全失败，不按 role/name 猜测替代节点。
@@ -94,7 +94,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **送达预算**：原生 click/hover/press_key 的派发及可信回执另有 1250 ms 上限，清理最多 250 ms；系统菜单捕获输入时快速释放队列，仍报告结果未知并提示 Esc，不自动重放。
 - **hover 与 drag**：hover 复用点击准备与隔离校验，仅派发一次 mouseMoved，清理不移走指针。drag 显式区分 pointer 与 HTML5；后者从真实 dragstart 截获 DragData，再用 CDP 派发 dragover/drop，校验可信 dragstart/drop/dragend。目的节点在按住后滚入视口；所有步骤共用标签队列和总预算，失败时只取消/释放本次手势。
 - **可选输入参数**：显式 offset 在元素 content quad 上插值后沿用命中与 OOPIF 边界检查；settle_ms 在 click/drag 首次派发前等待并复查就绪。drag trajectory 只替换既有插值段，采用法向控制点、平滑进度及随机间隔权重；type 的 delay_ms 可逐间隔独立区间采样。所有等待共用总预算，超时后没有继续派发的链；省略参数时不使用随机数，沿用既有确定性路径。不新增 tab 级历史、冷却、自动激活或重放路径。
-- **条件等待**：wait 复用严格 selector、可操作性和命中检查，支持出现、可见、可操作、文本/URL 子串及网络空闲；只读轮询，错误附带条件和最后状态。
+- **条件等待**：wait 复用严格 selector、可操作性和命中检查，支持出现、可见、可操作、文本/URL 子串及网络空闲；文本使用 innerText，expected 子串匹配和 previous 完整旧值比较均在 500 字符结果预览截取前完成。只读轮询，错误附带条件和最后状态。
 - **原生下拉**：select_option 直接用 selectedIndex setter 和合成 input/change 设置一个 HTML 选项，核验保留结果并返回 events_trusted=false。native click 的 select 命中（含 UA shadow 内部节点和关联 label）在派发前拒绝。
 - **命中提示**：普通命中保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。CSSPseudoElement 先解析为事件所属的 originating element，提示标记 pseudo_element=true，并使用该元素安装事件校验。语义候选不会被用于替换点击目标。
 - **遮挡失败诊断**：当前 frame 的遮挡直接复用已读取的 hit_target；祖先 frame 遮挡额外用至多 200 ms 读取命中描述，诊断节点消失时保留原遮挡错误与 backend node ID。错误包含命中点和受阻 frame。根据共享预算的派发状态区分“未派发”和“结果未知”，避免 drag 按住后准备目的节点时误报零输入。

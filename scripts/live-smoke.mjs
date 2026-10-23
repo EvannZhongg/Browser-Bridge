@@ -226,6 +226,20 @@ try {
   const claim = await call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url, expected_title: tab.title });
   const handle = { tab_handle: claim.tab_handle };
   const evaluate = (expression, args = {}) => call('evaluate', { ...handle, expression, ...args });
+  for (const comparison of [{ expected: 'RENDERED_READY' }, { previous: 'Waiting' }]) {
+    await evaluate(`(() => {
+      document.querySelector('#wait-probe')?.remove();
+      const probe = document.createElement('div'); probe.id = 'wait-probe';
+      probe.innerHTML = 'Waiting<script>window.literal = "RENDERED_READY"</script><style>/* RENDERED_READY */</style><span hidden>RENDERED_READY</span>';
+      document.body.append(probe); window.waitProbeReady = false;
+      setTimeout(() => { probe.firstChild.textContent = 'RENDERED_READY'; window.waitProbeReady = true; }, 1000);
+    })()`);
+    const waited = await call('wait', { ...handle, selector: '#wait-probe', condition: 'text', ...comparison, timeout_ms: 3000 });
+    assert.equal(waited.current.text, 'RENDERED_READY');
+    assert.equal((await evaluate('window.waitProbeReady')).value, true);
+  }
+  await evaluate(`document.querySelector('#wait-probe').remove()`);
+  checks.push('text wait ignores script/style/hidden descendant literals and waits for rendered substring or full previous-text change');
   const whole = await call('snapshot', handle);
   assert.equal(whole.profile, 'full'); assert.equal(whole.viewport, undefined); assert.equal(whole.snapshot_id, undefined); assert.equal(whole.note, undefined);
   const queried = await call('snapshot', { ...handle, query: 'increment' });
@@ -464,6 +478,20 @@ try {
   assert.deepEqual(wheelState,{count:1,dx:-15,dy:120,trusted:true});
   checks.push('F8/Insert/PageUp trusted keys, shifted punctuation text, DOM default and native wheel custom handler');
 
+  await evaluate(`(() => {
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < 12000; i++) {
+      const row = document.createElement('div'); row.setAttribute('role', 'group'); row.setAttribute('aria-label', 'Large row ' + i); fragment.append(row);
+    }
+    document.body.replaceChildren(fragment);
+  })()`, { timeout_ms: 30000 });
+  const largeSnapshotStarted = Date.now();
+  const largeSnapshot = await call('snapshot', { ...handle, max_nodes: 1 });
+  assert.ok(largeSnapshot.total_node_count >= 12000);
+  assert.equal(largeSnapshot.node_count, 1); assert.equal(largeSnapshot.truncated, true);
+  const largeNext = await call('snapshot', { ...handle, cursor: largeSnapshot.next_cursor, max_nodes: 2 });
+  assert.match(largeNext.snapshot, /group "Large row 0"/);
+  checks.push(`12000 semantic DOM nodes snapshot/pagination with max_nodes=1 (${Date.now() - largeSnapshotStarted} ms, ${largeSnapshot.total_node_count} rendered AX entries)`);
   await call('tab_control', { ...handle, action: 'release' });
   const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: VERSION, checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });

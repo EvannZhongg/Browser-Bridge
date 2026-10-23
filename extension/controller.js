@@ -343,7 +343,7 @@ export function createController(api, notify = () => {}) {
       }
       const rendered = renderAX(nodes, token, refs, frame.id, target.sessionId, options);
       if (rendered.length || options.query == null) entries.push({ node: false, frameId: frame.id, line: `Frame ${frame.id} ${frame.url}` });
-      entries.push(...rendered);
+      for (const entry of rendered) entries.push(entry);
     }
     const metadata = value(await send(tabId, 'Runtime.evaluate', {
       expression: '({title: document.title, url: location.href})', returnByValue: true,

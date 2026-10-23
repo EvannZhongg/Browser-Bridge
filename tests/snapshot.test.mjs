@@ -72,3 +72,37 @@ test('text previews never shorten control identity, accessible names or values',
     assert.throws(() => snapshotOptions(args));
   }
 });
+
+test('deep AX traversal preserves preorder, refs and interactive text without recursion', () => {
+  const depth = 15000;
+  const nodes = [node('root', 'RootWebArea', '', ['g0'])];
+  for (let i = 0; i < depth; i++) nodes.push(node(`g${i}`, 'group', '', [i + 1 < depth ? `g${i + 1}` : 'button']));
+  nodes.push(node('button', 'button', 'Save', ['text0'], { backendDOMNodeId: 1 }));
+  for (let i = 0; i < depth; i++) nodes.push(node(`text${i}`, 'generic', '', [i + 1 < depth ? `text${i + 1}` : 'label']));
+  nodes.push(node('label', 'StaticText', 'Details', [], { backendDOMNodeId: 2 }), node('other', 'button', 'Other', [], { backendDOMNodeId: 3 }));
+  for (const profile of ['full', 'interactive']) {
+    const refs = new Map(), entries = renderAX(nodes, 'deep', refs, 'main', undefined, snapshotOptions({ profile }));
+    assert.equal(entries.length, depth + 4);
+    assert.match(entries[0].line, /^RootWebArea/);
+    assert.match(entries[depth + 1].line, /\[deep:1\] button "Save"$/);
+    assert.match(entries[depth + 2].line, /\[deep:2\] StaticText "Details"$/);
+    assert.match(entries[depth + 3].line, /^\[deep:3\] button "Other"$/);
+    assert.equal(refs.get('deep:2').backendNodeId, 2);
+  }
+});
+
+test('deep prose merging preserves separators and stops at semantic children', () => {
+  const depth = 15000;
+  const nodes = [node('p', 'paragraph', '', ['g0', 'tail'], { backendDOMNodeId: 1 })];
+  for (let i = 0; i < depth; i++) nodes.push(node(`g${i}`, 'generic', '', [i + 1 < depth ? `g${i + 1}` : 'leaf']));
+  nodes.push(node('leaf', 'StaticText', 'Start'), node('tail', 'StaticText', 'End'));
+  assert.match(renderAX(nodes, 'prose', new Map(), 'main')[0].line, /paragraph "Start End"$/);
+  nodes[1].childIds.push('empty', 'extra');
+  nodes.push(node('empty', 'generic'), node('extra', 'StaticText', 'Extra'));
+  assert.match(renderAX(nodes, 'prose', new Map(), 'main')[0].line, /paragraph "Start  Extra End"$/);
+  nodes[nodes.length - 1].role.value = 'button';
+  const entries = renderAX(nodes, 'prose', new Map(), 'main');
+  assert.equal(entries.length, 4);
+  assert.match(entries[0].line, /paragraph ""$/);
+  assert.match(entries[2].line, /button "Extra"$/);
+});

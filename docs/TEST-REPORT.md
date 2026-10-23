@@ -1,8 +1,16 @@
 # 验证报告
 
-当前版本 **0.17.1**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.17.2**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：204 项通过。新增渲染文本的 expected/previous 比较与预览截取、1.5 万层深树的 full/interactive 遍历和正文合并、15 万节点观察的分页回归。用修改前的实现分别复现深树递归和宽树数组参数展开的 `Maximum call stack size exceeded`。
+- Chromium 156 与 Edge 155 headless 完整 stdio MCP 集成：各 254 次调用通过。真实 DOM 验证 script/style/隐藏子节点字面量不会提前满足 text wait，expected 与 previous 均等待渲染文字变化；1.2 万个显式语义节点在 max_nodes=1 下完成采集和续页，分别约 15.3 秒、16.6 秒。
+- 剩余限制：Chromium 上 12 万个显式 group 节点的真实快照调用仍触及 MCP 60 秒请求超时。迭代渲染和逐项合并只消除栈及函数参数数量上限，不减少完整 AX 采集成本；max_nodes 仅控制分页，不代表超大页面能在现有预算内完成。
+- `npm run test:package`：仓库外安装运行通过，23 个工具、50 个发布文件，不含配对密钥；无新增工具、运行依赖或扩展权限。
+- 本机部署：Hub 从工作区重启，健康接口返回 0.17.2 / ready；`F:\.nosis\browser-attach\extension` 的 manifest 为 0.17.2，其余 31 个非生成源码/资源文件与工作区逐字节一致。Chrome、Edge 已自动重载并上报 0.17.2 / ready；已有 MCP 连接需重新连接。
+
+## 0.17.1 验证
 
 - `npm test`：200 项通过。新增并发升级与冷启动、旧配对缺少 `extension_dir` 的兼容回落、`release_all` 部分失败时的错误回传与剩余控制权保留、弹窗释放失败提示和显式重试，以及原有升级、清理和连接回归。
 - Chromium 156 与 Edge 155：`npm run test:upgrade -- --executable <路径>` 均通过。临时 profile 开启开发者模式后，两个并发启动者将 Hub 和真实扩展从当前代码改版本号构造的兼容旧协议 0.16.9 升到 0.17.1；确认同一 profile、实际 runtime 重载后的版本，以及升级后发现/接管 → AX 查询 → DOM 点击 → 查询结果 → 释放。CDP 只用于临时 profile 的开发者模式设置，页面操作走扩展与 Hub。该脚本验证升级协议本身，不代表真实 0.16 扩展能自行重载；真实旧版本首次升级仍需手动重载。

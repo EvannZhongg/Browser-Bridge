@@ -21,11 +21,15 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
     const parents = new Map();
     for (const node of nodes) for (const child of node.childIds || []) parents.set(child, node.nodeId);
     function keepText(node) {
-      if (!node || kept.has(node.nodeId)) return;
-      const role = node.role?.value;
-      if (!textRoles.has(role) && !node.ignored && !['none', 'generic'].includes(role)) return;
-      kept.add(node.nodeId);
-      for (const child of node.childIds || []) keepText(byId.get(child));
+      const pending = [node];
+      while (pending.length) {
+        const current = pending.pop();
+        if (!current || kept.has(current.nodeId)) continue;
+        const role = current.role?.value;
+        if (!textRoles.has(role) && !current.ignored && !['none', 'generic'].includes(role)) continue;
+        kept.add(current.nodeId);
+        for (const child of current.childIds || []) pending.push(byId.get(child));
+      }
     }
     for (const node of nodes) {
       if (node.ignored || !node.backendDOMNodeId || !(controls.has(node.role?.value) ||
@@ -37,19 +41,33 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
     }
   }
   function plainText(node) {
-    if (!node) return null;
-    const role = node.role?.value;
-    if (textRoles.has(role)) return String(node.name?.value || '');
-    if (!node.ignored && !['none', 'generic'].includes(role)) return null;
-    const parts = (node.childIds || []).map(id => plainText(byId.get(id)));
-    return parts.includes(null) ? null : parts.join(' ');
+    const pending = [node], parts = [];
+    while (pending.length) {
+      const current = pending.pop();
+      if (current === ' ') { parts.push(' '); continue; }
+      if (!current) return null;
+      const role = current.role?.value;
+      if (textRoles.has(role)) { parts.push(String(current.name?.value || '')); continue; }
+      if (!current.ignored && !['none', 'generic'].includes(role)) return null;
+      const children = current.childIds || [];
+      for (let index = children.length - 1; index >= 0; index--) {
+        pending.push(byId.get(children[index]));
+        if (index > 0) pending.push(' ');
+      }
+    }
+    return parts.join('');
   }
-  function render(node, depth, parentName = '') {
-    if (!node || visited.has(node.nodeId)) return;
+  // Preserve preorder and ref numbering without using the JavaScript call stack.
+  const children = new Set();
+  for (const node of nodes) for (const child of node.childIds || []) children.add(child);
+  const pending = nodes.filter(node => !children.has(node.nodeId)).reverse().map(node => ({ node, depth: 0, parentName: '' }));
+  while (pending.length) {
+    const { node, depth, parentName } = pending.pop();
+    if (!node || visited.has(node.nodeId)) continue;
     visited.add(node.nodeId);
-    if (kept && !kept.has(node.nodeId)) return;
+    if (kept && !kept.has(node.nodeId)) continue;
     const role = node.role?.value || 'node';
-    if (role === 'InlineTextBox') return;
+    if (role === 'InlineTextBox') continue;
     let name = String(node.name?.value || '');
     let merged = false;
     if (['listitem', 'paragraph'].includes(role) && !name) {
@@ -77,11 +95,13 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
       }
       nextDepth++;
     }
-    if (!merged) for (const child of node.childIds || []) render(byId.get(child), nextDepth, skip ? parentName : identityName);
+    if (!merged) {
+      const childIds = node.childIds || [];
+      for (let index = childIds.length - 1; index >= 0; index--) {
+        pending.push({ node: byId.get(childIds[index]), depth: nextDepth, parentName: skip ? parentName : identityName });
+      }
+    }
   }
-  // AX trees normally have a single root, but ignored roots can be disconnected.
-  const children = new Set(nodes.flatMap(node => node.childIds || []));
-  for (const node of nodes) if (!children.has(node.nodeId)) render(node, 0);
   return entries;
 }
 

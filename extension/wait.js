@@ -70,7 +70,7 @@ export function inspectWait(query, inspect, args) {
   if (!element) return { satisfied: false, state: 'absent' };
   if (args.condition === 'attached') return { satisfied: true, state: 'attached' };
   if (args.condition === 'text') {
-    const text = element.textContent || '';
+    const text = element.innerText ?? '';
     return { satisfied: args.previous != null ? text !== args.previous : text.includes(args.expected), text: text.slice(0, 500) };
   }
   const bounds = inspect.call(element);

@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.17.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.17.2**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
 
 本文供按需查阅，不会自动通过 MCP 发送给 agent。MCP 初始化 `instructions` 提供通用规则，工具 description 与参数 schema 提供调用说明；宿主应把 instructions 纳入模型上下文。
 
@@ -241,7 +241,7 @@ pointer 用于鼠标驱动控件，核验 pointerdown/move/up；html5 用真实�
 |---|---|
 | `attached` / `visible` | 元素出现 / 非隐藏且有尺寸；visible 不要求启用 |
 | `actionable` | 可见、启用、非 inert、几何稳定且命中无阻挡；不自动滚动，须已在视口内 |
-| `text` | textContent 含 expected，或与完整旧值 previous 不同；二者选一 |
+| `text` | 渲染文本 innerText 含 expected，或与完整旧值 previous 不同；二者选一 |
 | `url` | 主 frame URL 含 expected |
 | `network_idle` | 已观察的请求 inflight=0，且连续 idle_ms 无活动 |
 
