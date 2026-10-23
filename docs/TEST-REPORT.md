@@ -4,11 +4,12 @@
 
 ## 当前版本
 
-- `npm test`：204 项通过。新增渲染文本的 expected/previous 比较与预览截取、1.5 万层深树的 full/interactive 遍历和正文合并、15 万节点观察的分页回归。用修改前的实现分别复现深树递归和宽树数组参数展开的 `Maximum call stack size exceeded`。
+- `npm test`：207 项通过。新增滚动最深匹配、隐藏中间节点、多个分支歧义和候选上限回归；10000 个匹配只做 9999 次包含关系检查，每个文字命中候选只读一次几何信息。保留渲染文本的 expected/previous 比较与预览截取、1.5 万层深树的 full/interactive 遍历和正文合并、15 万节点观察的分页回归。用修改前的实现分别复现深树递归和宽树数组参数展开的 `Maximum call stack size exceeded`。
+- 同版本滚动优化：Chromium 156 与 Edge 155 headless 输入集成各 20 个场景通过，包含真实 DOM 的隐藏中间节点、最深匹配 ref、兄弟分支歧义、selector 消歧及原有延迟加载滚动。保留 10000 候选上限、文字与可见性条件；筛选只比较文档顺序中的相邻匹配，不再两两比较，不代表选择器、子树文字和布局读取的总成本也是线性的。
 - Chromium 156 与 Edge 155 headless 完整 stdio MCP 集成：各 254 次调用通过。真实 DOM 验证 script/style/隐藏子节点字面量不会提前满足 text wait，expected 与 previous 均等待渲染文字变化；1.2 万个显式语义节点在 max_nodes=1 下完成采集和续页，分别约 15.3 秒、16.6 秒。
 - 剩余限制：Chromium 上 12 万个显式 group 节点的真实快照调用仍触及 MCP 60 秒请求超时。迭代渲染和逐项合并只消除栈及函数参数数量上限，不减少完整 AX 采集成本；max_nodes 仅控制分页，不代表超大页面能在现有预算内完成。
 - `npm run test:package`：仓库外安装运行通过，23 个工具、50 个发布文件，不含配对密钥；无新增工具、运行依赖或扩展权限。
-- 本机部署：Hub 从工作区重启，健康接口返回 0.17.2 / ready；`F:\.nosis\browser-attach\extension` 的 manifest 为 0.17.2，其余 31 个非生成源码/资源文件与工作区逐字节一致。Chrome、Edge 已自动重载并上报 0.17.2 / ready；已有 MCP 连接需重新连接。
+- 本机部署：Hub 从工作区重启，健康接口返回 0.17.2 / ready；`F:\.nosis\browser-attach\extension` 的 manifest 为 0.17.2，其余 31 个非生成源码/资源文件与工作区逐字节一致。滚动优化按要求保持版本号，现有自动重载协议只处理版本递增，已打开的浏览器需手动重新加载扩展才能应用本次优化；已有 MCP 连接需重新连接。
 
 ## 0.17.1 验证
 

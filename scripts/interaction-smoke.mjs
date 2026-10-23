@@ -261,6 +261,19 @@ try {
   assert.ok((await page('window.events')).some(e=>e.type==='drop'&&e.target==='drop'&&e.trusted));
   results.cases.push({scenario:'document_coordinate_html5_drag',result:documentHtml5});
   await page(`(() => {
+    const probe=document.createElement('section');probe.id='scroll-probe';
+    probe.innerHTML='<div><div style="visibility:hidden"><button style="visibility:visible">Scroll needle</button></div></div><div hidden>Scroll needle</div>';
+    document.body.append(probe);return true;
+  })()`);
+  const deepest=await call('scroll',{selector:'#scroll-probe',until:{text:'Scroll needle'},max_steps:1});
+  assert.equal(deepest.name,'Scroll needle');assert.equal(deepest.role,'button');assert.equal(deepest.scroll_steps,0);
+  await page(`document.querySelector('#scroll-probe').insertAdjacentHTML('beforeend','<div><button>Scroll needle</button></div>');true`);
+  await assert.rejects(call('scroll',{selector:'#scroll-probe',until:{text:'Scroll needle'},max_steps:1}),/matched 2.*Scope until.selector/);
+  const scoped=await call('scroll',{selector:'#scroll-probe',until:{text:'Scroll needle',selector:'button[style]'},max_steps:1});
+  assert.equal(scoped.name,'Scroll needle');assert.equal(scoped.scroll_steps,0);
+  await page(`document.querySelector('#scroll-probe').remove();true`);
+  results.cases.push({scenario:'scroll_deepest_filtered_descendant_and_sibling_ambiguity',result:deepest});
+  await page(`(() => {
     const list=document.createElement('div');list.id='lazy-list';list.style='position:fixed;left:20px;top:350px;width:200px;height:100px;overflow:auto';
     document.body.append(list);
     list.addEventListener('scroll',()=>setTimeout(()=>{const b=document.createElement('button');b.textContent='Delayed result';list.append(b)},200),{once:true});

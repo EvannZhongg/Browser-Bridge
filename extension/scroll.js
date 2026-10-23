@@ -27,10 +27,16 @@ export function scrollState() {
 
 export function findScrollText(text, selector) {
   if (!this.isConnected) throw new Error('Scroll container detached');
-  const elements = Array.from(this.querySelectorAll(selector || '*'));
+  const elements = this.querySelectorAll(selector || '*');
   if (elements.length > 10000) throw new Error('Scroll search exceeds 10000 candidates; scope until.selector');
-  const matches = elements.filter(e => (e.textContent || '').includes(text) && e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0 && e.ownerDocument.defaultView.getComputedStyle(e).visibility === 'visible');
-  const leaves = matches.filter(e => !matches.some(other => other !== e && e.contains(other)));
+  const matches = [];
+  for (const element of elements) {
+    if (!(element.textContent || '').includes(text)) continue;
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0 && element.ownerDocument.defaultView.getComputedStyle(element).visibility === 'visible') matches.push(element);
+  }
+  // Document order keeps each subtree contiguous, even after filtering.
+  const leaves = matches.filter((element, index) => index === matches.length - 1 || !element.contains(matches[index + 1]));
   if (leaves.length > 1) throw new Error(`Scroll text must match one element; matched ${leaves.length}. Scope until.selector`);
   return leaves[0] || null;
 }
