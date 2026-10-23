@@ -350,6 +350,49 @@ try {
    let error;try{await call('wait',{selector,condition,timeout_ms:150})}catch(e){error=e.message}
    assert.match(error,/Wait for .*current=/);results.cases.push({scenario:'wait_failure',selector,error});
   }
+  await page(`(() => {
+    const section=document.createElement('section');section.id='wait-probe';
+    section.innerHTML='<button id="wait-trigger" style="position:fixed;left:20px;top:460px;z-index:999">Change state</button>'
+      +'<input id="wait-value" value="before"><input id="wait-check" type="checkbox">'
+      +'<select id="wait-select"><option>Before</option><option id="wait-option">After</option></select>'
+      +'<button role="combobox" aria-label="State picker" id="wait-expanded" aria-expanded="false">Picker</button>'
+      +'<div role="listbox"><div role="option" aria-selected="false" id="wait-aria-option">State option</div></div>'
+      +'<button id="wait-gone">Gone state probe</button><div id="wait-hidden" hidden></div><div id="wait-unknown"></div>';
+    window.waitWrites=0;
+    section.querySelector('#wait-trigger').onclick=()=>{window.waitWrites++;setTimeout(()=>{
+      section.querySelector('#wait-value').outerHTML='<input id="wait-value" value="after">';
+      section.querySelector('#wait-check').checked=true;section.querySelector('#wait-select').selectedIndex=1;
+      section.querySelector('#wait-expanded').setAttribute('aria-expanded','true');
+      section.querySelector('#wait-aria-option').setAttribute('aria-selected','true');section.querySelector('#wait-gone').remove();
+    },100)};
+    document.body.append(section);return true;
+  })()`);
+  await call('wait',{selector:'#wait-check',condition:'checked',expected:false});
+  const stateWaits=await call('batch',{steps:[
+    {action:'click',selector:'#wait-trigger',mode:'dom'},
+    {action:'wait',selector:'#wait-value',condition:'value',expected:'after'},
+    {action:'wait',selector:'#wait-check',condition:'checked',expected:true},
+    {action:'wait',selector:'#wait-option',condition:'selected',expected:true},
+    {action:'wait',selector:'combobox',selector_type:'role',name:'State picker',condition:'expanded',expected:true},
+    {action:'wait',selector:'option',selector_type:'role',name:'State option',condition:'selected',expected:true},
+    {action:'wait',selector:'#wait-gone',condition:'absent'},
+    {action:'wait',selector:'button',selector_type:'role',name:'Gone state probe',condition:'absent'},
+  ]});
+  assert.equal(stateWaits.completed,true);assert.ok(stateWaits.results.slice(1).every(r=>r.satisfied));
+  for (const [selector,condition,expected] of [['#wait-hidden','absent',undefined],['#wait-unknown','expanded',false]]) {
+    await assert.rejects(call('wait',{selector,condition,expected,timeout_ms:150}), error=>{
+      assert.equal(error.input_dispatched,false);assert.equal(error.diagnostics.current.state,condition==='absent'?'attached':'unavailable');return true;
+    });
+  }
+  assert.equal(await page('window.waitWrites'),1);
+  await call('wait',{selector:'#wait-check',condition:'checked',expected:true});
+  await page('document.querySelector("#wait-check").indeterminate=true;true');
+  await call('wait',{selector:'#wait-check',condition:'checked',expected:'mixed'});
+  const newObservation=await call('snapshot',{query:'State picker'}),oldStateRef=newObservation.snapshot.match(/\[([^\]]+)\] combobox/)[1];
+  await call('snapshot',{query:'State picker'});
+  await assert.rejects(call('click',{ref:oldStateRef}),error=>{assert.equal(error.diagnostics.cause,'snapshot_replaced');return true});
+  results.cases.push({scenario:'explicit_state_waits_and_ref_diagnostics',stateWaits,writes:1});
+  await page('document.querySelector("#wait-probe").remove();true');
   await page('window.events=[];true');
   const pointer=await call('drag',{source:{selector:'#slider'},destination:{x:550,y:255},steps:8,mode:'pointer',timeout_ms:5000});
   assert.equal(pointer.delivery_verified,true);assert.ok(await page('window.pointerMoves>=8'));

@@ -284,6 +284,26 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
     assert.equal((await call(name, {tab_handle:handle,...input})).isError,true);
     assert.equal(f.requests.length,before);
   }
+  for (const input of [
+    { selector: '#field', condition: 'value', expected: '' },
+    { selector: '#field', condition: 'checked', expected: false },
+    { selector: '#field', condition: 'checked', expected: 'mixed' },
+    { selector: '#field', condition: 'selected', expected: true },
+    { selector: '#field', condition: 'expanded', expected: false },
+    { selector: '#field', condition: 'absent' },
+  ]) {
+    assert.ok(!(await call('wait', { tab_handle: handle, ...input })).isError);
+    assert.equal(f.requests.at(-1).arguments.expected, input.expected);
+    await call('batch', { tab_handle: handle, steps: [{ action: 'wait', ...input }] });
+    assert.equal(f.requests.at(-1).arguments.steps[0].condition, input.condition);
+    assert.equal(f.requests.at(-1).arguments.steps[0].expected, input.expected);
+  }
+  for (const input of [{ condition: 'checked', expected: 'false' }, { condition: 'value', expected: false }, { condition: 'expanded', expected: 'mixed' }]) {
+    const before = f.requests.length;
+    assert.equal((await call('wait', { tab_handle: handle, selector: '#field', ...input })).isError, true);
+    assert.equal((await call('batch', { tab_handle: handle, steps: [{ action: 'wait', selector: '#field', ...input }] })).isError, true);
+    assert.equal(f.requests.length, before);
+  }
   for (const [name, input] of [['type',{selector:'#input',text:'typed',delay_ms:20}],['navigate',{direction:'back'}],['fill',{selector:'input',frame:{path:['iframe[title="Inner"]']},text:'scoped'}],['logs',{kind:'network',capture:{enabled:true,max_body_bytes:4096}}]]) {
     assert.ok(!(await call(name,{tab_handle:handle,...input})).isError);
     assert.ok(f.requests.some(r=>r.command===name));

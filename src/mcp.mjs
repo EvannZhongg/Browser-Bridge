@@ -5,7 +5,7 @@ import { AttachClient, ensureHub } from './client.mjs';
 import { VERSION } from './config.mjs';
 import { validateFiles } from './upload.mjs';
 import { dragOptions } from '../extension/drag.js';
-import { waitOptions } from '../extension/wait.js';
+import { waitOptions, WAIT_CONDITIONS } from '../extension/wait.js';
 import { scrollOptions } from '../extension/scroll.js';
 import { selectOptions, typeOptions } from '../extension/input.js';
 import { targetOptions } from '../extension/locator.js';
@@ -13,6 +13,7 @@ import { fetchOptions } from '../extension/fetch.js';
 import { clickOptions } from '../extension/click.js';
 import { offsetOption } from '../extension/motion.js';
 import { errorData } from '../extension/errors.js';
+import { validateSteps } from '../extension/batch.js';
 
 const text = data => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 function integerRange(name, min, max) {
@@ -43,6 +44,12 @@ export function createMcp(client) {
   const offset = { offset: z.object({ x_ratio: z.number().min(0).max(1), y_ratio: z.number().min(0).max(1) }).strict().optional().describe('Native element only: ratios within its content quad; offscreen/covered points fail.') };
   const settle = { settle_ms: timing('settle_ms').optional().describe('Pause after target preparation, before dispatch: fixed ms or uniform [min, max].') };
   const typeDelay = timing('delay_ms').default(0).describe('Between characters: fixed ms or independently sampled uniform [min, max].');
+  const waitFields = {
+    condition: z.enum(WAIT_CONDITIONS),
+    expected: z.union([z.string().max(100000), z.boolean()]).optional().describe('text/url: substring; value: exact string; checked/selected/expanded: boolean (checked also accepts "mixed").'),
+    previous: z.string().max(100000).optional().describe('Text only: wait for full rendered innerText to differ; alternative to expected.'),
+    idle_ms: integerRange('idle_ms', 100, 10000).default(500),
+  };
   function tool(name, description, schema, method, transform) {
     server.registerTool(`browser_${name}`, { description, inputSchema: z.object(schema) }, async args => {
       try {
@@ -148,9 +155,9 @@ export function createMcp(client) {
     ...settle, trajectory: z.object({ curve_px: z.number().min(-100).max(100), duration_ms: integerRange('duration_ms', 100, 5000) }).strict().optional().describe('Opt in to curved, variable-speed steps and varied intervals. Signed curve control-point offset in CSS px; duration covers interpolation waits only.'),
     ...handle, ...inputTimeout, source: dragTarget, destination: dragTarget, mode: z.enum(['pointer', 'html5']).default('pointer').describe('pointer for mouse-driven dragging; html5 for HTML drag-and-drop.'), steps: integerRange('steps', 2, 100).default(20),
   }, null, args => { dragOptions(args); return args; });
-  tool('wait', 'Wait without scrolling or input. attached/visible/actionable/text require selector; use body for whole-page text. actionable requires a stable, visible, enabled, unobscured target in the viewport; network_idle uses observed page requests. Timeout includes the last observed state.', {
+  tool('wait', 'Wait read-only for a selector to match/be absent, visibility/actionability, rendered text, exact field value, checked/selected/expanded state, URL or network idle. State uses native properties or explicit ARIA attributes; missing state is unavailable, never false. absent means no selector match, not proof of DOM removal for AX role queries. Values are not echoed. Timeout reports the last state; it never makes an earlier action safe to replay.', {
     ...handle, ...dialogPolicy, timeout_ms: integerRange('timeout_ms', 100, 30000).default(5000), ...selector, ...frameScope, nth: target.nth,
-    condition: z.enum(['attached', 'visible', 'actionable', 'text', 'url', 'network_idle']), expected: z.string().max(2000).optional().describe('For text: rendered innerText substring; for url: main-frame URL substring. Text may use previous instead.'), previous: z.string().max(100000).optional().describe('Text only: wait for full rendered innerText to differ; alternative to expected.'), idle_ms: integerRange('idle_ms', 100, 10000).default(500),
+    ...waitFields,
   }, null, args => { waitOptions(args); return args; });
   tool('select_option', 'Set one HTML select option, including hidden selects, without native UI, using synthetic input/change (events_trusted=false). Disabled/inert targets are refused. Verifies retained selection only.', {
     ...handle, ...inputTimeout, ...target, value: z.string().optional().describe('Choose exactly one of value, label or zero-based index; value/label match exactly.'), label: z.string().optional(), index: integerRange('index', 0, Number.MAX_SAFE_INTEGER).optional(),
@@ -172,10 +179,10 @@ export function createMcp(client) {
       z.object({ action: z.literal('hover'), ...stepOptions, ...batchTarget, ...offset }).strict(),
       z.object({ action: z.literal('select_option'), ...stepOptions, ...batchTarget, value: z.string().optional(), label: z.string().optional(), index: integerRange('index', 0, Number.MAX_SAFE_INTEGER).optional() }).strict(),
       z.object({ action: z.literal('scroll'), ...stepOptions, ...selector, ...frameScope, nth: target.nth, ...scrollFields }).strict(),
-      z.object({ action: z.literal('wait'), ...stepOptions, ...selector, ...frameScope, nth: target.nth, condition: z.enum(['attached', 'visible', 'actionable', 'text', 'url', 'network_idle']), expected: z.string().optional(), previous: z.string().optional(), idle_ms: integerRange('idle_ms', 100, 10000).default(500) }).strict(),
+      z.object({ action: z.literal('wait'), ...stepOptions, ...selector, ...frameScope, nth: target.nth, ...waitFields }).strict(),
       z.object({ action: z.literal('press_key'), ...stepOptions, key: z.string() }).strict(),
     ])).min(1).max(20),
-  });
+  }, null, args => { validateSteps(args.steps, args.start_at); return args; });
   tool('press_key', 'Send a native key/chord to current focus and verify keydown delivery. Supports F1-F12, navigation/editing keys and US ASCII punctuation. Examples: Control+A, Control++, Shift+/.', { ...handle, ...inputTimeout, key: z.string() });
   tool('scroll', 'Scroll an element container or at viewport x/y (default center). DOM mode emits no wheel events; wheel mode sends native wheel input. until.text runs a bounded search and returns a fresh ref; a miss is inconclusive.', {
     ...handle, ...inputTimeout, ...target, ...scrollFields,

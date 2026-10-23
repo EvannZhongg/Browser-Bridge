@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.20.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.21.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
 
 本文供按需查阅，不会自动通过 MCP 发送给 agent。MCP 初始化 `instructions` 提供通用规则，工具 description 与参数 schema 提供调用说明；宿主应把 instructions 纳入模型上下文。
 
@@ -44,7 +44,7 @@
 | `browser_type` | 在当前选区逐字符输入 |
 | `browser_press_key` | 向当前焦点发送单键或组合键 |
 | `browser_select_option` | 设置一个 HTML select 选项 |
-| `browser_wait` | 只读等待元素、文本、URL 或网络空闲 |
+| `browser_wait` | 只读等待元素、字段值、控件状态、文本、URL 或网络空闲 |
 | `browser_scroll` | 滚动容器或有界查找虚拟列表项 |
 | `browser_batch` | 在同一标签队列中执行有限步骤 |
 | `browser_navigate` | URL 导航、后退或前进 |
@@ -75,7 +75,7 @@
 
 超时、回执丢失或派发中断可能发生在动作生效之后。先用快照、截图或日志观察，再决定下一步；不要自动重放或换模式补发。导航和异步 JavaScript 也可能在超时后继续。
 
-不确定错误可能附带结构化 `post_action`：delivery=unknown、dialog/dialogs、navigation_observed、frame_navigation_observed、current_url、frame_id、dom_changed。assessment=observable_effects 表示观察到变化；no_observable_effects 仅表示未观察到变化，不证明没有派发。DOM 观察未必覆盖字段属性、其他 frame 或服务端变化。`input_dispatched=true` 表示已进入派发阶段，不证明事件送达或脚本完成；false 表示尚未派发，字段缺失则没有确定证据。
+不确定错误可能附带结构化 `post_action`：delivery=unknown、dialog/dialogs、navigation_observed、frame_navigation_observed、current_url、frame_id、dom_changed。observations.tab/dom 分别报告 available 和不可用时的 error；dom_changed=null 表示 DOM 观察不可用。assessment=observable_effects 表示已有变化证据，即使部分观察不可用也保留；只有标签与 DOM 观察均可用且未发现变化时才返回 no_observable_effects，否则为 observation_unavailable。三者都不证明业务成功或没有派发。DOM 观察未必覆盖字段属性、其他 frame 或服务端变化。`input_dispatched=true` 表示已进入派发阶段，不证明事件送达或脚本完成；false 表示尚未派发，字段缺失则没有确定证据。
 
 `TAB_NOT_READY` 明确表示本次指针输入尚未派发。显式激活或恢复窗口后，重新 snapshot 再执行动作。检查通过后仍可能遇到用户切换标签或浏览器菜单捕获输入，最终以事件回执和错误中的派发状态为准。
 
@@ -150,6 +150,8 @@ snapshot 返回 AX 语义树，每行 `[token:n] role "name" 状态`；`[token:n
 
 ref 对应原节点及其可访问身份；节点被替换、脱离文档或 role/name 变化时应重新观察，不会自动匹配同名替代节点。
 
+ref 错误的 diagnostics.reason=stale_ref，cause 区分 snapshot_replaced、document_navigation/document_updated、same_document_navigation、frame_changed、frame_session_changed、element_detached 和 identity_changed 等原因。每标签至多保留最近 1000 个已清理 ref 的失效原因，释放或断连清空；超出范围或未由本次接管创建的 ref 返回 unknown_ref，不推断其来源。
+
 表单控件可附带 `context="性别"` 等邻近文本，在 interactive 或 text=false 下也保留，并参与 query。context 来自有限祖先范围内、仅含一个控件的容器中前一兄弟节点的 AX 文本；只是观察提示，不代表真实标签关联，不改写 AX name，也不参与 ref 身份校验。复杂布局可能没有 context。
 
 ### browser_read_text
@@ -198,6 +200,8 @@ frame.url/title 精确匹配子 frame，path 是逐层且每层唯一的 CSS ifr
 ## 输入：可操作性与两种模式
 
 click/hover/fill/type 的输入准备会检查可见、启用、非 inert 和几何稳定；fill 还要求可编辑且非只读。select_option 不要求可见几何。timeout_ms 默认 5000，范围 100–30000，覆盖准备、派发和校验；click/hover/press_key 的派发及回执另有 1250 ms 上限，清理最多 250 ms，长 timeout 主要用于等待目标。
+
+准备失败的 diagnostics.reason 区分 display_none、visibility_hidden、zero_size、disabled、inert、read_only、unstable_geometry 和 no_visible_click_point；遮挡仍使用 obstructed/frame_obstructed。不可操作时附当前矩形及至多 8 层 composed 祖先（含目标）的 display、visibility、opacity、pointer-events、overflow、可滚动方向及 transition 属性/时长，ancestors_truncated 表示更深信息未采集。这些是当前样式证据，不推断 hover 触发条件或动画是否即将结束；opacity=0 不单独拒绝输入。
 
 原生 click/hover/drag 要求活动、未冻结/丢弃的标签与未最小化窗口，准备前及派发前各检查一次，单次最多 500 ms。窗口失焦、document.visibilityState=hidden 或 document.hasFocus()=false 不独立触发拒绝；Click/Hover 成功结果的 page_state 提供这些诊断信号，实际送达仍需回执。就绪失败的处理见[结果未知时](#结果未知时)。
 
@@ -261,15 +265,29 @@ pointer 用于鼠标驱动控件，核验 pointerdown/move/up；html5 用真实�
 | condition | 等待内容 |
 |---|---|
 | `attached` / `visible` | 元素出现 / 非隐藏且有尺寸；visible 不要求启用 |
+| `absent` | 严格 selector 不再匹配；隐藏的 DOM 元素仍可能匹配 CSS/XPath，role 查询无匹配不证明 DOM 节点已移除 |
 | `actionable` | 可见、启用、非 inert、几何稳定且命中无阻挡；不自动滚动，须已在视口内 |
 | `text` | 渲染文本 innerText 含 expected，或与完整旧值 previous 不同；二者选一 |
+| `value` | input/textarea/select 的 value 或 contenteditable 的 innerText 与字符串 expected 精确相等；不回显字段值 |
+| `checked` | checkbox/radio 的原生状态，否则读取 aria-checked；expected 为 true/false，或字符串 mixed |
+| `selected` | option.selected，否则读取 aria-selected；expected 为 true/false |
+| `expanded` | details.open，否则读取 aria-expanded；expected 为 true/false |
 | `url` | 主 frame URL 含 expected |
 | `network_idle` | 已观察的请求 inflight=0，且连续 idle_ms 无活动 |
 
 元素条件必须提供严格 selector，可带 frame/nth；全页渲染文字使用 `selector:"body"`。url/network_idle 不使用元素目标。工具只读等待，超时附带条件及最后状态。
 
+控件状态不要求可见或启用。缺失或无效的 ARIA 状态报告 state=unavailable，不按 false 处理；checkbox.indeterminate 对应 mixed。每次轮询重新解析 selector，节点在重渲染中被替换可继续等待，歧义立即报错；frame 不可用不能证明元素消失。等待只验证明确条件，不证明保存或服务端业务完成，超时不使前序动作变得可安全重放。单步和 batch 使用相同的条件与校验。
+
 ```json
 {"tab_handle":"...","selector":"#toast","condition":"text","expected":"保存成功","timeout_ms":5000}
+```
+
+```json
+{"tab_handle":"...","steps":[
+  {"action":"click","selector":"#open-picker"},
+  {"action":"wait","selector":"#open-picker","condition":"expanded","expected":true}
+]}
 ```
 
 network_idle 的 idle_ms 默认 500，范围 100–10000。它只覆盖接管后观察到的页面/iframe 请求，不包含独立 worker 或 WebSocket 消息；长轮询会阻止满足。请求跟踪溢出时 tracking_overflow=true，不能报告已确认空闲。业务就绪优先等待具体元素或标志。

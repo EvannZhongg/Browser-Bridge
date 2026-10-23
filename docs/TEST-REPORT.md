@@ -1,8 +1,16 @@
 # 验证报告
 
-当前版本 **0.20.0**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.21.0**（2026-10-24）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：236 项通过。新增可操作性原因、有限祖先样式/滚动/transition 证据、零透明度放行、slot 继承 inert、无可见落点且保留既有派发事实、ref 历史上限及释放清理、身份解析期间文档变化、动作后观察不可用/未见变化/正面证据分型，以及明确状态等待的参数、严格匹配、节点替换、缺失 ARIA 状态和字段值不回显验证。
+- Chromium、Edge headless：`interaction-smoke --primitives` 各 22 个场景通过。新增扩展 → Hub 的真实 DOM 验证：一次 DOM 点击后在 batch 等待替换后的字段值、原生 checked/selected、AX role 定位的 aria-expanded/aria-selected、CSS/role 无匹配；原生 mixed、隐藏 DOM 不等于 CSS 无匹配、缺失状态不等于 false、等待超时后写次数仍为 1，以及旧 ref 的 snapshot_replaced 诊断。原有原生输入、hover、拖拽及滚动场景继续通过。
+- `npm run test:package`：包外安装与 stdio MCP 通过，23 个工具、51 个发布文件，无配对密钥；未增加依赖或扩展权限。MCP 测试同时覆盖新 wait 条件在单步和 batch 中的 schema、布尔 false/mixed 传递与参数预检。
+- 本机部署：Hub 已停止并从工作区重启，健康接口为 0.21.0 / ready；Chrome、Edge 均自动重载并上报 0.21.0。稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 manifest 为 0.21.0，其余 33 个非生成源码/资源文件 SHA-256 与工作区一致。新 stdio 连接返回 0.21.0、23 个工具和新增 wait 条件；已有 MCP 客户端需重新连接以刷新 schema。
+- 当前边界：状态等待只确认指定的页面状态，不推断业务成功；ARIA 缺失/无效时继续报告 unavailable。role 无匹配不证明 DOM 已移除；不可用 frame 不作为元素消失证据。ref 原因历史每标签限 1000 条；不自动重绑定、补发或切换输入模式。
+
+## 0.20.0 验证
 
 - `node --test tests/*.test.mjs`：226 项通过。新增 file:// 发现与接管的实时授权、普通操作与 batch 中途停权、HTTP→file 导航派发前检查、文件导航后的 ref/分页失效、停权后可靠释放及 detach 失败保留控制权、历史目标权限检查和迟到权限回执不派发导航。
 - Chromium 156、Edge 155 headless：`node scripts/live-smoke.mjs --executable <浏览器路径> --files` 各通过 5 组集成检查。复用扩展 → Hub → stdio MCP 链路，验证中文/空格/# 文件路径、真实扩展设置中的文件权限开关、发现后独占接管且不激活、主文档与本地 iframe AX、PNG 截图、ref 原生 fill/type/按键/click 与 trusted 事件、DOM batch、文件 URL/前进/后退及 HTTP↔file 导航、旧 ref/cursor 失效、释放/连接断开/关闭后的控制权清理。测试脚本只在临时 profile 的扩展管理页切换权限；权限变更触发扩展重载后重新发现浏览器连接。

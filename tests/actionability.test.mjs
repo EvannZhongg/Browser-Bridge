@@ -15,7 +15,34 @@ test('actionability waits for ready and stable bounds; continuously moving targe
   await waitForTarget(cdp, result => result.result.value, { tabId: 1 }, { objectId: 'node' }, deadline(500));
   assert.equal(samples, 4);
   await assert.rejects(waitForTarget(async () => ({ ready: true, x: samples++ }), result => result,
-    {}, { objectId: 'node' }, deadline(100)), /no input was dispatched/);
+    {}, { objectId: 'node' }, deadline(100)), error => {
+      assert.match(error.message, /no input was dispatched/); assert.equal(error.diagnostics.reason, 'unstable_geometry'); return true;
+    });
+});
+
+test('actionability distinguishes hidden causes and bounds style/scroll/transition evidence without rejecting opacity zero', () => {
+  const make = (parentElement = null, css = {}, rect = { x: 0, y: 0, width: 10, height: 10 }) => ({
+    isConnected: true, tagName: 'BUTTON', id: 'probe', parentElement, css: { display: 'block', visibility: 'visible', opacity: '1', ...css },
+    matches: () => false, hasAttribute: () => false, getRootNode: () => ({}), getBoundingClientRect: () => rect,
+    ownerDocument: { defaultView: { getComputedStyle: node => node.css } },
+  });
+  assert.equal(inspectTarget.call(make(null, { opacity: '0' })).ready, true);
+  assert.equal(inspectTarget.call(make(null, { visibility: 'hidden' })).reason, 'visibility_hidden');
+  const scroller = make(null, { overflowY: 'auto', transitionProperty: 'height, opacity', transitionDuration: '0.2s' });
+  scroller.scrollHeight = 300; scroller.clientHeight = 100;
+  const empty = make(scroller, {}, { x: 0, y: 0, width: 10, height: 0 });
+  const failure = inspectTarget.call(empty);
+  assert.equal(failure.reason, 'zero_size'); assert.equal(failure.ancestors[1].scrollable_y, true);
+  assert.equal(failure.ancestors[1].transition_property, 'height, opacity');
+  scroller.css.display = 'none'; assert.equal(inspectTarget.call(empty).reason, 'display_none');
+  scroller.css.display = 'block';
+  let parent = scroller;
+  for (let i = 0; i < 10; i++) parent = make(parent);
+  empty.parentElement = parent;
+  const bounded = inspectTarget.call(empty);
+  assert.equal(bounded.ancestors.length, 8); assert.equal(bounded.ancestors_truncated, true);
+  const slotted = make(); slotted.assignedSlot = make(); slotted.assignedSlot.hasAttribute = name => name === 'inert';
+  assert.equal(inspectTarget.call(slotted).reason, 'inert');
 });
 
 test('a timed out preparation cannot dispatch when its CDP reply eventually arrives', async () => {
@@ -131,6 +158,24 @@ test('ShadowRoot preparation uses frame-local hit coordinates and still rejects 
     const prepare = () => mouse.prepare(1, { target: { tabId: 1 }, backendNodeId: 99, objectId: 'button', frameId: 'child' }, {});
     if (blocked) await assert.rejects(prepare(), error => error.diagnostics.reason === 'obstructed' && error.input_dispatched === false);
     else assert.equal((await prepare()).relation, 'same_node');
+    assert.ok(!calls.some(method => method.startsWith('Input.')));
+  }
+});
+
+test('offscreen geometry has its own failure reason and preserves earlier gesture dispatch', async () => {
+  for (const dispatched of [false, true]) {
+    const calls = [];
+    const cdp = async (target, method) => {
+      calls.push(method);
+      if (method === 'Runtime.callFunctionOn') return { result: { value: { ready: true } } };
+      if (method === 'DOM.getContentQuads') return { quads: [[200, 200, 210, 200, 210, 210, 200, 210]] };
+      throw new Error(`Unexpected command ${method}`);
+    };
+    const mouse = createClick(cdp, r => r.result.value, async () => ({ width: 100, height: 100 }), null, {});
+    const budget = deadline(500); if (dispatched) budget.dispatch();
+    await assert.rejects(mouse.prepare(1, { target: { tabId: 1 }, objectId: 'node', backendNodeId: 1, frameId: 'main' }, { budget, scroll: false }), error => {
+      assert.equal(error.input_dispatched, dispatched); assert.equal(error.diagnostics.reason, 'no_visible_click_point'); return true;
+    });
     assert.ok(!calls.some(method => method.startsWith('Input.')));
   }
 });

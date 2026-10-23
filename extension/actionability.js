@@ -37,10 +37,13 @@ export async function waitForTarget(cdp, value, target, node, budget, { editable
     const bounds = value(await budget.run(() => cdp(target, 'Runtime.callFunctionOn', {
       objectId: node.objectId, functionDeclaration: inspectTarget.toString(), arguments: [{ value: editable }], returnByValue: true,
     })));
-    if (bounds?.detached) throw new Error('Element is detached; take a new snapshot. No input was dispatched.');
-    if (bounds?.unsupported) throw new Error('Ref is not a supported editable field; no input was dispatched.');
+    if (bounds?.detached || bounds?.unsupported) throw Object.assign(new Error(`${bounds.detached
+      ? 'Element is detached; take a new snapshot.'
+      : 'Target is not a supported editable field.'} ${budget.has_dispatched() ? 'Input was already dispatched; outcome is unknown. Do not replay automatically.' : 'No input was dispatched.'}`), {
+      input_dispatched: budget.has_dispatched(), diagnostics: { reason: bounds.detached ? 'element_detached' : 'unsupported_editable', frame_id: node.frameId },
+    });
     if (bounds?.ready && previous && JSON.stringify(bounds) === JSON.stringify(previous)) return;
-    budget.describe?.(`visible, enabled, stable target; current=${JSON.stringify(bounds)}`, { reason: 'not_actionable', frame_id: node.frameId, target: bounds });
+    budget.describe?.(`visible, enabled, stable target; current=${JSON.stringify(bounds)}`, { reason: bounds?.ready ? 'unstable_geometry' : bounds?.reason || 'not_actionable', frame_id: node.frameId, target: bounds });
     previous = bounds?.ready ? bounds : null;
     await budget.run(() => new Promise(resolve => setTimeout(resolve, 20)));
   }
@@ -52,13 +55,33 @@ export function inspectTarget(editable) {
   const tag = element.tagName?.toLowerCase();
   if (editable && ((!['input', 'textarea'].includes(tag) && !element.isContentEditable) ||
       (tag === 'input' && !['text', 'search', 'email', 'password', 'tel', 'url', ''].includes(element.type)))) return { unsupported: true };
-  // Walk across shadow boundaries as inert can be inherited from a host.
-  for (let parent = element; parent; parent = parent.parentElement || parent.getRootNode().host) {
-    if (parent.matches(':disabled') || parent.hasAttribute('inert')) return { ready: false, reason: parent.matches(':disabled') ? 'disabled' : 'inert' };
+  const next = node => node.assignedSlot || node.parentElement || node.getRootNode().host;
+  const rect = element.getBoundingClientRect(), win = element.ownerDocument.defaultView, style = win.getComputedStyle(element);
+  function failure(reason, blocker) {
+    const ancestors = [];
+    let parent = element;
+    for (; parent && ancestors.length < 8; parent = next(parent)) {
+      const css = win.getComputedStyle(parent);
+      ancestors.push({ tag: parent.tagName?.toLowerCase(), id: parent.id || null,
+        display: css.display, visibility: css.visibility, opacity: css.opacity, pointer_events: css.pointerEvents,
+        overflow_x: css.overflowX, overflow_y: css.overflowY,
+        transition_property: css.transitionProperty, transition_duration: css.transitionDuration,
+        scrollable_x: /auto|scroll|overlay/.test(css.overflowX) && parent.scrollWidth > parent.clientWidth,
+        scrollable_y: /auto|scroll|overlay/.test(css.overflowY) && parent.scrollHeight > parent.clientHeight });
+    }
+    if (reason === 'zero_size' && ancestors.some(node => node.display === 'none')) reason = 'display_none';
+    return { ready: false, reason, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      ...(blocker ? { blocker: { tag: blocker.tagName?.toLowerCase(), id: blocker.id || null } } : {}),
+      ancestors, ancestors_truncated: !!parent };
   }
-  const rect = element.getBoundingClientRect(), style = element.ownerDocument.defaultView.getComputedStyle(element);
-  if (style.visibility !== 'visible' || rect.width <= 0 || rect.height <= 0) return { ready: false, reason: 'hidden or zero size' };
-  if (editable && element.readOnly) return { ready: false, reason: 'read-only' };
+  // Inert and disabled state can be inherited through a slot or shadow host.
+  for (let parent = element; parent; parent = next(parent)) {
+    if (parent.matches(':disabled') || parent.hasAttribute('inert')) return failure(parent.matches(':disabled') ? 'disabled' : 'inert', parent);
+  }
+  if (style.display === 'none') return failure('display_none');
+  if (style.visibility !== 'visible') return failure('visibility_hidden');
+  if (rect.width <= 0 || rect.height <= 0) return failure('zero_size');
+  if (editable && element.readOnly) return failure('read_only');
   return { ready: true,
     x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }

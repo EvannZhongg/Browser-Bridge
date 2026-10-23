@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { selectElement, selectOptions } from '../extension/input.js';
 import { waitFor, inspectWait, waitOptions } from '../extension/wait.js';
 import { createDiagnostics } from '../extension/diagnostics.js';
@@ -102,4 +103,117 @@ test('text waits use rendered text for both substring and full previous-value co
   assert.equal(inspectWait(query, null, { condition: 'text', expected: 'Ready' }).text.length, 500);
   field.innerText = '';
   assert.equal(inspectWait(query, null, { condition: 'text', expected: 'Ready' }).satisfied, false);
+});
+
+test('state waits compare explicit native/ARIA state and never interpret missing state as false', () => {
+  const check = (element, condition, expected) => inspectWait(() => element, null, { condition, expected });
+  const input = { tagName: 'INPUT', type: 'checkbox', checked: false, indeterminate: true };
+  assert.equal(check(input, 'checked', 'mixed').satisfied, true);
+  assert.equal(check(input, 'checked', false).satisfied, false);
+  input.indeterminate = false;
+  assert.equal(check(input, 'checked', false).satisfied, true);
+  input.type = 'radio'; input.checked = true;
+  assert.equal(check(input, 'checked', true).satisfied, true);
+  assert.equal(check({ tagName: 'OPTION', selected: true }, 'selected', true).satisfied, true);
+  assert.equal(check({ tagName: 'DETAILS', open: false }, 'expanded', false).satisfied, true);
+  for (const condition of ['checked', 'selected', 'expanded']) {
+    for (const value of [null, '', 'invalid', 'undefined']) {
+      const result = check({ getAttribute: () => value }, condition, false);
+      assert.equal(result.satisfied, false); assert.equal(result.state, 'unavailable'); assert.equal(result.value, null);
+    }
+    for (const value of [false, true]) assert.equal(check({ getAttribute: () => String(value) }, condition, value).satisfied, true);
+  }
+  assert.equal(check({ getAttribute: () => 'mixed' }, 'checked', 'mixed').satisfied, true);
+  for (const tagName of ['INPUT', 'TEXTAREA', 'SELECT']) {
+    const field = { tagName, value: 'exact value' };
+    assert.equal(check(field, 'value', 'exact').satisfied, false);
+    const result = check(field, 'value', 'exact value');
+    assert.equal(result.satisfied, true); assert.ok(!JSON.stringify(result).includes('exact value'));
+  }
+  assert.equal(check({ isContentEditable: true, innerText: 'a\nb' }, 'value', 'a\nb').satisfied, true);
+  assert.equal(check({ textContent: 'fake value' }, 'value', 'fake value').state, 'unavailable');
+  assert.equal(check(null, 'checked', false).satisfied, false);
+  assert.equal(check(null, 'absent').satisfied, true);
+  assert.equal(check({}, 'absent').satisfied, false);
+});
+
+test('new wait arguments validate before batch input, including false and mixed without truthiness coercion', () => {
+  for (const args of [
+    { condition: 'value', expected: '' }, { condition: 'checked', expected: false },
+    { condition: 'checked', expected: 'mixed' }, { condition: 'selected', expected: true },
+    { condition: 'expanded', expected: false }, { condition: 'absent' },
+  ]) waitOptions({ selector: '#field', ...args });
+  for (const args of [
+    { condition: 'value', expected: true }, { condition: 'checked', expected: 'false' },
+    { condition: 'selected', expected: 'mixed' }, { condition: 'expanded' },
+    { condition: 'absent', expected: false }, { condition: 'value', expected: 'x', previous: '' },
+  ]) assert.throws(() => waitOptions({ selector: '#field', ...args }));
+});
+
+test('value and absence waits re-resolve replacement nodes and preserve ambiguity without issuing input', async () => {
+  const sessions = { frames: async () => [{ id: 'main' }], target: () => ({ tabId: 1 }) };
+  let fields = [{ tagName: 'INPUT', value: 'before', nodeType: 1 }], polls = 0;
+  const calls = [];
+  const cdp = async (target, method, args) => {
+    calls.push(method);
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 2 };
+    if (method === 'Runtime.evaluate') {
+      polls++;
+      if (polls === 2) fields = [{ tagName: 'INPUT', value: 'after', nodeType: 1 }];
+      const result = vm.runInNewContext(args.expression, { document: { querySelectorAll: () => fields } });
+      return { result: { value: result } };
+    }
+  };
+  const run = args => waitFor(cdp, r => r.result.value, sessions, null, null, 1, { selector: '#field', timeout_ms: 300, ...args });
+  assert.equal((await run({ condition: 'value', expected: 'after' })).satisfied, true);
+  assert.equal(polls, 2);
+  fields = [];
+  assert.equal((await run({ condition: 'absent' })).satisfied, true);
+  fields = [1, 2].map(() => ({ nodeType: 1, textContent: '', tagName: 'INPUT',
+    getBoundingClientRect: () => ({ width: 10, height: 10 }), matches: () => false, closest: () => null,
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) } } }));
+  await assert.rejects(run({ condition: 'absent' }), /matched 2/);
+  assert.ok(calls.every(method => ['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate'].includes(method)));
+});
+
+test('role absence and state waits use live AX targets, including missing-state timeout without leaking field values', async () => {
+  const sessions = { frames: async () => [{ id: 'main' }], target: () => ({ tabId: 1 }) };
+  let present = false;
+  const cdp = async (target, method) => {
+    if (method === 'Accessibility.getFullAXTree') return { nodes: present ? [{ nodeId: 'a', backendDOMNodeId: 12, role: { value: 'checkbox' } }] : [] };
+    if (method === 'DOM.resolveNode') return { object: { objectId: 'node' } };
+    if (method === 'Runtime.callFunctionOn') return { result: { value: { satisfied: false, state: 'unavailable' } } };
+    return {};
+  };
+  const run = args => waitFor(cdp, r => r.result.value, sessions, null, null, 1, { selector: 'checkbox', selector_type: 'role', timeout_ms: 100, ...args });
+  assert.equal((await run({ condition: 'absent' })).satisfied, true);
+  present = true;
+  await assert.rejects(run({ condition: 'checked', expected: false }), error => {
+    assert.equal(error.input_dispatched, false); assert.equal(error.diagnostics.current.state, 'unavailable'); return true;
+  });
+  await assert.rejects(run({ condition: 'value', expected: 'secret-password' }), error => {
+    assert.ok(!error.message.includes('secret-password')); return true;
+  });
+});
+
+test('read-only role waits retry replaced nodes and do not accept state from a disconnected wrapper', async () => {
+  const sessions = { frames: async () => [{ id: 'main' }], target: () => ({ tabId: 1 }) };
+  let observations = 0;
+  const cdp = async (target, method, args) => {
+    if (method === 'Accessibility.getFullAXTree') {
+      observations++;
+      return { nodes: [{ nodeId: 'a', backendDOMNodeId: observations, role: { value: 'checkbox' } }] };
+    }
+    if (method === 'DOM.resolveNode') {
+      if (observations === 1) throw new Error('No node with given id found');
+      return { object: { objectId: 'node' } };
+    }
+    if (method === 'Runtime.callFunctionOn') return { result: { value: vm.runInNewContext(`(${args.functionDeclaration}).call(field, args)`, {
+      field: { tagName: 'INPUT', type: 'checkbox', checked: true, isConnected: observations > 2 }, args: args.arguments[0].value,
+    }) } };
+    assert.equal(method, 'Runtime.releaseObjectGroup'); return {};
+  };
+  const result = await waitFor(cdp, r => r.result.value, sessions, null, null, 1,
+    { selector: 'checkbox', selector_type: 'role', condition: 'checked', expected: true, timeout_ms: 500 });
+  assert.equal(result.satisfied, true); assert.equal(observations, 3);
 });

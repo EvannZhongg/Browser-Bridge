@@ -26,6 +26,7 @@ export function createController(api, notify = () => {}) {
   const temporaryTabs = new Map();
   const fetches = createFetches(fetchPage);
   const snapshots = new Map();
+  const retiredRefs = new Map();
   const documents = new Map();
   const pageContexts = new Map();
   const frameStates = new Map();
@@ -97,17 +98,52 @@ export function createController(api, notify = () => {}) {
     return result.result?.value;
   }
 
+  function retireRef(tabId, ref, cause, frameId) {
+    let history = retiredRefs.get(tabId);
+    if (!history) retiredRefs.set(tabId, history = new Map());
+    history.set(ref, { cause, frame_id: frameId });
+    if (history.size > 1000) history.delete(history.keys().next().value);
+  }
+
+  function invalidateSnapshot(tabId, cause) {
+    const state = snapshots.get(tabId);
+    if (state) for (const [ref, node] of state.refs) retireRef(tabId, ref, cause, node.frameId);
+    snapshots.delete(tabId);
+  }
+
   async function getObject(tabId, ref, budget) {
+    const refError = (cause, frameId, message) => {
+      const dispatched = budget.has_dispatched();
+      return Object.assign(new Error(`${message}. Take a new browser_snapshot. ${dispatched ? 'Input was already dispatched; outcome is unknown. Do not replay automatically.' : 'No input was dispatched.'}`), {
+        input_dispatched: dispatched, diagnostics: { reason: 'stale_ref', cause, ref, ...(frameId ? { frame_id: frameId } : {}) },
+      });
+    };
     const node = snapshots.get(tabId)?.refs.get(ref);
-    if (!node) throw new Error('Element ref is stale or unknown. Take a new browser_snapshot.');
+    if (!node) {
+      const failure = retiredRefs.get(tabId)?.get(ref);
+      throw refError(failure?.cause || 'unknown_ref', failure?.frame_id, 'Element ref is stale or unknown');
+    }
     const target = sessions.target(tabId, node.frameId);
-    if (target.sessionId !== node.sessionId) throw new Error('Frame session changed; take a new browser_snapshot.');
-    const resolved = await budget.run(() => cdp(target, 'DOM.resolveNode', { backendNodeId: node.backendNodeId, objectGroup: 'browser-attach' }));
-    if (!resolved.object?.objectId) throw new Error('Element no longer exists. Take a new browser_snapshot.');
-    const { nodes } = await budget.run(() => cdp(target, 'Accessibility.getPartialAXTree', { backendNodeId: node.backendNodeId, fetchRelatives: false }));
+    if (target.sessionId !== node.sessionId) throw refError('frame_session_changed', node.frameId, 'Frame session changed');
+    let resolved, nodes;
+    try {
+      resolved = await budget.run(() => cdp(target, 'DOM.resolveNode', { backendNodeId: node.backendNodeId, objectGroup: 'browser-attach' }));
+      if (!resolved.object?.objectId) throw refError('element_detached', node.frameId, 'Element no longer exists');
+      ({ nodes } = await budget.run(() => cdp(target, 'Accessibility.getPartialAXTree', { backendNodeId: node.backendNodeId, fetchRelatives: false })));
+    }
+    catch (error) {
+      const retired = retiredRefs.get(tabId)?.get(ref);
+      if (retired) throw refError(retired.cause, retired.frame_id, 'Element ref became stale during resolution');
+      if (/no node|could not find node|node.*(detached|not found)/i.test(error.message)) throw refError('element_detached', node.frameId, 'Element is detached or no longer exists');
+      throw error;
+    }
+    if (snapshots.get(tabId)?.refs.get(ref) !== node) {
+      const retired = retiredRefs.get(tabId)?.get(ref);
+      throw refError(retired?.cause || 'unknown_ref', node.frameId, 'Element ref became stale during resolution');
+    }
     const current = nodes?.find(item => item.backendDOMNodeId === node.backendNodeId);
     if (!current || !!current.ignored !== !!node.ignored || current.role?.value !== node.role || String(current.name?.value || '') !== node.name) {
-      throw new Error('Element ref identity changed (role/name or accessibility); take a new browser_snapshot. No input was dispatched.');
+      throw refError('identity_changed', node.frameId, 'Element ref identity changed (role/name or accessibility)');
     }
     return { ...node, target, objectId: resolved.object.objectId };
   }
@@ -156,6 +192,7 @@ export function createController(api, notify = () => {}) {
     claims.delete(tabId);
     evaluations.forget(tabId);
     snapshots.delete(tabId);
+    retiredRefs.delete(tabId);
     documents.delete(tabId);
     for (const key of pageContexts.keys()) if (JSON.parse(key)[0] === tabId) pageContexts.delete(key);
     frameStates.delete(tabId);
@@ -184,6 +221,7 @@ export function createController(api, notify = () => {}) {
     clickVisuals.forget(tabId);
     claims.delete(tabId);
     snapshots.delete(tabId);
+    retiredRefs.delete(tabId);
     documents.delete(tabId);
     for (const key of pageContexts.keys()) if (JSON.parse(key)[0] === tabId) pageContexts.delete(key);
     frameStates.delete(tabId);
@@ -233,7 +271,7 @@ export function createController(api, notify = () => {}) {
     if ((!source.sessionId && method === 'DOM.documentUpdated') || mainNavigation || sameDocumentMain) {
       evaluations.forget(source.tabId);
       documents.set(source.tabId, (documents.get(source.tabId) || 0) + 1);
-      snapshots.delete(source.tabId);
+      invalidateSnapshot(source.tabId, sameDocumentMain ? 'same_document_navigation' : mainNavigation ? 'document_navigation' : 'document_updated');
       fileChoosers.delete(source.tabId);
     } else if (source.sessionId && method === 'DOM.documentUpdated') {
       for (const [frame, session] of frameStates.get(source.tabId)?.sessions || []) if (session === source.sessionId) invalidateFrame(source.tabId, frame);
@@ -248,7 +286,7 @@ export function createController(api, notify = () => {}) {
     if (mainNavigation) clickVisuals.navigated(source.tabId);
     if (method === 'Page.javascriptDialogOpening') {
       dialogs.set(source.tabId, { sessionId: source.sessionId, type: params.type, message: params.message, default_prompt: params.defaultPrompt, default_button: null });
-      snapshots.delete(source.tabId);
+      invalidateSnapshot(source.tabId, 'dialog_opened');
       const openedDialog = dialogs.get(source.tabId);
       const message = { ...openedDialog, policy: policy?.policy || 'ask', accepted: autoDialog ? policy.policy === 'accept' : null };
       for (let item = policy; item; item = item.parent) item.messages.push(message);
@@ -270,7 +308,7 @@ export function createController(api, notify = () => {}) {
     if (change.url) {
       evaluations.forget(tabId);
       documents.set(tabId, (documents.get(tabId) || 0) + 1);
-      snapshots.delete(tabId); fileChoosers.delete(tabId);
+      invalidateSnapshot(tabId, 'tab_url_changed'); fileChoosers.delete(tabId);
     }
   });
 
@@ -288,15 +326,18 @@ export function createController(api, notify = () => {}) {
     for (const id of affected) {
       evaluations.forgetFrame(tabId, id);
       frames.versions.set(id, (frames.versions.get(id) || 0) + 1);
-      if (state) omitFrame(state, id, 'Frame navigated or detached after observation');
+      if (state) omitFrame(tabId, state, id, 'Frame navigated or detached after observation');
     }
     if (affected.has(fileChoosers.get(tabId)?.frame_id)) fileChoosers.delete(tabId);
   }
 
-  function omitFrame(state, frameId, reason) {
+  function omitFrame(tabId, state, frameId, reason) {
     if (state.invalidFrames.has(frameId)) return;
     state.invalidFrames.add(frameId);
-    for (const [ref, node] of state.refs) if (node.frameId === frameId) state.refs.delete(ref);
+    for (const [ref, node] of state.refs) if (node.frameId === frameId) {
+      retireRef(tabId, ref, 'frame_changed', frameId);
+      state.refs.delete(ref);
+    }
     state.totalNodes -= state.entries.filter(entry => entry.frameId === frameId && entry.node).length;
     state.metadata.omitted_frames.push({ frame_id: frameId, reason });
   }
@@ -314,7 +355,7 @@ export function createController(api, notify = () => {}) {
       return snapshotPage(state, args);
     }
     const options = snapshotOptions(args);
-    snapshots.delete(tabId);
+    invalidateSnapshot(tabId, 'snapshot_replaced');
     const documentVersion = documents.get(tabId);
     const versions = new Map(frameStates.get(tabId)?.versions);
     await (budget ? budget.run(() => sessions.settle(tabId)) : sessions.settle(tabId));
@@ -362,7 +403,7 @@ export function createController(api, notify = () => {}) {
       metadata: { title: metadata.title, url: metadata.url, viewport: await (budget ? budget.run(() => viewport(tabId)) : viewport(tabId)), omitted_frames: omittedFrames } };
     if (documentVersion !== documents.get(tabId)) throw new Error('Document changed while reading the snapshot. Take a new browser_snapshot.');
     for (const frame of frames) if (versions.get(frame.id) !== frameStates.get(tabId)?.versions.get(frame.id)) {
-      omitFrame(state, frame.id, 'Frame changed while reading the snapshot; take a new snapshot to observe it');
+      omitFrame(tabId, state, frame.id, 'Frame changed while reading the snapshot; take a new snapshot to observe it');
     }
     const page = snapshotPage(state, args);
     snapshots.set(tabId, state);
@@ -378,7 +419,7 @@ export function createController(api, notify = () => {}) {
       await cdp({ tabId, ...(dialogs.get(tabId)?.sessionId ? { sessionId: dialogs.get(tabId).sessionId } : {}) }, 'Page.handleJavaScriptDialog', { accept: args.accept,
         ...(args.prompt_text != null ? { promptText: String(args.prompt_text) } : {}) });
       dialogs.delete(tabId);
-      snapshots.delete(tabId);
+      invalidateSnapshot(tabId, 'dialog_handled');
       return { handled: true, dialog: dialog ?? null, accepted: args.accept, observe_again: true };
     }
     if (dialogs.has(tabId)) {
@@ -487,7 +528,7 @@ export function createController(api, notify = () => {}) {
       const url = args.direction != null ? undefined : args.url;
       if (args.direction != null && args.url != null) throw new Error('Provide url or direction, never both');
       evaluations.forget(tabId);
-      snapshots.delete(tabId);
+      invalidateSnapshot(tabId, 'navigation_requested');
       fileChoosers.delete(tabId);
       const { document: navigationDocument, ...result } = await navigation.navigate(tabId, url, args);
       const budget = deadline(NAVIGATION_OBSERVATION_TIMEOUT_MS, 'observation');
@@ -500,7 +541,7 @@ export function createController(api, notify = () => {}) {
         }
         return { ...result, ...await snapshot(tabId, {}, budget) };
       } catch (error) {
-        snapshots.delete(tabId);
+        invalidateSnapshot(tabId, 'observation_failed');
         if (attempt === 0 && budget.remaining() > 100 && /context.*(destroyed|not found)|cannot find context|document (changed|updated)|inspected target navigated|no frame with given id/i.test(error.message)) {
           await new Promise(resolve => setTimeout(resolve, 50));
           continue;
@@ -658,7 +699,7 @@ export function createController(api, notify = () => {}) {
     dialogPolicies.set(tabId, state);
     const version = documents.get(tabId), startTab = await api.tabs.get(tabId);
     const watch = ['click', 'fill', 'type', 'press_key', 'hover', 'scroll', 'select_option', 'upload_file', 'evaluate', 'navigate'].includes(command) && !(command === 'evaluate' && args.cursor != null);
-    let observer, observationFrame = frameStates.get(tabId)?.mainId, observationTarget = { tabId }, observedVersion = frameStates.get(tabId)?.versions.get(observationFrame);
+    let observer, observationError, observationFrame = frameStates.get(tabId)?.mainId, observationTarget = { tabId }, observedVersion = frameStates.get(tabId)?.versions.get(observationFrame);
     const startObservation = async () => { if (!watch || observer || dialogs.has(tabId)) return; try {
       observer = await boundedRead(async () => {
         if (args.ref) observationFrame = snapshots.get(tabId)?.refs.get(args.ref)?.frameId || observationFrame;
@@ -667,9 +708,10 @@ export function createController(api, notify = () => {}) {
         observedVersion = frameStates.get(tabId)?.versions.get(observationFrame);
         const { executionContextId } = await cdp(observationTarget, 'Page.createIsolatedWorld', { frameId: observationFrame, worldName: 'browser-attach-outcome' });
         const result = await cdp(observationTarget, 'Runtime.evaluate', { contextId: executionContextId, expression: `(${installOutcomeObserver.toString()})()`, objectGroup: 'browser-attach-outcome' });
-        return result.result?.objectId;
+        if (!result.result?.objectId) throw new Error('DOM outcome observer could not be installed');
+        return result.result.objectId;
       }, Math.min(200, args.budget?.remaining() ?? 200));
-    } catch {} };
+    } catch (error) { observationError = error.message; } };
     try {
       const result = await action(tabId, command, { ...args, observe_start: startObservation });
       if (state.handling) await boundedRead(() => state.handling, 500);
@@ -679,16 +721,24 @@ export function createController(api, notify = () => {}) {
       if (state.handling) await boundedRead(() => state.handling, 500).catch(() => {});
       if (state.messages.some(d => d.type === 'beforeunload' && d.accepted === false && d.handled) && /ERR_ABORTED|cancel/i.test(error.message)) return { navigated: false, cancelled_by_dialog: true, dialogs: state.messages, observe_again: true };
       if (watch && error.input_dispatched !== false && /outcome is unknown|may already|effects may|may have been|timed out|did not reach|may still/i.test(error.message)) {
-        let current, dom;
+        let current, dom, tabError, domError = observationError;
         await Promise.allSettled([
-          boundedRead(async () => { current = await api.tabs.get(tabId); }),
-          observer ? boundedRead(async () => { dom = value(await cdp(observationTarget, 'Runtime.callFunctionOn', { objectId: observer, functionDeclaration: 'function() { return this.read(); }', returnByValue: true })); }) : Promise.resolve(),
+          boundedRead(() => api.tabs.get(tabId)).then(result => { if (result) current = result; else tabError = 'Tab is unavailable'; }, error => { tabError = error.message; }),
+          observer ? boundedRead(async () => {
+            const result = value(await cdp(observationTarget, 'Runtime.callFunctionOn', { objectId: observer, functionDeclaration: 'function() { return this.read(); }', returnByValue: true }));
+            if (typeof result?.dom_changed !== 'boolean') throw new Error('DOM outcome observation is unavailable');
+            return result;
+          }).then(result => { dom = result; }, error => { domError = error.message; }) : Promise.resolve(),
         ]);
         const frameChanged = frameStates.get(tabId)?.versions.get(observationFrame) !== observedVersion;
+        const navigationObserved = documents.get(tabId) !== version || !!current && current.url !== startTab.url;
         error.post_action = { delivery: 'unknown', frame_id: observationFrame, frame_navigation_observed: frameChanged, dialog: dialogs.get(tabId) || null, dialogs: state.messages,
-          navigation_observed: documents.get(tabId) !== version || !!current && current.url !== startTab.url,
+          navigation_observed: navigationObserved,
           current_url: current?.url ?? null, dom_changed: dom?.dom_changed ?? null,
-          assessment: dialogs.has(tabId) || state.messages.length || documents.get(tabId) !== version || frameChanged || dom?.dom_changed ? 'observable_effects' : 'no_observable_effects',
+          observations: { tab: { available: !!current, ...(tabError ? { error: tabError } : {}) },
+            dom: { available: !!dom, ...(!dom ? { error: domError || 'DOM outcome observer is unavailable' } : {}) } },
+          assessment: dialogs.has(tabId) || state.messages.length || navigationObserved || frameChanged || dom?.dom_changed ? 'observable_effects'
+            : dom && current ? 'no_observable_effects' : 'observation_unavailable',
           note: 'These observations do not prove business success or that an unchanged page received no input. Do not replay automatically.' };
       } else if (state.messages.length) error.message += ` Dialogs: ${JSON.stringify(state.messages)}`;
       throw error;

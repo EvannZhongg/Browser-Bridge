@@ -94,7 +94,7 @@ Claiming and ordinary input never activate a tab or window; call `browser_tab_co
 | `browser_open_tab` / `browser_tab_control` | Create a tab; explicit `release/activate/close` of a claimed tab |
 | `browser_fetch` | Read one HTTP(S) URL in a temporary background tab using the profile's sign-in; `text`/`html`/`json`, optional HTTP status and cursor continuation |
 | `browser_snapshot` / `browser_read_text` | AX snapshot, literal name/value query with actionable refs, and page text |
-| `browser_wait` | Read-only wait for an element, text, URL or network idle |
+| `browser_wait` | Read-only wait for presence/absence, visibility, actionability, rendered text, exact field value, checked/selected/expanded state, URL or network idle |
 | `browser_click` / `browser_hover` / `browser_drag` / `browser_select_option` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_scroll` | Native/DOM input, pointer hover and drag, option selection, character typing and scrolling |
 | `browser_batch` | Run 1–20 click/fill/type/press_key/hover/scroll/select_option/wait steps in one queue; stops on the first failure and returns partial results |
 | `browser_navigate` | HTTP(S)/file navigation, back/forward and load waiting; local destinations require file access |

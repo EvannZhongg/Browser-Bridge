@@ -498,10 +498,93 @@ test('a new snapshot and navigation invalidate earlier element refs', async () =
   const f = fixture(); await f.claim();
   const ref = f.ref(await f.exec('snapshot'));
   await f.exec('snapshot');
-  await assert.rejects(f.exec('fill', { ref, text: 'test' }), /stale/);
+  await assert.rejects(f.exec('fill', { ref, text: 'test' }), error => {
+    assert.equal(error.input_dispatched, false); assert.equal(error.diagnostics.cause, 'snapshot_replaced'); return true;
+  });
   const current = f.ref(await f.exec('snapshot'));
   f.api.debugger.onEvent.emit({ tabId: 9 }, 'DOM.documentUpdated');
-  await assert.rejects(f.exec('click', { ref: current }), /stale/);
+  await assert.rejects(f.exec('click', { ref: current }), error => {
+    assert.equal(error.diagnostics.cause, 'document_updated'); return true;
+  });
+});
+
+test('retired ref diagnostics are bounded and cleared on release, and missing backend nodes are explicit', async () => {
+  const f = fixture(); await f.claim();
+  f.nodes(Array.from({ length: 1002 }, (_, i) => ({ nodeId: String(i), backendDOMNodeId: i + 100,
+    role: { value: 'button' }, name: { value: `Button ${i}` } })));
+  const tree = await f.exec('snapshot', { max_nodes: 2000, max_chars: 100000 });
+  const refs = [...tree.snapshot.matchAll(/\[([^\]]+)\] button/g)].map(match => match[1]);
+  assert.equal(refs.length, 1002);
+  await f.exec('snapshot');
+  for (const [ref, cause] of [[refs[0], 'unknown_ref'], [refs.at(-1), 'snapshot_replaced']]) {
+    await assert.rejects(f.exec('click', { ref }), error => { assert.equal(error.diagnostics.cause, cause); return true; });
+  }
+  await f.exec('release_tab'); await f.claim();
+  await assert.rejects(f.exec('click', { ref: refs.at(-1) }), error => { assert.equal(error.diagnostics.cause, 'unknown_ref'); return true; });
+  const ref = f.ref(await f.exec('snapshot'));
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'DOM.resolveNode') throw new Error('No node with given id found');
+    return send(target, method, args);
+  };
+  await assert.rejects(f.exec('click', { ref }), error => {
+    assert.equal(error.input_dispatched, false); assert.equal(error.diagnostics.cause, 'element_detached'); return true;
+  });
+  assert.equal(f.calls.filter(call => call.method.startsWith('Input.')).length, 0);
+});
+
+test('document invalidation during ref identity resolution is diagnosed before dispatch', async () => {
+  for (const failRead of [false, true]) {
+    const f = fixture(); await f.claim(); const ref = f.ref(await f.exec('snapshot'));
+    const send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      const result = await send(target, method, args);
+      if (method === 'Accessibility.getPartialAXTree') {
+        f.api.debugger.onEvent.emit(target, 'DOM.documentUpdated');
+        if (failRead) throw new Error('Cannot find context');
+      }
+      return result;
+    };
+    await assert.rejects(f.exec('click', { ref }), error => {
+      assert.equal(error.input_dispatched, false); assert.equal(error.diagnostics.cause, 'document_updated'); return true;
+    });
+    assert.equal(f.calls.filter(call => call.method.startsWith('Input.')).length, 0);
+  }
+});
+
+test('post-action evidence distinguishes unavailable observation, confirmed no change and positive effects without replay', async () => {
+  for (const scenario of ['install_failed', 'read_failed', 'unchanged', 'mutated', 'navigation', 'tab_failed']) {
+    const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+    const get = f.api.tabs.get; let sent = false;
+    f.api.tabs.get = async id => { if (sent && scenario === 'tab_failed') throw new Error('Tab probe failed'); return get(id); };
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      if (method === 'Runtime.evaluate' && args.expression.includes('installOutcomeObserver')) {
+        if (scenario === 'install_failed') throw new Error('Cannot install observer');
+        return { result: { objectId: 'observer' } };
+      }
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function verifyFill')) {
+        sent = true;
+        if (scenario === 'navigation') f.api.debugger.onEvent.emit(target, 'Page.navigatedWithinDocument', { frameId: 'main' });
+        return { result: { value: false } };
+      }
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('this.read()')) {
+        if (['read_failed', 'navigation'].includes(scenario)) throw new Error('Observer context destroyed');
+        return { result: { value: { dom_changed: scenario === 'mutated' } } };
+      }
+      return send(target, method, args);
+    };
+    await assert.rejects(f.exec('fill', { selector: 'input', text: 'not retained' }), error => {
+      assert.equal(error.input_dispatched, true);
+      const evidence = error.post_action;
+      assert.equal(evidence.delivery, 'unknown');
+      assert.equal(evidence.assessment, ['navigation', 'mutated'].includes(scenario) ? 'observable_effects'
+        : scenario === 'unchanged' ? 'no_observable_effects' : 'observation_unavailable');
+      assert.equal(evidence.observations.dom.available, !['install_failed', 'read_failed', 'navigation'].includes(scenario));
+      assert.equal(evidence.observations.tab.available, scenario !== 'tab_failed');
+      return true;
+    });
+    assert.equal(f.calls.filter(call => call.method === 'Input.insertText').length, 1);
+  }
 });
 
 test('covered elements are refused before input is dispatched', async () => {
@@ -606,7 +689,8 @@ test('scroll boundary timeout stays uncertain, sends no repeated scroll and leav
   };
   await assert.rejects(f.exec('scroll', { selector: '#list', until: { text: 'Missing' }, timeout_ms: 250 }), error => {
     assert.equal(error.post_action.delivery, 'unknown');
-    assert.equal(error.post_action.assessment, 'no_observable_effects'); return true;
+    assert.equal(error.post_action.assessment, 'observation_unavailable');
+    assert.equal(error.post_action.dom_changed, null); assert.equal(error.post_action.observations.dom.available, false); return true;
   });
   assert.equal(scrolls, 1); assert.ok((await f.exec('snapshot')).snapshot);
 });

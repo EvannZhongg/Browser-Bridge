@@ -1,15 +1,20 @@
 import { deadline, inspectTarget } from './actionability.js';
 import { queryElement, targetOptions, resolveSelector, resolveFrame } from './locator.js';
 
+export const WAIT_CONDITIONS = ['attached', 'absent', 'visible', 'actionable', 'text', 'value', 'checked', 'selected', 'expanded', 'url', 'network_idle'];
+
 export function waitOptions(args) {
-  if (!['attached', 'visible', 'actionable', 'text', 'url', 'network_idle'].includes(args.condition)) throw new Error('Unknown wait condition');
-  const element = ['attached', 'visible', 'actionable', 'text'].includes(args.condition);
+  if (!WAIT_CONDITIONS.includes(args.condition)) throw new Error('Unknown wait condition');
+  const element = !['url', 'network_idle'].includes(args.condition);
   if (element) {
     if (!args.selector || args.ref != null) throw new Error(`${args.condition} wait requires a reusable selector${args.condition === 'text' ? '; use selector="body" for whole-page rendered text' : ''}`);
     targetOptions(args);
   } else if (args.selector != null || args.ref != null || args.frame_id != null || args.frame != null || args.nth != null || args.selector_type != null || args.name != null) throw new Error('This wait condition does not use an element target');
   if (args.condition === 'text' && (Number(typeof args.expected === 'string') + Number(typeof args.previous === 'string') !== 1)) throw new Error('text wait requires exactly one of expected (substring) or previous (full prior text)');
   if (args.condition === 'url' && typeof args.expected !== 'string') throw new Error('url wait requires expected text (substring)');
+  if (args.condition === 'value' && typeof args.expected !== 'string') throw new Error('value wait requires an exact expected string');
+  if (['checked', 'selected', 'expanded'].includes(args.condition) && typeof args.expected !== 'boolean' && !(args.condition === 'checked' && args.expected === 'mixed')) throw new Error(`${args.condition} wait requires expected=true/false${args.condition === 'checked' ? ' or "mixed"' : ''}`);
+  if (!['text', 'url', 'value', 'checked', 'selected', 'expanded'].includes(args.condition) && args.expected != null) throw new Error('expected is not used by this wait condition');
   if (args.condition !== 'text' && args.previous != null) throw new Error('previous is only valid for text waits');
   if (args.condition === 'network_idle' && (!Number.isInteger(args.idle_ms ?? 500) || (args.idle_ms ?? 500) < 100 || (args.idle_ms ?? 500) > 10000)) throw new Error('idle_ms must be 100..10000');
 }
@@ -18,7 +23,7 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
   waitOptions(args);
   const budget = args.budget || deadline(args.timeout_ms ?? 5000, 'wait');
   let current = 'not observed', previous;
-  const description = `${args.condition}${args.selector ? ` selector=${JSON.stringify(args.selector)}` : ''}${args.name != null ? ` name=${JSON.stringify(args.name)}` : ''}${args.expected != null ? ` expected substring=${JSON.stringify(args.expected)}` : ''}${args.previous != null ? ` text different from=${JSON.stringify(args.previous).slice(0, 500)}` : ''}`;
+  const description = `${args.condition}${args.selector ? ` selector=${JSON.stringify(args.selector)}` : ''}${args.name != null ? ` name=${JSON.stringify(args.name)}` : ''}${args.expected != null && args.condition !== 'value' ? ` expected${['text', 'url'].includes(args.condition) ? ' substring' : ''}=${JSON.stringify(args.expected)}` : ''}${args.previous != null ? ` text different from=${JSON.stringify(args.previous).slice(0, 500)}` : ''}`;
   try {
     while (true) {
       if (args.condition === 'network_idle') {
@@ -35,7 +40,7 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
             const node = await resolveSelector(cdp, value, sessions, tabId, args, budget, { wait: false });
             try {
               current = node ? value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId, returnByValue: true,
-                functionDeclaration: `function(args) { return (${inspectWait.toString()})(() => this, (${inspectTarget.toString()}), args); }`, arguments: [{ value: { selector: args.selector, condition: args.condition, expected: args.expected, previous: args.previous } }] }))) : { satisfied: false, state: 'absent' };
+                functionDeclaration: `function(args) { return (${inspectWait.toString()})(() => this, (${inspectTarget.toString()}), args); }`, arguments: [{ value: { selector: args.selector, condition: args.condition, expected: args.expected, previous: args.previous } }] }))) : { satisfied: args.condition === 'absent', state: 'absent' };
             } finally {
               if (node) await budget.run(() => cdp(node.target, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach' }));
             }
@@ -57,14 +62,14 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
                 }
               } catch (error) {
                 if (!/covers|no visible click point|detached before resolution/i.test(error.message)) throw error;
-                current = { satisfied: false, reason: error.message };
+                current = { satisfied: false, reason: error.message, ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}) };
               }
             }
             if (current.satisfied) return { satisfied: true, condition: args.condition, current };
           }
           previous = current;
         } catch (error) {
-          if (!/context.*(destroyed|not found)|cannot find context|no frame with given id|inspected target navigated/i.test(error.message)) throw error;
+          if (!/context.*(destroyed|not found)|cannot find context|no frame with given id|inspected target navigated|detached before resolution|no node|could not find node|node.*(detached|not found)/i.test(error.message)) throw error;
           current = 'document/frame changing'; previous = null;
         }
       }
@@ -79,11 +84,30 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
 
 export function inspectWait(query, inspect, args) {
   const element = query(args.selector, args.selector_type ?? 'css', args.nth, true);
-  if (!element) return { satisfied: false, state: 'absent' };
+  if (!element) return { satisfied: args.condition === 'absent', state: 'absent' };
+  if (element.isConnected === false) return { satisfied: false, state: 'detached_during_observation' };
   if (args.condition === 'attached') return { satisfied: true, state: 'attached' };
+  if (args.condition === 'absent') return { satisfied: false, state: 'attached' };
   if (args.condition === 'text') {
     const text = element.innerText ?? '';
     return { satisfied: args.previous != null ? text !== args.previous : text.includes(args.expected), text: text.slice(0, 500) };
+  }
+  if (args.condition === 'value') {
+    const text = ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) ? element.value : element.isContentEditable ? element.innerText : undefined;
+    // Field values may contain credentials. Report the comparison, not its contents.
+    return { satisfied: typeof text === 'string' && text === args.expected, state: typeof text === 'string' ? 'value' : 'unavailable' };
+  }
+  if (['checked', 'selected', 'expanded'].includes(args.condition)) {
+    let state, source = 'property';
+    if (args.condition === 'checked' && element.tagName === 'INPUT' && ['checkbox', 'radio'].includes(element.type)) state = element.type === 'checkbox' && element.indeterminate ? 'mixed' : element.checked;
+    else if (args.condition === 'selected' && element.tagName === 'OPTION') state = element.selected;
+    else if (args.condition === 'expanded' && element.tagName === 'DETAILS') state = element.open;
+    else {
+      source = `aria-${args.condition}`;
+      const attribute = element.getAttribute(source);
+      state = attribute === 'true' ? true : attribute === 'false' ? false : args.condition === 'checked' && attribute === 'mixed' ? 'mixed' : undefined;
+    }
+    return { satisfied: state !== undefined && state === args.expected, state: state === undefined ? 'unavailable' : args.condition, value: state ?? null, source };
   }
   const bounds = inspect.call(element);
   if (args.condition === 'visible') return { ...bounds,

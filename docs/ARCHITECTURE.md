@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.20.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.21.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -74,6 +74,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **文本查询与精简输出**：`snapshot(query=...)` 复用同一次 AX 渲染，按当前视图中节点的完整名称（含合并正文）、value 或字段 context 做不区分大小写的字面子串筛选，只输出匹配行和对应 frame 标题；不搜索 role/ref 或任意 DOM 属性，不新增索引缓存。新查询仍采集新观察并使旧 refs 失效，query 与分页绑定。默认省略 viewport、snapshot_id 和重复规则说明，`verbose=true` 返回前两项；frame 覆盖、视图、预算和游标语义保留。
 - **字段上下文**：表单控件可附带 context 并参与 query，保留至多 160 字符的前一兄弟分支 AX 文本；只在四层以内 generic/none/group 祖先、单控件容器中查找，每次容器/文本遍历分别限制 64/32 节点。不将其伪装为 accessible name，不用于 label 定位或 ref 身份验证；interactive/text=false 也保留提示。
 - **ref 解析**：ref 保存 `backendNodeId`、所属 frame/session 和观察时的 AX role/name；动作时重新 `DOM.resolveNode` 并用局部 AX 查询核对语义身份。输入与求值不清空 refs，只使快照分页失效；原节点仍连接时可复用，节点替换、role/name 改变、文档或 frame 变化时安全失败，不按 role/name 猜测替代节点。
+- **ref 失效诊断**：controller 每标签保留最近至多 1000 个已清理 ref 的 cause/frame_id，不保留 DOM 对象、字段值或替代定位信息。新观察、文档/frame 变化及对话框清理记录各自原因；解析时单独报告节点脱离、session 或 AX 身份变化。释放、断连、关闭和 detach 清空历史，淘汰后返回 unknown_ref。
 - **双预算**：`max_nodes` 限制节点数，`max_chars` 限制每行序列化后的累计字符数；两者独立，任一耗尽都会返回 `next_cursor`。
 - **续读**：续读沿用同一份 `state`（`entries`、`refs`、`nextOffset`），所以 refs 在分页过程中保持有效。单个节点放不进预算时直接报错要求提高预算，避免静默截断尾部。
 - **frame 失效**：主文档导航或文档更新清空整份观察；子 frame 导航、移除或 session detach 只使该子树失效，并把受影响 frame 写入 `omitted_frames`。
@@ -98,7 +99,8 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **送达预算**：原生 click/hover/press_key 的派发及可信回执另有 1250 ms 上限，清理最多 250 ms；系统菜单捕获输入时快速释放队列，仍报告结果未知并提示 Esc，不自动重放。
 - **hover 与 drag**：hover 复用点击准备与隔离校验，仅派发一次 mouseMoved，清理不移走指针。drag 显式区分 pointer 与 HTML5；后者从真实 dragstart 截获 DragData，再用 CDP 派发 dragover/drop，校验可信 dragstart/drop/dragend。目的节点在按住后滚入视口；所有步骤共用标签队列和总预算，失败时只取消/释放本次手势。
 - **可选输入参数**：显式 offset 在元素 content quad 上插值后沿用命中与 OOPIF 边界检查；settle_ms 在 click/drag 首次派发前等待并复查就绪。drag trajectory 只替换既有插值段，采用法向控制点、平滑进度及随机间隔权重；type 的 delay_ms 可逐间隔独立区间采样。所有等待共用总预算，超时后没有继续派发的链；省略参数时不使用随机数，沿用既有确定性路径。不新增 tab 级历史、冷却、自动激活或重放路径。
-- **条件等待**：wait 复用严格 selector、可操作性和命中检查，支持出现、可见、可操作、文本/URL 子串及网络空闲；文本使用 innerText，expected 子串匹配和 previous 完整旧值比较均在 500 字符结果预览截取前完成。只读轮询，错误附带条件和最后状态。
+- **条件等待**：wait 复用严格 selector、可操作性和命中检查，支持出现、无匹配、可见、可操作、字段值精确相等、checked/selected/expanded、文本/URL 子串及网络空闲。控件优先读取明确的原生属性，否则读取对应 ARIA 属性；缺失/无效状态保持 unavailable，不当作 false。字段值不回显；文本使用 innerText，比较在 500 字符预览截取前完成。每次只读轮询重新解析 selector，可在节点替换时重读，歧义立即失败；AX 无匹配不证明 DOM 移除。单步与 batch 共享条件 schema 和参数校验，等待超时不改变前序动作的派发事实。
+- **可操作性诊断**：区分 display_none、visibility_hidden、zero_size、disabled、inert、read_only 和 unstable_geometry；无可见落点单独返回 no_visible_click_point。失败时最多采集 8 层 composed 祖先的样式、滚动方向和 transition 属性/时长，成功路径保留原有几何就绪语义；不以 opacity=0 拒绝输入，不自动 hover、移除遮挡或等待推断出的组件状态。
 - **原生下拉**：select_option 不要求可见或稳定几何，先只读核对节点、禁用/inert 祖先与唯一选项，再在一次派发中复查并用 selectedIndex setter 和合成 input/change 设置，核验保留结果并返回 events_trusted=false。单步和 batch 共用实现。native click 的 select 命中（含 UA shadow 内部节点和关联 label）在派发前拒绝。
 - **命中提示**：普通命中保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。CSSPseudoElement 先解析为事件所属的 originating element，提示标记 pseudo_element=true，并使用该元素安装事件校验。语义候选不会被用于替换点击目标。
 - **遮挡失败诊断**：当前 frame 的遮挡直接复用已读取的 hit_target；祖先 frame 遮挡额外用至多 200 ms 读取命中描述，诊断节点消失时保留原遮挡错误与 backend node ID。错误包含命中点和受阻 frame。根据共享预算的派发状态区分“未派发”和“结果未知”，避免 drag 按住后准备目的节点时误报零输入。
@@ -108,7 +110,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **命中对象**：伪元素先解析 originating Element；ShadowRoot 通过其 elementFromPoint 重新取得实际命中 Element，同进程子 frame 先把 session 坐标映射到所属文档视口。不将 ShadowRoot 直接当 Element 或无条件改成 host。后续身份、遮挡和事件回执检查保持一致；命中描述附带 frame-local rect 和样式诊断。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
 - **对话框策略**：ask 仍为默认；单操作/单步骤的显式 accept/dismiss 在事件回调中解除 JS 模态阻塞，保留消息与处理结果，最多自动处理 10 个。beforeunload dismiss 快速取消本次导航等待，实际主文档变化仍会停止 batch。
-- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver；观察用的 frame 解析只尝试一次，不等待不存在的 frame 消耗动作准备预算。仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动；读取最多 300 ms、清理最多 100 ms。assessment 为 observable_effects 或 no_observable_effects；观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。扩展、Hub、客户端用 errors.js 保留 error 文本及 input_dispatched、post_action、diagnostics；MCP 工具执行失败返回 isError 与 JSON，batch 失败采用相同证据字段。
+- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver；观察用的 frame 解析只尝试一次，不等待不存在的 frame 消耗动作准备预算。仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动；读取最多 300 ms、清理最多 100 ms。observations.tab/dom 分别提供 available 及错误；任意正面变化证据保留 observable_effects，只有标签与 DOM 均可读且未见变化才返回 no_observable_effects，其他情况为 observation_unavailable。不可用 DOM 结果为 null；任何 assessment 都不证明业务成功或没有派发，不自动重放。扩展、Hub、客户端用 errors.js 保留 error 文本及 input_dispatched、post_action、diagnostics；MCP 工具执行失败返回 isError 与 JSON，batch 失败采用相同证据字段。
 - **元素截图/求值 ref**：复用既有截图 clip/元数据与 ref 注册/失效模型，分别增加元素 border box 截图和显式单 DOM Element 结果；不暴露 Runtime objectId。JSON 求值自动调用函数一次并等待 Promise，缓存续读不执行脚本。
 - **求值预算提示**：JSON 仍按顶层完整项分页；已有输出而下一项超出预算时，在同一响应提供 next_item 的 key/index、required_chars 和是否超过最大页预算。提示只读取缓存，不展开或改写嵌套值，也不提供任意脚本的执行进度。
 - **历史导航**：在已有 navigate 中选择 URL 或 back/forward，按 history entry 与主 frame 生命周期等待；同文档/BFCache 恢复不等新的加载事件，不用 evaluate 重放导航。

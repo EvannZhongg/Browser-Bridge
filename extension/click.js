@@ -67,7 +67,9 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
         point = clippedPoint(quad, view, args.offset);
         if (point) break;
       }
-      if (!point) throw new Error('Element has no visible click point. Inspect a screenshot.');
+      if (!point) throw obstruction('Element has no visible click point. Inspect a screenshot', {
+        reason: 'no_visible_click_point', frame_id: node.frameId, viewport: view, quads: quads || [],
+      });
     } else {
       view = await budget.run(() => viewport(target));
       if (args.coordinate_space === 'document') {
