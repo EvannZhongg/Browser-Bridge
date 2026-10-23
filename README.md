@@ -8,6 +8,8 @@
   <strong>English</strong> · <a href="README.zh.md">简体中文</a>
 </p>
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/evannzhongg-browserattach-kisqie?v=ad2528ebe8a0fa35e3cf933630840bac)](https://m8ven.ai/mcp/evannzhongg-browserattach-kisqie?s=readme)
+
 Drive the Chrome / Edge tabs you already have open and already signed in from an MCP client. BrowserAttach connects to the browser through a locally paired extension, keeps your existing sign-in state, and needs neither a remote debugging port nor a separate automation browser.
 
 [npm](https://www.npmjs.com/package/@evan_zhong/browser-attach) · [Usage guide](docs/USAGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Agent integration](docs/AGENT-INTEGRATION.md) · [Test report](docs/TEST-REPORT.md) · [Issues](https://github.com/EvannZhongg/BrowserAttach/issues) · [Contributing](CONTRIBUTING.md)
