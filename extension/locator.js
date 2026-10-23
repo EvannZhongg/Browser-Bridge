@@ -1,16 +1,18 @@
 // Selectors are reusable queries, never identities inferred from old AX text.
-export function targetOptions(args, { coordinates = false } = {}) {
+export function targetOptions(args, { coordinates = false, focused = false } = {}) {
   const hasRef = args.ref != null, hasSelector = args.selector != null;
   const hasPoint = args.x != null || args.y != null;
-  if (Number(hasRef) + Number(hasSelector) + Number(hasPoint) !== 1 ||
+  if (args.focused != null && (args.focused !== true || !focused)) throw new Error('focused=true is only supported by type');
+  if (Number(hasRef) + Number(hasSelector) + Number(hasPoint) + Number(args.focused === true) !== 1 ||
       (hasPoint && (!coordinates || !Number.isFinite(args.x) || !Number.isFinite(args.y)))) {
-    throw new Error(coordinates ? 'Provide exactly one of ref, selector, or both finite x and y' : 'Provide exactly one of ref or selector');
+    throw new Error(focused ? 'Provide exactly one of ref, selector or focused=true' : coordinates ? 'Provide exactly one of ref, selector, or both finite x and y' : 'Provide exactly one of ref or selector');
   }
   if (hasRef && (typeof args.ref !== 'string' || !args.ref)) throw new Error('ref must be nonempty');
   if (hasSelector && (typeof args.selector !== 'string' || !args.selector.trim() || args.selector.length > 10000)) throw new Error('selector must contain 1..10000 characters');
-  if (args.selector_type != null && !['css', 'xpath'].includes(args.selector_type)) throw new Error('selector_type must be css or xpath');
+  if (args.selector_type != null && !['css', 'xpath', 'label', 'placeholder', 'role'].includes(args.selector_type)) throw new Error('selector_type must be css, xpath, label, placeholder or role');
+  if (args.name != null && (args.selector_type !== 'role' || typeof args.name !== 'string' || args.name.length > 10000)) throw new Error('name requires selector_type=role and must be a string of at most 10000 characters');
   frameOptions(args);
-  if (!hasSelector && (args.frame_id != null || args.frame != null || args.selector_type != null)) throw new Error('frame_id and selector_type require selector');
+  if (!hasSelector && (args.frame_id != null || args.frame != null || args.selector_type != null)) throw new Error('frame/frame_id and selector_type require selector');
   if (args.nth != null && (!hasSelector || !Number.isSafeInteger(args.nth) || args.nth < 0)) throw new Error('nth requires selector and must be a nonnegative safe integer (zero-based)');
   if (args.coordinate_space != null && (!hasPoint || !['viewport', 'document'].includes(args.coordinate_space))) throw new Error('coordinate_space must be viewport or document and applies to coordinate clicks only');
 }
@@ -22,7 +24,13 @@ export function queryElement(selector, type = 'css', nth, waitForMatch = false) 
     const result = document.evaluate(selector, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
     count = result.snapshotLength; at = index => result.snapshotItem(index);
   } else {
-    const elements = document.querySelectorAll(selector);
+    const normalize = text => text.replace(/\s+/g, ' ').trim();
+    const elements = type === 'label'
+      ? Array.from(document.querySelectorAll('input,textarea,select,button,meter,output,progress')).filter(element =>
+        Array.from(element.labels || []).some(label => normalize(label.textContent || '') === normalize(selector)))
+      : type === 'placeholder'
+        ? Array.from(document.querySelectorAll('[placeholder]')).filter(element => element.getAttribute('placeholder') === selector)
+        : document.querySelectorAll(selector);
     count = elements.length; at = index => elements[index];
   }
   if (waitForMatch && (count === 0 || (nth != null && nth >= count))) return null;
@@ -43,27 +51,55 @@ export function queryElement(selector, type = 'css', nth, waitForMatch = false) 
   return element;
 }
 
-export async function resolveSelector(cdp, value, sessions, tabId, args, budget) {
+export async function resolveSelector(cdp, value, sessions, tabId, args, budget, { wait = true } = {}) {
+  targetOptions(args);
   const frameId = await resolveFrame(cdp, value, sessions, tabId, args, budget);
   const target = sessions.target(tabId, frameId);
   const send = (method, params) => budget.run(() => cdp(target, method, params));
-  const { executionContextId } = await send('Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' });
-  let result;
+  const role = args.selector_type === 'role';
+  const context = role ? null : await send('Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' });
+  let backendNodeId;
   while (true) {
-    result = await send('Runtime.evaluate', { contextId: executionContextId, objectGroup: 'browser-attach',
-      expression: `(${queryElement.toString()})(${JSON.stringify(args.selector)},${JSON.stringify(args.selector_type ?? 'css')},${args.nth ?? 'undefined'},true)` });
-    value(result);
-    if (result.result?.subtype !== 'null') break;
-    budget.describe?.(`selector ${JSON.stringify(args.selector)}${args.nth == null ? '' : ` nth=${args.nth}`} to appear; current=no matching element`);
+    if (role) {
+      const { nodes } = await send('Accessibility.getFullAXTree', { frameId });
+      backendNodeId = matchRole(nodes, args)?.backendDOMNodeId;
+    } else {
+      const result = await send('Runtime.evaluate', { contextId: context.executionContextId, objectGroup: 'browser-attach',
+        expression: `(${queryElement.toString()})(${JSON.stringify(args.selector)},${JSON.stringify(args.selector_type ?? 'css')},${args.nth ?? 'undefined'},true)` });
+      value(result);
+      if (result.result?.subtype !== 'null') {
+        if (!result.result?.objectId) throw new Error('Selector did not resolve to an element');
+        const { node } = await send('DOM.describeNode', { objectId: result.result.objectId });
+        backendNodeId = node.backendNodeId;
+      }
+    }
+    if (backendNodeId != null) break;
+    if (!wait) return null;
+    budget.describe?.(`selector ${JSON.stringify(args.selector)}${args.name == null ? '' : ` name=${JSON.stringify(args.name)}`}${args.nth == null ? '' : ` nth=${args.nth}`} to appear; current=no matching element`);
     await budget.run(() => new Promise(resolve => setTimeout(resolve, 20)));
   }
-  if (!result.result?.objectId) throw new Error('Selector did not resolve to an element');
-  const { node } = await send('DOM.describeNode', { objectId: result.result.objectId });
   // Hit-test refs resolve in the default world too. CDP forbids passing object
   // arguments between worlds, even when both wrappers refer to the same node.
-  const resolved = await send('DOM.resolveNode', { backendNodeId: node.backendNodeId, objectGroup: 'browser-attach' });
+  const resolved = await send('DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
   if (!resolved.object?.objectId) throw new Error('Selector target detached before resolution; no input was dispatched');
-  return { target, frameId, objectId: resolved.object.objectId, backendNodeId: node.backendNodeId };
+  return { target, frameId, objectId: resolved.object.objectId, backendNodeId };
+}
+
+export function matchRole(nodes, args) {
+  const byId = new Map(nodes.map(node => [node.nodeId, node]));
+  const children = new Set(nodes.flatMap(node => node.childIds || []));
+  const pending = nodes.filter(node => !children.has(node.nodeId)).reverse(), seen = new Set(), matches = new Map();
+  while (pending.length) {
+    const node = pending.pop();
+    if (!node || seen.has(node.nodeId)) continue;
+    seen.add(node.nodeId);
+    if (!node.ignored && node.backendDOMNodeId && node.role?.value === args.selector &&
+        (args.name == null || String(node.name?.value || '') === args.name)) matches.set(node.backendDOMNodeId, node);
+    for (let i = (node.childIds?.length || 0) - 1; i >= 0; i--) pending.push(byId.get(node.childIds[i]));
+  }
+  const candidates = [...matches.values()];
+  if (args.nth == null && candidates.length > 1) throw new Error(`Role selector must match exactly one element; matched ${candidates.length}. Provide name or an explicit zero-based nth. Candidates: ${JSON.stringify(candidates.slice(0, 10).map((node, nth) => ({ nth, role: node.role?.value, name: String(node.name?.value || '').slice(0, 120) })))}`);
+  return candidates[args.nth ?? 0] || null;
 }
 
 export function frameOptions(args) {

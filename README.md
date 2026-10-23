@@ -17,7 +17,7 @@ Drive the Chrome / Edge tabs you already have open and already signed in from an
 ## What it does
 
 - Discover multiple browser profiles, pick one precisely, claim a tab exclusively, and release it when done.
-- Read the accessibility tree, query it by literal name/value, inspect field values and supported editor models; click, replace-fill and type character by character through current snapshot refs or strict CSS/XPath locators.
+- Read the accessibility tree, query names/values/nearby field context, inspect field values and supported editor models; click, fill and type through refs or strict CSS/XPath, HTML label, placeholder and AX role/name locators. Type can also target the currently focused field explicitly.
 - Native pointer hover, stepped drags and conditional waits; select HTML options without opening a native popup.
 - Navigate and go back/forward, open or close tabs, handle JavaScript dialogs, upload local files, and capture the whole page or a single element.
 - Evaluate JavaScript expressions in the main page; read console, page-error and network lifecycle logs captured after claiming; opt in to bounded, redacted request/response details when XHR/fetch needs verification.

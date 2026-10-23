@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.17.2**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.18.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
 
 本文供按需查阅，不会自动通过 MCP 发送给 agent。MCP 初始化 `instructions` 提供通用规则，工具 description 与参数 schema 提供调用说明；宿主应把 instructions 纳入模型上下文。
 
@@ -124,7 +124,7 @@ snapshot 返回 AX 语义树，每行 `[token:n] role "name" 状态`；`[token:n
 | `profile` | `full`；interactive 只保留控件、可聚焦/编辑节点及祖先链，自定义控件可能被省略 |
 | `text` | true；false 隐去独立正文，保留控件名称和值 |
 | `text_limit` | 正文名称预览上限 0–10000；interactive 默认 80，full 默认不截断；控件名称和值保留完整 |
-| `query` | 1–2000 字符的名称/value 字面子串，不区分大小写；零命中正常返回 |
+| `query` | 1–2000 字符的名称/value/context 字面子串，不区分大小写；零命中正常返回 |
 | `max_nodes` / `max_chars` | 600 / 24000；范围分别为 1–3000 / 1–2000000，两个预算独立 |
 | `verbose` | false；true 额外返回 viewport 和 snapshot_id |
 
@@ -147,6 +147,8 @@ snapshot 返回 AX 语义树，每行 `[token:n] role "name" 状态`；`[token:n
 
 ref 对应原节点及其可访问身份；节点被替换、脱离文档或 role/name 变化时应重新观察，不会自动匹配同名替代节点。
 
+表单控件可附带 `context="性别"` 等邻近文本，在 interactive 或 text=false 下也保留，并参与 query。context 来自有限祖先范围内、仅含一个控件的容器中前一兄弟节点的 AX 文本；只是观察提示，不代表真实标签关联，不改写 AX name，也不参与 ref 身份校验。复杂布局可能没有 context。
+
 ### browser_read_text
 
 `browser_read_text({tab_handle})` 默认读取主 frame 的可见正文。可用 selector 限定范围，或用 frame/frame_id 选择子 frame。
@@ -162,11 +164,25 @@ ref 对应原节点及其可访问身份；节点被替换、脱离文档或 rol
 
 next_offset 是下一次实时读取位置，内容变化可造成重复或遗漏；需要一致结果时用 evaluate 一次捕获再分页。DOM 正文不包含未渲染的虚拟行或所有 Shadow DOM，complete_source=false 表示覆盖边界；字段值及支持的编辑器模型为 true。
 
-### 可复用的 frame 寻址
+### 可复用的元素与 frame 寻址
 
-selector 每次重新解析，默认 CSS，可用 `selector_type:"xpath"`。省略 nth 时必须唯一；歧义立即报错并附最多 10 个候选。`nth` 从 0 开始，按当前文档顺序选择；未出现的目标可在准备预算内等待。行顺序改变后应重新确认目标。
+selector 每次重新解析，省略 nth 时必须唯一；歧义立即报错并附最多 10 个候选。输入、点击、拖拽、等待、读取和 batch 共用以下定位方式：
 
-CSS/XPath 不穿透 Shadow DOM，优先用 AX ref。selector、read_text、evaluate 可用 frame 或 frame_id 指定范围，两者互斥：
+| selector_type | selector 的含义 |
+|---|---|
+| `css`（默认）/ `xpath` | CSS / XPath 查询 |
+| `label` | 关联 HTML label 的文本；折叠空白后精确匹配，支持 for 和包裹式 label |
+| `placeholder` | placeholder 属性的完整精确值 |
+| `role` | 浏览器 AX role，可另传 `name` 精确匹配 accessible name；包括浏览器提供的隐式角色 |
+
+`name` 仅适用于 role。`nth` 从 0 开始，按 DOM 顺序选择，role 则按 AX 树顺序；准备阶段可等待目标出现。重复匹配应缩小范围或显式 nth，不按可见性猜选。label 不推断兄弟 div 的标签关系，ARIA 命名可通过 role/name 定位。
+
+```js
+browser_fill({tab_handle, selector_type:"label", selector:"工作职责", text:"填写内容"})
+browser_click({tab_handle, selector_type:"role", selector:"option", name:"2026"})
+```
+
+CSS/XPath/label/placeholder 不穿透 Shadow DOM；可用 AX role 或 ref。role 每次读取所选 frame 的完整 AX 树，不保证比简单 CSS 查询便宜。selector、read_text、evaluate 可用 frame 或 frame_id 指定范围，两者互斥：
 
 ```json
 {"tab_handle":"...","selector":"input","frame":{"path":["iframe[title='Outer']","iframe[title='Inner']"]},"text":"填写内容"}
@@ -263,15 +279,21 @@ network_idle 的 idle_ms 默认 500，范围 100–10000。它只覆盖接管后
 
 保留文本与选区，聚焦后逐个 Unicode 字符发送可信键盘输入。页面 preventDefault 可阻止输入；非 ASCII 不模拟系统 IME。换行、Tab 等控制键使用 press_key。
 
+ref、selector、`focused:true` 三选一。focused 固定操作开始时已聚焦的可编辑元素，沿可用 iframe 和开放 Shadow DOM 查找，不主动聚焦或清空内容；原元素失焦或脱离文档后停止，不向新焦点继续输入。focused 不接受 frame/nth/selector_type/name，目标范围由当前焦点确定。
+
 ```json
 {"tab_handle":"...","selector":"input[role=combobox]","text":"上海","delay_ms":[40,180]}
+```
+
+```json
+{"tab_handle":"...","focused":true,"text":"上海"}
 ```
 
 delay_ms 为 0–1000 整数（默认 0）或有序区间，每两个字符间独立抽样，末字符后不等待；实际耗时还含协议开销。text 最多 10000 个 UTF-16 单位，总预算最多 30 秒。失焦或节点替换时停止，失败报告已核验字符数，当前字符仍可能送达；delivery_verified 只核验 keydown。
 
 ### browser_batch
 
-一次执行 1–20 步，支持 click/fill/type/press_key/hover/scroll/select_option/wait。元素动作使用 selector（可带 selector_type/frame/nth），每步重解析，不接受 ref 或坐标；scroll/wait 可按各自接口不带元素目标。
+一次执行 1–20 步，支持 click/fill/type/press_key/hover/scroll/select_option/wait。元素动作使用 selector（可带 selector_type/name/frame/nth），每步重解析，不接受 ref 或坐标；type 也可使用 focused=true，scroll/wait 可按各自接口不带元素目标。
 
 ```json
 {"tab_handle":"...","steps":[
@@ -376,6 +398,8 @@ expression 在页面世界执行一次，默认主 frame，可用 frame/frame_id
 | 捕获预算 | 1000000 个 JSON 字符 / 50000 节点 / 8 层；损失由 capture_truncated 和 $type=truncated 标记 |
 
 默认 result_type=json。数组按完整项、对象按键值对、字符串按片段分页，返回 result_kind、has_more、next_cursor。单项放不下时返回 budget_too_small、required_chars 和 cursor，提高预算续读；分页不拆分嵌套值，单个嵌套值超过 100000 字符时应在表达式中提取更小字段。
+
+第一页已能返回部分字段、但下一完整项超出当前 max_chars 时，同时返回 `next_item:{key或index,required_chars,exceeds_max_chars}`。直接用该 required_chars 和 next_cursor 续读即可；exceeds_max_chars=true 表示超出允许的最大页预算，需重新设计表达式提取更小结果。重新求值会再次执行脚本，不能自动重放含写入的表达式。
 
 续读传 tab_handle、cursor 和可选 max_chars，省略 expression/frame/frame_id；只读缓存，不执行脚本。每标签最多保留一份结果，输入不改变缓存，新求值、相关文档/frame 变化、释放或断连使其失效。
 

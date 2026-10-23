@@ -120,9 +120,10 @@ test('failed extension cleanup aborts the upgrade and resumes the existing Hub',
 });
 
 test('a newer shared Hub is never downgraded by an older MCP package', async t => {
-  const f = await fixture(t, '0.18.0');
+  const newerVersion = VERSION.replace(/\d+$/, patch => String(Number(patch) + 1));
+  const f = await fixture(t, newerVersion);
   await assert.rejects(ensureHub(f.configPath), /refusing to downgrade/);
-  assert.equal(JSON.parse(await readFile(f.manifestPath)).version, '0.18.0');
+  assert.equal(JSON.parse(await readFile(f.manifestPath)).version, newerVersion);
 });
 
 test('only the Hub that owns the port may modify extension files, and interrupted replacement recovers', async t => {

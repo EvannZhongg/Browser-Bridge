@@ -22,6 +22,21 @@ test('interactive view removes prose with refs but preserves control ancestors, 
   assert.match(renderAX(nodes, 'full', new Map(), 'main').map(e => e.line).join('\n'), /paragraph "Read me"/);
 });
 
+test('nearby field text survives interactive filtering and query without changing AX identity', () => {
+  const nodes = [node('root', 'RootWebArea', '', ['row']), node('row', 'generic', '', ['label', 'wrapper']),
+    node('label', 'generic', '', ['text']), node('text', 'StaticText', '性别'),
+    node('wrapper', 'generic', '', ['field']), node('field', 'textbox', '必填项未填写', [], { backendDOMNodeId: 9 })];
+  for (const options of [{ profile: 'interactive' }, { profile: 'interactive', text: false, query: '性别' }]) {
+    const refs = new Map(), entries = renderAX(nodes, 'ctx', refs, 'main', undefined, snapshotOptions(options));
+    assert.match(entries.map(e => e.line).join('\n'), /textbox "必填项未填写" context="性别"/);
+    assert.equal(refs.get('ctx:1').name, '必填项未填写');
+    assert.equal(refs.get('ctx:1').backendNodeId, 9);
+  }
+  nodes[1].childIds.push('other');
+  nodes.push(node('other', 'textbox', '', [], { backendDOMNodeId: 10 }));
+  assert.doesNotMatch(renderAX(nodes, 'multi', new Map(), 'main').map(e => e.line).join('\n'), /context=/);
+});
+
 test('AX query matches literal names, merged prose and values before previews, while keeping original ref identities', () => {
   const nodes = [node('root', 'RootWebArea', '', ['prose', 'button', 'field']),
     node('prose', 'paragraph', '', ['body'], { backendDOMNodeId: 1 }), node('body', 'StaticText', 'Long context with SAVE.* at the end'),

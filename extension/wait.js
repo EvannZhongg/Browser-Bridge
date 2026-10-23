@@ -7,7 +7,7 @@ export function waitOptions(args) {
   if (element) {
     targetOptions(args);
     if (!args.selector) throw new Error('Element waits require a reusable selector');
-  } else if (args.selector != null || args.ref != null || args.frame_id != null || args.frame != null || args.nth != null || args.selector_type != null) throw new Error('This wait condition does not use an element target');
+  } else if (args.selector != null || args.ref != null || args.frame_id != null || args.frame != null || args.nth != null || args.selector_type != null || args.name != null) throw new Error('This wait condition does not use an element target');
   if (args.condition === 'text' && (Number(typeof args.expected === 'string') + Number(typeof args.previous === 'string') !== 1)) throw new Error('text wait requires exactly one of expected (substring) or previous (full prior text)');
   if (args.condition === 'url' && typeof args.expected !== 'string') throw new Error('url wait requires expected text (substring)');
   if (args.condition !== 'text' && args.previous != null) throw new Error('previous is only valid for text waits');
@@ -18,7 +18,7 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
   waitOptions(args);
   const budget = args.budget || deadline(args.timeout_ms ?? 5000, 'wait');
   let current = 'not observed', previous;
-  const description = `${args.condition}${args.selector ? ` selector=${JSON.stringify(args.selector)}` : ''}${args.expected != null ? ` expected substring=${JSON.stringify(args.expected)}` : ''}${args.previous != null ? ` text different from=${JSON.stringify(args.previous).slice(0, 500)}` : ''}`;
+  const description = `${args.condition}${args.selector ? ` selector=${JSON.stringify(args.selector)}` : ''}${args.name != null ? ` name=${JSON.stringify(args.name)}` : ''}${args.expected != null ? ` expected substring=${JSON.stringify(args.expected)}` : ''}${args.previous != null ? ` text different from=${JSON.stringify(args.previous).slice(0, 500)}` : ''}`;
   try {
     while (true) {
       if (args.condition === 'network_idle') {
@@ -31,9 +31,19 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
         try {
           const frameId = await resolveFrame(cdp, value, sessions, tabId, args, budget);
           const target = sessions.target(tabId, frameId);
-          const { executionContextId } = await budget.run(() => cdp(target, 'Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' }));
-          current = value(await budget.run(() => cdp(target, 'Runtime.evaluate', { contextId: executionContextId, returnByValue: true,
-            expression: `(${inspectWait.toString()})((${queryElement.toString()}),(${inspectTarget.toString()}),${JSON.stringify(args)})` })));
+          if (args.selector_type === 'role') {
+            const node = await resolveSelector(cdp, value, sessions, tabId, args, budget, { wait: false });
+            try {
+              current = node ? value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId, returnByValue: true,
+                functionDeclaration: `function(args) { return (${inspectWait.toString()})(() => this, (${inspectTarget.toString()}), args); }`, arguments: [{ value: { selector: args.selector, condition: args.condition, expected: args.expected, previous: args.previous } }] }))) : { satisfied: false, state: 'absent' };
+            } finally {
+              if (node) await budget.run(() => cdp(node.target, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach' }));
+            }
+          } else {
+            const { executionContextId } = await budget.run(() => cdp(target, 'Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' }));
+            current = value(await budget.run(() => cdp(target, 'Runtime.evaluate', { contextId: executionContextId, returnByValue: true,
+              expression: `(${inspectWait.toString()})((${queryElement.toString()}),(${inspectTarget.toString()}),${JSON.stringify(args)})` })));
+          }
           const stable = current?.ready && previous?.ready && JSON.stringify(current) === JSON.stringify(previous);
           if (current?.satisfied && (args.condition !== 'actionable' || stable)) {
             if (args.condition === 'actionable') {

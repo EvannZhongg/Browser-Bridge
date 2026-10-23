@@ -109,8 +109,8 @@ export function createEvaluations(cdp) {
     }
     const { kind, items, offset, result } = state;
     const length = kind === 'scalar' ? 1 : items.length;
-    const make = end => kind === 'string' ? items.slice(offset, end) : kind === 'array' ? items.slice(offset, end) :
-      kind === 'object' ? Object.fromEntries(items.slice(offset, end)) : items;
+    const make = (end, start = offset) => kind === 'string' || kind === 'array' ? items.slice(start, end) :
+      kind === 'object' ? Object.fromEntries(items.slice(start, end)) : items;
     let low = offset, high = length;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
@@ -124,7 +124,9 @@ export function createEvaluations(cdp) {
     }
     state.offset = low;
     state.cursor = low < length ? `${state.token}@${low}` : null;
+    const nextRequired = low < length ? JSON.stringify(make(low + 1, low)).length : null;
     return { ...result, value: make(low), result_kind: kind, has_more: low < length,
+      ...(nextRequired > max ? { next_item: { ...(kind === 'object' ? { key: items[low][0] } : { index: low }), required_chars: nextRequired, exceeds_max_chars: nextRequired > 100000 } } : {}),
       next_cursor: state.cursor, capture_truncated: result.truncated, truncated: result.truncated || low < length };
   }
   return { read, forgetFrame(tabId, frameId) { if (results.get(tabId)?.frameId === frameId) results.delete(tabId); }, forget: tabId => results.delete(tabId) };

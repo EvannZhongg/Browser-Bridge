@@ -57,7 +57,7 @@ const browser=spawn(values.executable,[
 ],{windowsHide:true,stdio:'ignore'});
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(fn, description) { for(let i=0;i<100;i++){const value=await fn();if(value)return value;await pause(100)}throw new Error(description); }
-let ws,client,claim;
+let ws,client,claim,closeBrowser;
 const results={family:values.family,headless:values.headless,cases:[],snapshots:[],navigation:null};
 try {
  const active=await until(async()=>{try{return(await readFile(join(profile,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/)}catch{return null}},'DevTools not ready');
@@ -65,6 +65,7 @@ try {
  const pending=new Map();let serial=0;
  ws.on('message',raw=>{const data=JSON.parse(raw);const p=pending.get(data.id);if(p){pending.delete(data.id);data.error?p.reject(new Error(data.error.message)):p.resolve(data.result)}});
  const cdp=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id=++serial;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}))});
+ closeBrowser=async()=>{let timer;try{await Promise.race([cdp('Browser.close'),new Promise(resolve=>{timer=setTimeout(resolve,3000)})])}finally{clearTimeout(timer)}};
  client=new AttachClient(paired.config);
  if(process.env.ATTACH_TEST_VERBOSE){const call=client.call.bind(client);client.call=(method,args)=>{console.error(method,args);return call(method,args)};}
  const browserInfo=await until(async()=>{const r=await client.call('list_browsers');return r.browsers[0]},'Extension not connected');
@@ -99,6 +100,10 @@ try {
   assert.equal((await call('read_text',{selector:'input',mode:'value',frame:{title:'Inner document'}})).text,'nested');
   assert.equal((await call('evaluate',{expression:'() => document.title',frame:{url:base.replace('127.0.0.1','localhost')+'/inner'}})).value,'Inner document');
   results.cases.push({scenario:'stable_frame_path_title_url'});
+  await call('fill',{selector:'textbox',selector_type:'role',name:'Inner input',frame:{title:'Inner document'},text:'OOPIF'});
+  await call('type',{focused:true,text:'中'});
+  assert.equal((await call('read_text',{selector:'textbox',selector_type:'role',name:'Inner input',frame:{title:'Inner document'},mode:'value'})).text,'OOPIF中');
+  results.cases.push({scenario:'oopif_role_and_focused_type'});
   let f=await call('evaluate',{expression:'async () => Array.from({length:10},(_,i)=>i)',max_chars:5});let valuesRead=[...f.value];while(f.next_cursor){f=await call('evaluate',{cursor:f.next_cursor,max_chars:5});valuesRead.push(...f.value)}assert.equal(valuesRead.length,10);
   const handle=await call('evaluate',{expression:'() => document.querySelector("#increment")',result_type:'element'});await call('click',{ref:handle.ref});assert.equal(await page('window.count'),1);
   const found=await call('scroll',{selector:'#list',until:{text:'Row 0487',selector:'button'},delta_y:200,max_steps:60,timeout_ms:15000});await call('click',{ref:found.ref});assert.equal(await page('window.selectedRow'),'Row 0487');
@@ -166,6 +171,63 @@ try {
   for(let i=1;i<motionKeys.length;i++)assert.ok(motionKeys[i].time-motionKeys[i-1].time>=39);
   results.cases.push({scenario:'optional_offset_settle_and_type_delay_range',offsetClick,motionKeys});
   await page('document.querySelector("#motion-probe").remove();true');
+  await page(`(() => {
+    const section=document.createElement('section');section.id='semantic-probe';
+    section.style='position:fixed;left:20px;top:360px;width:700px;background:white;z-index:10';
+    section.innerHTML='<label for="semantic-field">工作 职责</label><input id="semantic-field" placeholder="Write here">'
+      +'<div><div>性别</div><input id="context-field" aria-label="必填项未填写"></div>'
+      +'<label>Repeated<input class="repeat-field"></label><label>Repeated<input class="repeat-field"></label>'
+      +'<button id="choose-year" type="button">Choose year</button><div id="year-list" role="listbox" hidden><div role="option" tabindex="0">2026</div></div>'
+      +'<div id="semantic-shadow"></div><div id="semantic-open-shadow"></div><iframe id="semantic-frame" title="Semantic frame"></iframe>';
+    section.querySelector('iframe').src='/inner';
+    section.querySelector('#choose-year').onclick=()=>setTimeout(()=>section.querySelector('#year-list').hidden=false,100);
+    section.querySelector('[role=option]').onclick=e=>{window.chosenYear=e.target.textContent;window.yearTrusted=e.isTrusted};
+    const root=section.querySelector('#semantic-shadow').attachShadow({mode:'closed'});
+    root.innerHTML='<button>Shadow action</button>';root.querySelector('button').onclick=()=>window.shadowAction=true;
+    section.querySelector('#semantic-open-shadow').attachShadow({mode:'open'}).innerHTML='<input aria-label="Open shadow input">';
+    document.body.append(section);return true;
+  })()`);
+  await call('fill',{selector:'工作  职责',selector_type:'label',text:'Responsibilities'});
+  assert.equal((await call('read_text',{selector:'Write here',selector_type:'placeholder',mode:'value'})).text,'Responsibilities');
+  await call('fill',{selector:'textbox',selector_type:'role',name:'工作 职责',text:'Role fill'});
+  assert.equal((await call('read_text',{selector:'textbox',selector_type:'role',name:'工作 职责',mode:'value'})).text,'Role fill');
+  const point=await page('(()=>{const r=document.querySelector("#semantic-field").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
+  await call('click',point);await call('press_key',{key:'End'});await call('type',{focused:true,text:'中+'});
+  assert.equal(await page('document.querySelector("#semantic-field").value'),'Role fill中+');
+  await assert.rejects(call('fill',{selector:'Repeated',selector_type:'label',text:'wrong'}),/matched 2/);
+  assert.deepEqual(await page('Array.from(document.querySelectorAll(".repeat-field"),e=>e.value)'),['','']);
+  const ctx=await call('snapshot',{profile:'interactive',text:false,query:'性别'});
+  assert.match(ctx.snapshot,/textbox "必填项未填写".*context="性别"/);
+  const contextRef=ctx.snapshot.match(/\[([^\]]+)\] textbox/)[1];
+  await call('fill',{ref:contextRef,text:'Context ref'});
+  assert.equal(await page('document.querySelector("#context-field").value'),'Context ref');
+  const dropdown=await call('batch',{steps:[
+    {action:'click',selector:'button',selector_type:'role',name:'Choose year'},
+    {action:'wait',selector:'option',selector_type:'role',name:'2026',condition:'visible'},
+    {action:'click',selector:'option',selector_type:'role',name:'2026'},
+    {action:'fill',selector:'Write here',selector_type:'placeholder',text:'Batch'},
+    {action:'type',focused:true,text:'!'},
+  ]});
+  assert.equal(dropdown.completed,true);assert.equal(await page('window.chosenYear'),'2026');assert.equal(await page('window.yearTrusted'),true);
+  assert.equal(await page('document.querySelector("#semantic-field").value'),'Batch!');
+  await call('click',{selector:'button',selector_type:'role',name:'Shadow action'});
+  assert.equal(await page('window.shadowAction'),true);
+  await call('fill',{selector:'textbox',selector_type:'role',name:'Open shadow input',text:'Shadow'});
+  await call('type',{focused:true,text:'中'});
+  assert.equal((await call('read_text',{selector:'textbox',selector_type:'role',name:'Open shadow input',mode:'value'})).text,'Shadow中');
+  await call('fill',{selector:'textbox',selector_type:'role',name:'Inner input',frame:{title:'Inner document'},text:'Frame'});
+  await call('type',{focused:true,text:'中'});
+  assert.equal((await call('read_text',{selector:'textbox',selector_type:'role',name:'Inner input',frame:{title:'Inner document'},mode:'value'})).text,'Frame中');
+  await page('document.querySelector("#semantic-field").focus();document.querySelector("#semantic-field").value="";document.querySelector("#semantic-field").oninput=()=>document.querySelector("#context-field").focus();true');
+  await assert.rejects(call('type',{focused:true,text:'abc'}),/stopped after 1.*lost focus/);
+  assert.equal(await page('document.querySelector("#semantic-field").value'),'a');
+  assert.equal(await page('document.querySelector("#context-field").value'),'Context ref');
+  const nested=await call('evaluate',{expression:'(window.evalRuns=(window.evalRuns||0)+1,{count:104,items:Array.from({length:104},(_,i)=>({i,text:"x".repeat(240)}))})'});
+  assert.equal(nested.next_item.key,'items');assert.ok(nested.next_item.required_chars>20000);
+  const continued=await call('evaluate',{cursor:nested.next_cursor,max_chars:nested.next_item.required_chars});
+  assert.equal(continued.value.items.length,104);assert.equal(await page('window.evalRuns'),1);
+  results.cases.push({scenario:'semantic_locators_focused_type_context_and_nested_budget',dropdown,context_snapshot:ctx.snapshot,next_item:nested.next_item});
+  await page('document.querySelector("#semantic-probe").remove();true');
   const offsetHover=await call('hover',{selector:'#menu',offset:{x_ratio:.25,y_ratio:.25}});
   assert.equal(offsetHover.target_verified,true);
   await page(`(()=>{const section=document.createElement('section');section.id='density';section.setAttribute('role','region');section.setAttribute('aria-label','Density controls');for(let i=0;i<200;i++){const p=document.createElement('p');p.textContent='Reading row '+i+': '+ 'long prose '.repeat(25);section.append(p)}const button=document.createElement('button');button.setAttribute('aria-label','Density action');button.textContent='Extra context '.repeat(30);section.append(button);document.body.append(section);return true})()`);
@@ -610,7 +672,7 @@ try {
  if(claim)await client.call('release_tab',{tab_handle:claim.tab_handle});claim=null;
 } finally {
  if(claim)await client?.call('release_tab',{tab_handle:claim.tab_handle}).catch(()=>{});
- await client?.close();ws?.close();browser.kill();await hub.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
+ await client?.close();await closeBrowser?.().catch(()=>{});ws?.terminate();browser.kill();await hub.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  await mkdir(join(ROOT,'test-results'),{recursive:true});
   await writeFile(join(ROOT,'test-results',`${values.extended?'extended':values.primitives?'primitives':values.forms?'forms':values['tab-indicators']?'tab-indicators':values['input-capture']?'input-capture':values.regressions?'regressions':'interaction'}-${values.family}.json`),JSON.stringify(results,null,2));
  await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{});

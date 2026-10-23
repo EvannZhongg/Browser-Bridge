@@ -32,6 +32,30 @@ export function createInput(cdp, value, sessions) {
   }
   function cancel(tabId) { pending.get(tabId)?.reject(new Error('Tab detached during keyboard input; outcome is unknown. Observe before retrying.')); }
 
+  async function focusedNode(tabId, budget, worlds, frames) {
+    frames ||= await budget.run(() => sessions.frames(tabId));
+    let frameId = frames[0].id;
+    const visited = new Set();
+    while (true) {
+      if (visited.has(frameId)) throw new Error('Focus frame cycle; no input was dispatched.');
+      visited.add(frameId);
+      let world = worlds?.get(frameId);
+      if (!world) {
+        if (worlds || !frames.some(frame => frame.id === frameId)) throw new Error('Focused frame is unavailable; no input was dispatched.');
+        const target = sessions.target(tabId, frameId);
+        const { executionContextId } = await budget.run(() => cdp(target, 'Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-input' }));
+        world = { target, contextId: executionContextId };
+      }
+      const active = await budget.run(() => cdp(world.target, 'Runtime.evaluate', { contextId: world.contextId,
+        expression: `(${activeElement.toString()})()`, objectGroup: 'browser-attach' }));
+      value(active);
+      if (!active.result?.objectId) throw new Error('No focused page element is available; no input was dispatched.');
+      const { node } = await budget.run(() => cdp(world.target, 'DOM.describeNode', { objectId: active.result.objectId }));
+      if (node.frameId) frameId = node.frameId;
+      else return { target: world.target, frameId, objectId: active.result.objectId, backendNodeId: node.backendNodeId };
+    }
+  }
+
   async function pressKey(tabId, chord, args = {}) {
     const budget = args.budget || deadline(args.timeout_ms);
     const send = (...params) => budget.run(() => cdp(...params));
@@ -66,34 +90,20 @@ export function createInput(cdp, value, sessions) {
           omittedFrames.push({ frame_id: frame.id, reason: error.message });
         }
       }
-      let focusTarget = worlds.get(frames[0].id), focusedNode;
-      const visited = new Set();
-      while (focusTarget) {
-        const { target, contextId } = focusTarget;
-        if (visited.has(contextId + ':' + target.sessionId)) throw new Error('Focus frame cycle; no input was dispatched.');
-        visited.add(contextId + ':' + target.sessionId);
-        const active = await send(target, 'Runtime.evaluate', { contextId,
-          expression: `(${activeElement.toString()})()`, objectGroup: 'browser-attach' });
-        if (!active.result?.objectId) throw new Error('No focused page element is available; no input was dispatched.');
-        const { node } = await send(target, 'DOM.describeNode', { objectId: active.result.objectId });
-        if (node.frameId) {
-          focusTarget = worlds.get(node.frameId);
-          if (!focusTarget) throw new Error('Focused frame is unavailable; no input was dispatched.');
-        } else { focusedNode = { objectId: active.result.objectId }; break; }
-      }
-      await waitForTarget(cdp, value, focusTarget.target, focusedNode, budget);
+      const focused = await focusedNode(tabId, budget, worlds, frames);
+      await waitForTarget(cdp, value, focused.target, focused, budget);
       if (args.expectedNode) {
         const expected = args.expectedNode;
-        const focused = focusTarget.frameId === expected.frameId && value(await send(expected.target, 'Runtime.callFunctionOn', { objectId: expected.objectId,
+        const matches = focused.frameId === expected.frameId && value(await send(expected.target, 'Runtime.callFunctionOn', { objectId: expected.objectId,
           functionDeclaration: 'function() { const a=this.getRootNode().activeElement; return this.isConnected && (a===this || this.contains(a)); }', returnByValue: true }));
-        if (!focused) throw new Error('Typing target lost focus during key preparation; no further key was dispatched');
+        if (!matches) throw new Error('Typing target lost focus during key preparation; no further key was dispatched');
       }
       budget.dispatch();
       // Queue the complete chord before waiting for acknowledgements. Always
       // enqueue keyUp, even if keyDown fails or opens a modal.
-      const commands = [send(focusTarget.target, 'Input.dispatchKeyEvent', { type: args.character != null ? 'keyDown' : 'rawKeyDown', ...(args.character != null ? { text, unmodifiedText: text } : {}), ...params })];
-      if (text != null && args.character == null) commands.push(send(focusTarget.target, 'Input.dispatchKeyEvent', { type: 'char', text, unmodifiedText: text, ...params }));
-      commands.push(send(focusTarget.target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params }));
+      const commands = [send(focused.target, 'Input.dispatchKeyEvent', { type: args.character != null ? 'keyDown' : 'rawKeyDown', ...(args.character != null ? { text, unmodifiedText: text } : {}), ...params })];
+      if (text != null && args.character == null) commands.push(send(focused.target, 'Input.dispatchKeyEvent', { type: 'char', text, unmodifiedText: text, ...params }));
+      commands.push(send(focused.target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params }));
       await budget.run(() => delivery(Promise.all([Promise.all(commands), receipt])));
       return { sent: chord, method: 'native', delivery_verified: true, application_result: 'not_checked',
         ...(omittedFrames.length ? { verification_omitted_frames: omittedFrames } : {}), observe_again: true };
@@ -146,10 +156,13 @@ export function createInput(cdp, value, sessions) {
   async function typeText(tabId, node, args) {
     typeOptions(args);
     const budget = args.budget || deadline(args.timeout_ms);
+    if (args.focused) node = await focusedNode(tabId, budget);
     await waitForTarget(cdp, value, node.target, node, budget, { editable: true });
-    budget.dispatch();
-    value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId,
-      functionDeclaration: 'function() { this.focus(); if (this.getRootNode().activeElement !== this && !this.contains(this.getRootNode().activeElement)) throw new Error("Field did not receive focus"); }', returnByValue: true })));
+    if (!args.focused) {
+      budget.dispatch();
+      value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId,
+        functionDeclaration: 'function() { this.focus(); if (this.getRootNode().activeElement !== this && !this.contains(this.getRootNode().activeElement)) throw new Error("Field did not receive focus"); }', returnByValue: true })));
+    }
     let typed = 0; const length = Array.from(args.text).length;
     for (const character of args.text) {
       const focused = value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId,

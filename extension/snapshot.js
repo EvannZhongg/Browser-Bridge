@@ -15,11 +15,61 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
   const textRoles = new Set(['StaticText', 'InlineTextBox', 'ListMarker']);
   const controls = new Set(['button', 'checkbox', 'combobox', 'DisclosureTriangle', 'link', 'listbox', 'menuitem',
     'menuitemcheckbox', 'menuitemradio', 'option', 'radio', 'scrollbar', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'textbox', 'treeitem']);
+  const fields = new Set(['checkbox', 'combobox', 'radio', 'searchbox', 'slider', 'spinbutton', 'switch', 'textbox']);
+  const parents = new Map();
+  for (const node of nodes) for (const child of node.childIds || []) parents.set(child, node.nodeId);
+  function contextText(node) {
+    const pending = [node], parts = [];
+    let visited = 0, length = 0;
+    while (pending.length && ++visited <= 32) {
+      const current = pending.pop();
+      if (!current) return null;
+      const role = current.role?.value;
+      if (current.ignored && !['none', 'generic'].includes(role)) continue;
+      if (role === 'StaticText') {
+        const text = String(current.name?.value || '');
+        const separator = parts.length ? 1 : 0;
+        if (length + text.length + separator > 160) return null;
+        parts.push(text); length += text.length + separator;
+      }
+      else {
+        if (!['none', 'generic', 'LabelText', 'paragraph'].includes(role)) return null;
+        if (visited + pending.length + (current.childIds?.length || 0) > 32) return null;
+        for (let i = (current.childIds?.length || 0) - 1; i >= 0; i--) pending.push(byId.get(current.childIds[i]));
+      }
+    }
+    const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+    return !pending.length && text && text.length <= 160 ? text : null;
+  }
+  // Nearby text is observation context, never a replacement for AX identity or
+  // an inferred label locator. Bound both the ancestor search and subtree work.
+  function fieldContext(node) {
+    let child = node;
+    for (let depth = 0; depth < 4; depth++) {
+      const parent = byId.get(parents.get(child.nodeId));
+      if (!parent || !['none', 'generic', 'group'].includes(parent.role?.value)) return null;
+      const pending = [parent];
+      let count = 0, visited = 0;
+      while (pending.length && ++visited <= 64 && count < 2) {
+        const current = pending.pop();
+        if (!current) return null;
+        if (!current.ignored && controls.has(current.role?.value)) count++;
+        if (visited + pending.length + (current.childIds?.length || 0) > 64) return null;
+        for (const id of current.childIds || []) pending.push(byId.get(id));
+      }
+      if (pending.length || count !== 1) return null;
+      const index = parent.childIds.indexOf(child.nodeId);
+      if (index > 0) {
+        const text = contextText(byId.get(parent.childIds[index - 1]));
+        if (text) return text;
+      }
+      child = parent;
+    }
+    return null;
+  }
   let kept;
   if (options.profile === 'interactive') {
     kept = new Set();
-    const parents = new Map();
-    for (const node of nodes) for (const child of node.childIds || []) parents.set(child, node.nodeId);
     function keepText(node) {
       const pending = [node];
       while (pending.length) {
@@ -78,6 +128,8 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
       ['disabled', 'focused', 'expanded', 'checked', 'selected', 'required', 'invalid', 'level'].includes(prop.name)
     ).map(prop => `${prop.name}=${JSON.stringify(prop.value?.value)}`);
     if (node.value?.value != null) states.push(`value=${JSON.stringify(node.value.value)}`);
+    const context = fields.has(role) && !node.ignored ? fieldContext(node) : null;
+    if (context && context !== name) states.push(`context=${JSON.stringify(context)}`);
     const attributes = states.join(' ');
     const skip = node.ignored || (!options.text && textRoles.has(role)) || (['none', 'generic'].includes(role) && !name && !attributes) ||
       (role === 'StaticText' && name === parentName);
@@ -88,7 +140,7 @@ export function renderAX(nodes, token, refs, frameId, sessionId, options = snaps
     }
     let nextDepth = depth;
     if (!skip) {
-      if (query == null || identityName.toLowerCase().includes(query) || String(node.value?.value ?? '').toLowerCase().includes(query)) {
+      if (query == null || identityName.toLowerCase().includes(query) || String(node.value?.value ?? '').toLowerCase().includes(query) || context?.toLowerCase().includes(query)) {
         const ref = node.backendDOMNodeId ? `${token}:${refs.size + 1}` : null;
         if (ref) refs.set(ref, { backendNodeId: node.backendDOMNodeId, frameId, sessionId, role: node.role?.value, name: String(node.name?.value || '') });
         entries.push({ node: true, frameId, line: `${'  '.repeat(Math.min(depth, 24))}${ref ? `[${ref}] ` : ''}${role} ${JSON.stringify(name)}${attributes ? ' ' + attributes : ''}` });

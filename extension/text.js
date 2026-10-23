@@ -1,21 +1,23 @@
-import { queryElement } from './locator.js';
+import { queryElement, targetOptions } from './locator.js';
 
 export async function readText(cdp, value, tabId, args) {
   const max = args.max_chars ?? 20000, offset = args.offset ?? 0, mode = args.mode ?? 'visible';
   if (!Number.isInteger(max) || max < 1 || max > 100000) throw new Error('max_chars must be 1..100000');
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('offset must be 0..9007199254740991');
   if (!['visible', 'text_content', 'value', 'editor'].includes(mode)) throw new Error('read_text mode must be visible, text_content, value or editor');
-  if (args.selector != null && (typeof args.selector !== 'string' || !args.selector.trim() || args.selector.length > 10000)) throw new Error('selector must contain 1..10000 characters');
-  if (args.selector_type != null && !['css', 'xpath'].includes(args.selector_type)) throw new Error('selector_type must be css or xpath');
+  if (args.selector != null || args.selector_type != null || args.name != null || args.nth != null) targetOptions(args);
   if (mode === 'value' || mode === 'editor') {
     if (!args.selector) throw new Error(`${mode} requires selector to identify exactly one field/editor`);
   }
+  const options = { selector: args.selector, selector_type: args.selector_type, nth: args.nth, mode, offset, max_chars: max };
+  if (args.node) return value(await cdp(tabId, 'Runtime.callFunctionOn', { objectId: args.node.objectId, returnByValue: true,
+    functionDeclaration: `function(args) { return (${extractText.toString()})(args, () => this); }`, arguments: [{ value: options }] }));
   return value(await cdp(tabId, 'Runtime.evaluate', { returnByValue: true, ...(args.context_id != null ? { contextId: args.context_id } : {}),
-    expression: `(${extractText.toString()})(${JSON.stringify({ selector: args.selector, selector_type: args.selector_type, mode, offset, max_chars: max })},${queryElement.toString()})` }));
+    expression: `(${extractText.toString()})(${JSON.stringify(options)},${queryElement.toString()})` }));
 }
 
 export function extractText(args, query) {
-  const element = args.selector ? query(args.selector, args.selector_type ?? 'css') : document.body;
+  const element = args.selector ? query(args.selector, args.selector_type ?? 'css', args.nth) : document.body;
   let text, source = args.mode, complete = true;
   if (args.mode === 'visible') { text = element?.innerText ?? ''; complete = false; }
   else if (args.mode === 'text_content') { text = element?.textContent ?? ''; complete = false; }

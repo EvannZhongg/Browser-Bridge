@@ -21,8 +21,8 @@ export function validateSteps(steps, startAt = 0) {
       frameOptions(step);
       scrollOptions(step);
     } else {
-      if (!step.selector || step.ref != null) throw new Error('Batch element actions require selector');
-      targetOptions(step);
+      if ((!step.selector && !(step.action === 'type' && step.focused === true)) || step.ref != null) throw new Error('Batch element actions require selector; type also accepts focused=true');
+      targetOptions(step, { focused: step.action === 'type' });
       if (['click', 'fill'].includes(step.action)) inputMode(step);
       if (step.action === 'click') clickOptions(step);
       if (step.action === 'hover') offsetOption(step);

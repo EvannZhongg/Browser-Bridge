@@ -30,6 +30,21 @@ test('object entries survive continuation and an oversized nested item can be re
   assert.equal(rest.value.b, 2); assert.equal(rest.next_cursor, null); assert.equal(f.page.runs, 1);
 });
 
+test('a partial object immediately identifies the next oversized field without replaying the expression', async () => {
+  const f = fixture();
+  const first = await f.read({ expression: '(runs++, {count:104,items:Array.from({length:104},(_,i)=>({i,text:"x".repeat(240)}))})' });
+  assert.deepEqual(Object.keys(first.value), ['count']);
+  assert.equal(first.next_item.key, 'items');
+  assert.equal(first.next_item.exceeds_max_chars, false);
+  assert.ok(first.next_item.required_chars > 20000);
+  const rest = await f.read({ cursor: first.next_cursor, max_chars: first.next_item.required_chars });
+  assert.equal(rest.value.items.length, 104);
+  assert.equal(rest.has_more, false); assert.equal(rest.next_item, undefined); assert.equal(f.page.runs, 1);
+  const oversized = await f.read({ expression: '({count:1,items:["x".repeat(110000)]})' });
+  assert.equal(oversized.next_item.exceeds_max_chars, true);
+  assert.ok(oversized.next_item.required_chars > 100000);
+});
+
 test('capture loss is separate from pagination, and forgotten results cannot be read by cursor', async () => {
   const f = fixture();
   const deep = await f.read({ expression: '({a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}})' });

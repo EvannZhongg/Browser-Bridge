@@ -431,6 +431,11 @@ export function createController(api, notify = () => {}) {
       });
     }
     if (command === 'read_text') {
+      if (args.selector_type === 'role') {
+        const budget = deadline(5000), node = await resolveSelector(cdp, value, sessions, tabId, args, budget);
+        try { return { ...await budget.run(() => readText(cdp, value, node.target, { ...args, node })), scope: args.frame || args.frame_id ? 'frame' : 'main_frame', frame_id: node.frameId }; }
+        finally { await boundedRead(() => cdp(node.target, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach' }), 100).catch(() => {}); }
+      }
       if (!args.frame && !args.frame_id) return await readText(cdp, value, tabId, args);
       const budget = deadline(5000), frameId = await resolveFrame(cdp, value, sessions, tabId, args, budget), target = sessions.target(tabId, frameId);
       const contextId = pageContexts.get(JSON.stringify([tabId, target.sessionId, frameId]));
@@ -440,7 +445,7 @@ export function createController(api, notify = () => {}) {
     if (command === 'screenshot') {
       const view = await viewport(tabId);
       const hasTarget = args.ref != null || args.selector != null;
-      if (!hasTarget && (args.frame || args.frame_id || args.nth != null || args.selector_type)) throw new Error('Element screenshot frame/nth/type requires an element selector');
+      if (!hasTarget && (args.frame || args.frame_id || args.nth != null || args.selector_type || args.name != null)) throw new Error('Element screenshot frame/nth/type/name requires an element selector');
       if (hasTarget && args.full_page) throw new Error('Element target and full_page are mutually exclusive');
       const clip = hasTarget ? await elementClip(tabId, args, view) : args.full_page ? await fullPageClip(tabId) : null;
       const includeIndicators = args.include_indicators === true;
@@ -498,8 +503,8 @@ export function createController(api, notify = () => {}) {
     if (command === 'select_option') selectOptions(args);
     if (command === 'type') typeOptions(args);
     if (command === 'scroll') scrollOptions(args);
-    if (['scroll', 'upload_file'].includes(command) && ['ref', 'selector', 'frame', 'frame_id', 'selector_type', 'nth'].some(key => args[key] != null)) targetOptions(args);
-    if (['click', 'fill', 'type', 'hover', 'select_option'].includes(command)) targetOptions(args, { coordinates: command === 'hover' || command === 'click' && inputMode(args) !== 'dom' });
+    if (['scroll', 'upload_file'].includes(command) && ['ref', 'selector', 'frame', 'frame_id', 'selector_type', 'name', 'nth'].some(key => args[key] != null)) targetOptions(args);
+    if (['click', 'fill', 'type', 'hover', 'select_option'].includes(command)) targetOptions(args, { coordinates: command === 'hover' || command === 'click' && inputMode(args) !== 'dom', focused: command === 'type' });
     if (command === 'click') clickOptions(args);
     if (['click', 'fill', 'type', 'press_key', 'scroll', 'hover', 'select_option', 'upload_file'].includes(command)) args = { ...args, budget: args.budget || deadline(args.timeout_ms) };
     // Check before any renderer preparation or ref invalidation. A rejected

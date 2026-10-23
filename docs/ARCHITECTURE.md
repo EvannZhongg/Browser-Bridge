@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.17.2**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.18.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -31,7 +31,7 @@ MCP 客户端
 | `extension/outcomes.js` | 临时 DOM 变动观察器与有界只读探测，不推断业务成功 |
 | `extension/fetch.js` | 单页读取的参数、隔离世界采集与每 owner 有界缓存分页；临时页生命周期复用 controller 的 attach、导航和标签队列 |
 | `extension/{snapshot,navigation,evaluate,diagnostics}.js` | 观察、导航、有界求值结果缓存与分页、日志缓冲 |
-| `extension/{locator,text}.js` | 严格 CSS/XPath 定位、每次解析的 frame URL/title/iframe 路径、DOM/字段/支持的编辑器模型读取 |
+| `extension/{locator,text}.js` | 严格 CSS/XPath/HTML label/placeholder/AX role-name 定位、每次解析的 frame URL/title/iframe 路径、DOM/字段/支持的编辑器模型读取 |
 | `extension/visuals.js`、`click-visuals.js` | 无标题红色原生标签组、临时点击反馈 |
 
 Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopback。
@@ -69,7 +69,8 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 
 - **AX 渲染**：从 `Accessibility.getFullAXTree` 读取，移除 `InlineTextBox`，合并纯文本列表项与段落名称，丢弃 `generic` / `none` 且无名称无状态的节点，只保留少量状态属性和浏览器提供的 value、invalid。树遍历、交互视图筛选和正文合并使用迭代，跨 frame 逐项合并结果，避免深树递归和大数组参数展开溢出；分页前仍采集并渲染完整 AX 树，max_nodes 不限制采集成本。每行 `[token:n] role "name"`，`token` 是本次观察的随机前缀；这些字段不证明应用已保存。
 - **交互视图**：可选 `profile=interactive` 在同一渲染器中仅保留 AX 控件角色、可聚焦/可编辑节点及其祖先链和控件内文本，不以 backendNodeId/ref 是否存在判断交互性。独立文本和合并正文可隐藏或截取预览，控件名称、值和 ref 的原始 AX 身份保留；默认 `full` 行为不变。筛选仍读取完整 AX 树，只降低输出与分页成本；视图参数绑定分页观察。
-- **文本查询与精简输出**：`snapshot(query=...)` 复用同一次 AX 渲染，按当前视图中节点的完整名称（含合并正文）或 value 做不区分大小写的字面子串筛选，只输出匹配行和对应 frame 标题；不搜索 role/ref 或任意 DOM 属性，不新增索引缓存。新查询仍采集新观察并使旧 refs 失效，query 与分页绑定。默认省略 viewport、snapshot_id 和重复规则说明，`verbose=true` 返回前两项；frame 覆盖、视图、预算和游标语义保留。
+- **文本查询与精简输出**：`snapshot(query=...)` 复用同一次 AX 渲染，按当前视图中节点的完整名称（含合并正文）、value 或字段 context 做不区分大小写的字面子串筛选，只输出匹配行和对应 frame 标题；不搜索 role/ref 或任意 DOM 属性，不新增索引缓存。新查询仍采集新观察并使旧 refs 失效，query 与分页绑定。默认省略 viewport、snapshot_id 和重复规则说明，`verbose=true` 返回前两项；frame 覆盖、视图、预算和游标语义保留。
+- **字段上下文**：表单控件可附带 context 并参与 query，保留至多 160 字符的前一兄弟分支 AX 文本；只在四层以内 generic/none/group 祖先、单控件容器中查找，每次容器/文本遍历分别限制 64/32 节点。不将其伪装为 accessible name，不用于 label 定位或 ref 身份验证；interactive/text=false 也保留提示。
 - **ref 解析**：ref 保存 `backendNodeId`、所属 frame/session 和观察时的 AX role/name；动作时重新 `DOM.resolveNode` 并用局部 AX 查询核对语义身份。输入与求值不清空 refs，只使快照分页失效；原节点仍连接时可复用，节点替换、role/name 改变、文档或 frame 变化时安全失败，不按 role/name 猜测替代节点。
 - **双预算**：`max_nodes` 限制节点数，`max_chars` 限制每行序列化后的累计字符数；两者独立，任一耗尽都会返回 `next_cursor`。
 - **续读**：续读沿用同一份 `state`（`entries`、`refs`、`nextOffset`），所以 refs 在分页过程中保持有效。单个节点放不进预算时直接报错要求提高预算，避免静默截断尾部。
@@ -88,6 +89,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 ```
 
 - **type 与 fill**：fill 替换文字，type 保留选区，逐字符复用原生按键与 keydown 回执；字符之间可延迟，不把 insertText 伪装成键盘序列。浏览器处理 keypress/input 及 preventDefault，非 ASCII 不模拟系统 IME。
+- **焦点输入与语义定位**：type 的 focused=true 与 ref/selector 互斥，复用 press_key 的 frame/开放 Shadow DOM 焦点解析，固定最初可编辑元素并逐字检查，不重新聚焦。selector_type 的 label/placeholder 在隔离世界按真实 HTML 关联/属性查询，role/name 每次读取所选 frame 的 AX 树并严格匹配，以 AX 树顺序支持 nth；统一返回原有节点结构，继续复用输入、命中核验及 batch 流程，无组件库适配器。
 - **只重试准备**：等待阶段可以反复轮询，但一旦派发就不再重试。超时分为"未派发"和"已派发、结果未知"两种错误文本。
 - **原生指针就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求活动、未暂停的 tab 与未最小化的窗口。不满足时以 TAB_NOT_READY 明确报告当前指针输入未派发，并提示 tab_control(action=activate) → snapshot → click。click 不主动激活；仅显式 tab_control(action=activate) 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
 - **焦点信号边界**：OS 窗口失焦、遮挡或 document.visibilityState=hidden 不一定阻止 CDP 输入；document.hasFocus() 在 iframe 导航后也可能为 false。这些值作为 page_state 诊断，不独立拒绝点击。实际送达仍由隔离世界的可信事件回执校验；没有回执时不自动重放。
@@ -99,12 +101,13 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **命中提示**：普通命中保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。CSSPseudoElement 先解析为事件所属的 originating element，提示标记 pseudo_element=true，并使用该元素安装事件校验。语义候选不会被用于替换点击目标。
 - **遮挡失败诊断**：当前 frame 的遮挡直接复用已读取的 hit_target；祖先 frame 遮挡额外用至多 200 ms 读取命中描述，诊断节点消失时保留原遮挡错误与 backend node ID。错误包含命中点和受阻 frame。根据共享预算的派发状态区分“未派发”和“结果未知”，避免 drag 按住后准备目的节点时误报零输入。
 - **送达不等于业务完成**：`target_verified` / `delivery_verified` / `value_verified` 分别证明可信事件命中、keydown 送达、字段文本写入；点击、按键、fill 和 batch 返回 `application_result: "not_checked"`。fill 不证明 React 状态、选项提交、blur 校验或保存完成。
-- **有限多步输入**：batch 在现有标签队列内执行 1–20 步 click/fill/type/press_key/hover/scroll/select_option/wait，共享至多 30 秒预算，每步可另设更短超时；不增加后台任务、循环或脚本引擎；batch 本身只接受每步重新解析的 selector。所有参数先验证，selector 每步重解析，尚未出现的目标只在准备阶段等待；歧义立即报错。首个失败、主文档变化或接管结束后停止，返回此前结果与失败索引；不回滚、不重放、不自动激活或切换输入模式。start_at 显式跳过已完成前缀，返回 failed_step、next_unattempted_step、retry_failed_step_safe；没有后台作业或自动选择续跑点。
+- **有限多步输入**：batch 在现有标签队列内执行 1–20 步 click/fill/type/press_key/hover/scroll/select_option/wait，共享至多 30 秒预算，每步可另设更短超时；不增加后台任务、循环或脚本引擎；元素目标使用每步重新解析的 selector，type 也接受 focused=true。所有参数先验证，selector 每步重解析，尚未出现的目标只在准备阶段等待；歧义立即报错。首个失败、主文档变化或接管结束后停止，返回此前结果与失败索引；不回滚、不重放、不自动激活或切换输入模式。start_at 显式跳过已完成前缀，返回 failed_step、next_unattempted_step、retry_failed_step_safe；没有后台作业或自动选择续跑点。
 - **OOPIF 坐标**：点击从顶层派发。逐层用 `DOM.getBoxModel` 把坐标换算到祖先文档，并用 `DOM.getNodeForLocation` 确认该位置确实落在 frame owner 上，防止祖先页面的遮挡被跳过。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
 - **对话框策略**：ask 仍为默认；单操作/单步骤的显式 accept/dismiss 在事件回调中解除 JS 模态阻塞，保留消息与处理结果，最多自动处理 10 个。beforeunload dismiss 快速取消本次导航等待，实际主文档变化仍会停止 batch。
 - **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver，仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动；读取最多 300 ms、清理最多 100 ms。assessment 为 observable_effects 或 no_observable_effects；观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。
 - **元素截图/求值 ref**：复用既有截图 clip/元数据与 ref 注册/失效模型，分别增加元素 border box 截图和显式单 DOM Element 结果；不暴露 Runtime objectId。JSON 求值自动调用函数一次并等待 Promise，缓存续读不执行脚本。
+- **求值预算提示**：JSON 仍按顶层完整项分页；已有输出而下一项超出预算时，在同一响应提供 next_item 的 key/index、required_chars 和是否超过最大页预算。提示只读取缓存，不展开或改写嵌套值，也不提供任意脚本的执行进度。
 - **历史导航**：在已有 navigate 中选择 URL 或 back/forward，按 history entry 与主 frame 生命周期等待；同文档/BFCache 恢复不等新的加载事件，不用 evaluate 重放导航。
 - **导航后观察**：导航成功后的快照另有 10 秒预算，文档变化或执行上下文销毁等瞬时错误最多只重读一次；权限错误和预算耗尽不重试。观察失败保留导航结果并附 observation_error，不重新派发导航。
 - **不做通用 CDP 透传**：`browser_evaluate` 是页面表达式 API，不是 CDP 通道；没有暴露任意 domain/method 的工具。
@@ -131,7 +134,7 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 
 | 能力 | 决策 | 原因 |
 |---|---|---|
-| 定位方式 | AX ref + CSS/XPath selector，可显式 nth | ref 保持观察身份，selector 每次重解析；省略 nth 仍严格要求唯一；索引是调用者明确选择，不猜测同名目标 |
+| 定位方式 | AX ref + CSS/XPath/label/placeholder/role-name selector，可显式 nth | ref 保持观察身份，selector 每次重解析；省略 nth 仍严格要求唯一；context 仅作观察辅助，不猜测标签关系 |
 | 动作重试 | 只重试派发前的准备 | 网页操作可能提交真实数据，重复派发不可接受 |
 | DOM 模式 | 需要显式 `mode: "dom"` | 非可信事件、无用户激活，不能当作原生输入的透明替代 |
 | hover / drag | 原生指针工具，复用 click 准备 | 纯悬停和可信拖拽无法由 click 或页面 evaluate 等价表达 |

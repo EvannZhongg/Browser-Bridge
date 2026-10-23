@@ -262,6 +262,34 @@ test('batch uses one queue, fresh selector resolution and explicit native Tab fo
   assert.equal(queries.length, 3); assert.ok(queries[1].args.expression.endsWith('("input","css",1,true)'));
 });
 
+test('focused type needs no snapshot, never refocuses, and stops when its original field loses focus', async () => {
+  const f = fixture(); await f.claim(); f.calls.length = 0;
+  assert.equal((await f.exec('type', { focused: true, text: 'Ab中' })).typed, 3);
+  assert.ok(!f.calls.some(c => c.method === 'Accessibility.getFullAXTree' || c.args?.functionDeclaration?.includes('this.focus()')));
+  f.calls.length = 0;
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('const a=this.getRootNode().activeElement') &&
+        f.calls.some(c => c.method === 'Input.dispatchKeyEvent' && c.args.type === 'keyDown')) return { result: { value: false } };
+    return send(target, method, args);
+  };
+  await assert.rejects(f.exec('type', { focused: true, text: 'abc' }), /stopped after 1 characters.*lost focus/);
+  assert.equal(f.calls.filter(c => c.method === 'Input.dispatchKeyEvent' && c.args.type === 'keyDown').length, 1);
+  assert.ok(!f.calls.some(c => c.args?.functionDeclaration?.includes('this.focus()')));
+});
+
+test('batch accepts semantic selectors and focused type while prevalidating ambiguity in target options', async () => {
+  const f = fixture(); await f.claim(); f.calls.length = 0;
+  const invalid = [{ action: 'click', selector: 'button', selector_type: 'role', name: 'Submit' }, { action: 'type', focused: true, selector: 'input', text: 'x' }];
+  await assert.rejects(f.exec('batch', { steps: invalid }), /exactly one/);
+  assert.equal(f.calls.length, 0);
+  const result = await f.exec('batch', { steps: [
+    { action: 'click', selector: 'button', selector_type: 'role', name: 'Submit' }, { action: 'type', focused: true, text: 'x' },
+  ] });
+  assert.equal(result.completed, true); assert.equal(result.results[1].typed, 1);
+  assert.ok(f.calls.some(c => c.method === 'Accessibility.getFullAXTree'));
+});
+
 test('batch validates all steps first; on a dispatched failure it returns prior results and never continues or replays', async () => {
   const f = fixture(); await f.claim(); f.calls.length = 0;
   await assert.rejects(f.exec('batch', { steps: [{ action: 'click', selector: '#open' }, { action: 'press_key', key: 'F99' }] }), /Unsupported key/);
@@ -411,6 +439,7 @@ test('coordinate actions are bounded by the viewport', async () => {
 
 test('scroll defaults to DOM; explicit wheel uses viewport coordinates and never substitutes DOM', async () => {
   const f = fixture(); await f.claim();
+  await assert.rejects(f.exec('scroll', {name:'Submit', delta_y:120}), /Provide exactly one of ref or selector/);
   const ref = f.ref(await f.exec('snapshot'));
   await f.exec('scroll', {delta_y:120});
   assert.ok(f.calls.some(call => call.method === 'Runtime.evaluate' && call.args.expression.includes('function scrollAtPoint')));
@@ -682,6 +711,7 @@ test('releaseAll cleans other tabs but retains ownership when detach fails until
 
 test('PNG capture supports viewport and bounded full-page screenshots', async () => {
   const f = fixture(); await f.claim();
+  await assert.rejects(f.exec('screenshot', {name:'Submit'}), /name requires an element selector/);
   assert.equal((await f.exec('screenshot')).data, 'image-data');
   const full = await f.exec('screenshot', { full_page: true, include_indicators: true });
   assert.equal(full.capture.agent_indicators_included, true);

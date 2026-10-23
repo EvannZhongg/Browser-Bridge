@@ -1,8 +1,17 @@
 # 验证报告
 
-当前版本 **0.17.2**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.18.0**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：213 项通过。新增真实 HTML label/placeholder 匹配、AX role/name 唯一性与树顺序、每次重新解析、focused 参数互斥、失焦停止、batch 预校验、快照 context 查询与 ref 身份、嵌套求值预算首屏提示回归。最后的定位错误文案调整另通过 12 项定位/原语定向测试。
+- Chromium 156、Edge 155 headless：输入集成各 21 个场景、扩展集成各 13 个场景通过。覆盖关联标签填写、placeholder 和 AX role 字段读取、坐标聚焦后输入、延迟打开的自定义 option、闭合 Shadow DOM role 点击、开放 Shadow DOM 焦点输入、同进程及跨进程 iframe 的 role/focused 输入、字段切换焦点后停止，以及缓存续读不重放表达式。测试通过扩展和 Hub 操作页面；CDP 仅用于临时 fixture 设置/断言及关闭测试浏览器。
+- `npm run test:package`：包外安装与 stdio MCP 通过，23 个工具、50 个发布文件，不含配对密钥；工具能力扩展，未新增工具、依赖或扩展权限。
+- 本机部署：Hub 已从工作区重启，健康接口返回 0.18.0 / ready；Chrome、Edge 均已自动重载并上报 0.18.0。稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 manifest 为 0.18.0，其余 31 个非生成源码/资源文件 SHA-256 与工作区一致。原有 MCP 客户端需要重新连接以刷新 schema。
+- 当前边界：label 仅使用真实 HTML 关联，不推断兄弟 div；context 是有界观察提示，不改写 AX name。role 每次采集所选 frame 的完整 AX 树。evaluate 仍按完整嵌套项分页，10 秒默认、最多 30 秒，未加入任意脚本检查点或截图布局 token。
+- 额外测试观察：接管后动态插入再移除跨源 iframe 的组合场景中，后续 network_idle 曾以 inflight=1 超时，原因未在本次定位改动中解决；跨进程输入另在接管前已加载 iframe 的 fixture 中验证通过。本次不包含网络跟踪修复。
+
+## 0.17.2 验证
 
 - `npm test`：207 项通过。新增滚动最深匹配、隐藏中间节点、多个分支歧义和候选上限回归；10000 个匹配只做 9999 次包含关系检查，每个文字命中候选只读一次几何信息。保留渲染文本的 expected/previous 比较与预览截取、1.5 万层深树的 full/interactive 遍历和正文合并、15 万节点观察的分页回归。用修改前的实现分别复现深树递归和宽树数组参数展开的 `Maximum call stack size exceeded`。
 - 同版本滚动优化：Chromium 156 与 Edge 155 headless 输入集成各 20 个场景通过，包含真实 DOM 的隐藏中间节点、最深匹配 ref、兄弟分支歧义、selector 消歧及原有延迟加载滚动。保留 10000 候选上限、文字与可见性条件；筛选只比较文档顺序中的相邻匹配，不再两两比较，不代表选择器、子树文字和布局读取的总成本也是线性的。

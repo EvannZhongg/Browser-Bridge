@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { queryElement, targetOptions, resolveSelector, resolveFrame } from '../extension/locator.js';
+import { queryElement, targetOptions, resolveSelector, resolveFrame, matchRole } from '../extension/locator.js';
 import { deadline } from '../extension/actionability.js';
 
 test('explicit nth selects CSS/XPath document order; omission remains strict', () => {
@@ -82,4 +82,46 @@ test('frame paths resolve each strict iframe selector, and exact URL/title match
   assert.equal(await resolveFrame(cdp,value,sessions,9,{frame:{title:'Inner'}},deadline(500)),'nested');
   await assert.rejects(resolveFrame(async(target,method,args)=>method==='Runtime.evaluate'?{result:{value:'Same'}}:cdp(target,method,args),value,sessions,9,{frame:{title:'Same'}},deadline(500)),/matched 2/);
   assert.throws(()=>targetOptions({selector:'button',frame_id:'old',frame:{title:'Inner'}}),/never both/);
+});
+
+test('label locators use real control associations, normalize whitespace, and preserve strict ambiguity', () => {
+  const field = labels => ({ nodeType: 1, tagName: 'INPUT', labels: labels.map(textContent => ({ textContent })),
+    matches: () => false, closest: () => null, getBoundingClientRect: () => ({ width: 10, height: 10 }),
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) } } });
+  const first = field(['  工作\n 职责  ']), second = field(['工作 职责']), unlabeled = field([]);
+  const query = vm.runInNewContext(`(${queryElement.toString()})`, { document: { querySelectorAll: () => [first, second, unlabeled] } });
+  assert.equal(query('工作 职责', 'label', 1), second);
+  assert.equal(query('工作职责', 'label', undefined, true), null);
+  assert.throws(() => query('工作 职责', 'label'), /matched 2/);
+  const placeholder = `Name ["quoted"]`;
+  first.getAttribute = () => placeholder; second.getAttribute = () => `${placeholder} `; unlabeled.getAttribute = () => null;
+  assert.equal(query(placeholder, 'placeholder'), first);
+  assert.equal(query('Name', 'placeholder', undefined, true), null);
+});
+
+test('role locators use exact browser AX identities in tree order and re-resolve each call', async () => {
+  const nodes = [
+    { nodeId: 'root', childIds: ['second', 'first', 'hidden'] },
+    { nodeId: 'first', backendDOMNodeId: 1, role: { value: 'option' }, name: { value: '2026' } },
+    { nodeId: 'hidden', backendDOMNodeId: 3, ignored: true, role: { value: 'option' }, name: { value: '2026' } },
+    { nodeId: 'second', backendDOMNodeId: 2, role: { value: 'option' }, name: { value: '2025' } },
+  ];
+  assert.equal(matchRole(nodes, { selector: 'option', nth: 0 }).backendDOMNodeId, 2);
+  assert.equal(matchRole(nodes, { selector: 'option', name: '2026' }).backendDOMNodeId, 1);
+  assert.equal(matchRole(nodes, { selector: 'option', name: '202' }), null);
+  assert.throws(() => matchRole(nodes, { selector: 'option' }), /matched 2/);
+  let backend = 10;
+  const sessions = { frames: async () => [{ id: 'main' }], target: () => ({ tabId: 9 }) };
+  const cdp = async (target, method, params) => method === 'Accessibility.getFullAXTree'
+    ? { nodes: [{ nodeId: 'option', backendDOMNodeId: backend++, role: { value: 'option' }, name: { value: '2026' } }] }
+    : { object: { objectId: `node-${params.backendNodeId}` } };
+  for (const id of [10, 11]) {
+    const node = await resolveSelector(cdp, r => r.result?.value, sessions, 9, { selector: 'option', selector_type: 'role', name: '2026' }, deadline(500));
+    assert.equal(node.backendNodeId, id); assert.equal(node.objectId, `node-${id}`);
+  }
+  for (const args of [{ selector: 'input', name: 'Name' }, { selector: 'textbox', selector_type: 'role', name: 1 }, { focused: true, selector: 'input' }, { focused: false }]) {
+    assert.throws(() => targetOptions(args, { focused: true }));
+  }
+  targetOptions({ focused: true }, { focused: true });
+  assert.throws(() => targetOptions({ focused: true }));
 });

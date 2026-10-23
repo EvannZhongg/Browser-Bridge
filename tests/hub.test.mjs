@@ -206,6 +206,20 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   assert.deepEqual(f.requests.find(item => item.command === 'list_tabs').arguments, {});
   const result = await call('claim_tab', { browser_id: browser.id, tab_id: 9, expected_title: 'Demo', expected_url: f.tabs[0].url });
   const handle = JSON.parse(result.content[0].text).tab_handle;
+  const beforeSemantic = f.requests.length;
+  for (const args of [{ text: 'x' }, { focused: true, ref: 'r', text: 'x' }, { focused: true, frame_id: 'child', text: 'x' }, { selector: 'input', name: 'Name', text: 'x' }]) {
+    assert.equal((await call('type', { tab_handle: handle, ...args })).isError, true);
+  }
+  assert.equal(f.requests.length, beforeSemantic);
+  assert.ok(!(await call('type', { tab_handle: handle, focused: true, text: 'x' })).isError);
+  assert.equal(f.requests.at(-1).arguments.focused, true);
+  for (const [selector_type, selector, name] of [['label', '工作职责'], ['placeholder', 'Name'], ['role', 'textbox', 'Name']]) {
+    assert.ok(!(await call('fill', { tab_handle: handle, selector_type, selector, ...(name ? { name } : {}), text: 'value' })).isError);
+    assert.equal(f.requests.at(-1).arguments.selector_type, selector_type);
+    assert.equal(f.requests.at(-1).arguments.name, name);
+  }
+  assert.equal((await call('batch', { tab_handle: handle, steps: [{ action: 'type', focused: true, text: 'x' }] })).isError, true);
+  assert.equal(f.requests.at(-1).arguments.steps[0].focused, true);
   for (const args of [{ profile: 'bad' }, { text: 'false' }, { text_limit: -1 }, { query: '' }, { verbose: 'true' }]) {
     assert.equal((await call('snapshot', { tab_handle: handle, ...args })).isError, true);
   }
