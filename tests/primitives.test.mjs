@@ -12,6 +12,7 @@ function selectFixture() {
   }
   const field = new Select();
   Object.assign(field, { tagName: 'SELECT', isConnected: true, matches: () => false, closest: () => null,
+    hasAttribute: () => false, getRootNode: () => ({}),
     options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }, { value: 'c', label: 'Beta' }],
     ownerDocument: { defaultView: { HTMLSelectElement: Select, Event: class { constructor(type) { this.type = type; this.isTrusted = false; } } } },
     dispatchEvent: event => events.push(event),
@@ -30,6 +31,23 @@ test('select matches exact label/value/index, rejects ambiguity/disabled options
   field.dispatchEvent = () => { field.selectedIndex = 0; };
   assert.throws(() => selectElement.call(field, { value: 'b' }), /did not retain.*unknown/);
   for (const args of [{}, { value: 'a', index: 0 }, { index: -1 }]) assert.throws(() => selectOptions(args));
+});
+
+test('select preparation changes nothing and inherited inert across a slot or shadow host blocks selection', () => {
+  const { field, events } = selectFixture();
+  assert.equal(selectElement.call(field, { value: 'b' }, false), true);
+  assert.equal(events.length, 0); assert.equal(field.selectedIndex, undefined);
+  const host = { matches: () => false, hasAttribute: name => name === 'inert' };
+  field.getRootNode = () => ({ host });
+  assert.throws(() => selectElement.call(field, { value: 'b' }), /inert/);
+  field.getRootNode = () => ({}); field.assignedSlot = host;
+  assert.throws(() => selectElement.call(field, { value: 'b' }), /inert/);
+  assert.equal(events.length, 0);
+});
+
+test('text wait without selector gives a condition-specific whole-page example', () => {
+  assert.throws(() => waitOptions({ condition: 'text', expected: 'Ready' }), /text wait requires a reusable selector.*body/);
+  waitOptions({ condition: 'text', selector: 'body', expected: 'Ready' });
 });
 
 test('wait failures include the requested condition and the last absent/hidden/disabled state', async () => {

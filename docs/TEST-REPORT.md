@@ -1,8 +1,18 @@
 # 验证报告
 
-当前版本 **0.18.0**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.19.0**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：219 项通过。覆盖 ShadowRoot 命中归一化、同进程子 frame 的局部命中坐标、slot/ShadowRoot 祖先关系、归一化后仍拒绝遮挡、frame 候选诊断及超时保留、select 的只读准备和继承 inert、文本等待缺 selector 提示，以及扩展 → Hub → 客户端 → stdio MCP 的结构化错误证据传递。保留原有输入、导航、所有权、清理和升级回归。
+- Chromium 156、Edge 155 headless：`--issues` 各 10 个场景、`--primitives` 各 21 个场景、`--extended` 各 13 个场景通过。新增场景验证闭合 Shadow DOM 的真实 trusted 点击与 userActivation、实际 ShadowRoot 上的命中归一化、遮挡节点 rect/样式诊断、纯坐标验证范围、隐藏 select 的单步/batch 一致性和禁用/inert 拒绝、frame 定位候选、同进程与 OOPIF 的嵌套滚动/缩放/高度变化、元素截图、上传后 reload 及显式补填、求值超时后已观察到导航的 post_action。
+- Chromium、Edge 完整 stdio MCP 集成：各 254 次调用通过，覆盖实际扩展与 Hub 链路、嵌套 OOPIF、输入、上传、导航、日志、截图和 12000 个语义节点分页。测试退出前经 CDP 正常关闭所创建的临时浏览器，避免 Windows Edge 重启实际主进程后仅结束 launcher 留下 profile 锁；Edge 完整重跑后正常退出。
+- `npm run test:package`：仓库外安装与 stdio MCP 通过，23 个工具、51 个发布文件，不含配对密钥；无新增依赖和扩展权限。新增结构化结果及隐藏 select 能力，版本递增到 0.19.0。
+- 本机部署：Hub 已从工作区重启，健康接口返回 0.19.0 / ready；原 Chrome、Edge 两个 profile 均已自动重载并上报 0.19.0。稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 manifest 为 0.19.0，其余 32 个非生成源码/资源文件 SHA-256 与工作区一致。已有 MCP 客户端需重新连接以载入新版工具描述。
+- 复现结论：带嵌套滚动、缩放和 iframe 高度变化的同进程/OOPIF 点击及后续坐标点击均送达目标，未复现所述约 88px 偏差；不能据此排除原站其他布局组合。上传触发 reload 后清空已填字段已复现，显式等待、观察后再 batch 补填成功，上传事件仅一次。顶层视口外元素截图保留真实内容且不改变滚动；overflow 祖先裁剪下的目标截图为空白，已人工查看 PNG，文档明确保留此裁剪语义。
+- 当前范围：未在原 iCIMS 页面或真实验证码上复测；不新增 diagnose、跨导航字段重放引擎或截图默认自动滚动。诊断只报告当前可观测事实，不解释任意应用业务禁用原因，不把字段保留、可信事件或用户激活视为业务成功。
+
+## 0.18.0 验证
 
 - `npm test`：213 项通过。新增真实 HTML label/placeholder 匹配、AX role/name 唯一性与树顺序、每次重新解析、focused 参数互斥、失焦停止、batch 预校验、快照 context 查询与 ref 身份、嵌套求值预算首屏提示回归。最后的定位错误文案调整另通过 12 项定位/原语定向测试。
 - Chromium 156、Edge 155 headless：输入集成各 21 个场景、扩展集成各 13 个场景通过。覆盖关联标签填写、placeholder 和 AX role 字段读取、坐标聚焦后输入、延迟打开的自定义 option、闭合 Shadow DOM role 点击、开放 Shadow DOM 焦点输入、同进程及跨进程 iframe 的 role/focused 输入、字段切换焦点后停止，以及缓存续读不重放表达式。测试通过扩展和 Hub 操作页面；CDP 仅用于临时 fixture 设置/断言及关闭测试浏览器。

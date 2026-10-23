@@ -145,11 +145,15 @@ export function createInput(cdp, value, sessions) {
   async function selectOption(tabId, node, args) {
     selectOptions(args);
     const budget = args.budget || deadline(args.timeout_ms);
-    await waitForTarget(cdp, value, node.target, node, budget);
+    const choice = { value: args.value, label: args.label, index: args.index };
+    value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', {
+      objectId: node.objectId, functionDeclaration: selectElement.toString(),
+      arguments: [{ value: choice }, { value: false }], returnByValue: true,
+    })));
     budget.dispatch();
     const result = value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', {
       objectId: node.objectId, functionDeclaration: selectElement.toString(),
-      arguments: [{ value: { value: args.value, label: args.label, index: args.index } }], returnByValue: true,
+      arguments: [{ value: choice }], returnByValue: true,
     })));
     return { ...result, method: 'dom', events_trusted: false, application_result: 'not_checked', observe_again: true };
   }
@@ -299,14 +303,17 @@ export function selectOptions(args) {
   for (const key of ['value', 'label']) if (args[key] != null && typeof args[key] !== 'string') throw new Error(`${key} must be a string`);
 }
 
-export function selectElement(choice) {
+export function selectElement(choice, apply = true) {
   if (this.tagName !== 'SELECT' || !this.isConnected) throw new Error('Target must be a connected HTML select');
-  if (this.matches(':disabled') || this.closest('[inert]')) throw new Error('Select is disabled or inert');
+  for (let parent = this; parent; parent = parent.assignedSlot || parent.parentElement || parent.getRootNode().host) {
+    if (parent.matches(':disabled') || parent.hasAttribute('inert')) throw new Error('Select is disabled or inert');
+  }
   const options = Array.from(this.options);
   const matches = options.filter((option, index) => choice.index != null ? index === choice.index : choice.value != null ? option.value === choice.value : option.label === choice.label);
   if (matches.length !== 1) throw new Error(`Option must match exactly once; matched ${matches.length}. Use an explicit index for duplicate labels/values. No value was set.`);
   const option = matches[0];
   if (option.disabled || option.parentElement?.tagName === 'OPTGROUP' && option.parentElement.disabled) throw new Error('Option is disabled; no value was set');
+  if (!apply) return true;
   const win = this.ownerDocument.defaultView;
   const index = options.indexOf(option);
   Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'selectedIndex').set.call(this, index);

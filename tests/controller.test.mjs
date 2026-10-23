@@ -78,6 +78,7 @@ function fixture() {
         if (method === 'Runtime.evaluate') return { result: { value: { width: 1024, height: 768, scroll_x: 0, scroll_y: 0, device_pixel_ratio: 1 } } };
         if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installGuard')) return { result: { objectId: 'guard' } };
         if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function inspectTarget')) return { result: { value: { ready: true, x: 10, y: 10, width: 90, height: 40 } } };
+        if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function hitRelation')) return { result: { value: blocked ? null : 'same_node' } };
         if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes("input.type !== 'file'")) return { result: { objectId: 'file-input' } };
         if (method === 'Runtime.callFunctionOn') return { result: { value: !blocked } };
         if (method === 'Page.getLayoutMetrics') return { cssContentSize: { width: 1024, height: 1800 } };
@@ -133,7 +134,8 @@ test('active occluded and unfocused native click verifies delivery without bring
     f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
       ? { result: { value: state } } : send(target, method, args);
     const result = await f.exec('click', { x: 10, y: 10 });
-    assert.equal(result.target_verified, true);
+    assert.equal(result.target_verified, null); assert.equal(result.delivery_verified, true);
+    assert.deepEqual(result.target_verification, { basis: 'coordinate_hit', hit_relation: null });
     assert.equal(result.page_state.visibility_state, state.visibility_state);
     assert.equal(result.page_state.window_focused, false);
     assert.ok(!f.calls.some(call => ['Page.bringToFront', 'tabs.update', 'windows.update'].includes(call.method)));
@@ -180,7 +182,7 @@ test('hasFocus false alone does not reject an active visible page in a focused w
   f.api.debugger.sendCommand = async (target, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
     ? { result: { value: { visibility_state: 'visible', has_focus: false } } } : send(target, method, args);
   const result = await f.exec('click', { x: 10, y: 10 });
-  assert.equal(result.target_verified, true); assert.equal(result.page_state.has_focus, false); assert.equal(result.page_state.window_focused, true);
+  assert.equal(result.delivery_verified, true); assert.equal(result.page_state.has_focus, false); assert.equal(result.page_state.window_focused, true);
 });
 
 test('explicit DOM click remains available on a background tab without a native readiness check', async () => {
@@ -242,7 +244,7 @@ test('coordinate pseudo-element hits normalize to their originating element for 
     return send(target, method, args);
   };
   const result = await f.exec('click', { x: 10, y: 10 });
-  assert.equal(result.target_verified, true); assert.equal(result.hit_target.pseudo_element, true);
+  assert.equal(result.delivery_verified, true); assert.equal(result.hit_target.pseudo_element, true);
   assert.ok(f.calls.some(call => call.method === 'DOM.resolveNode' && call.args.executionContextId === 42 && call.args.backendNodeId === 99));
 });
 
@@ -925,14 +927,17 @@ test('mouse acknowledgments cannot serialize dispatch; mismatched events never r
     return send(target, method, args);
   };
   const result = await f.exec('click', { x: 55, y: 30 });
-  assert.equal(result.target_verified, true);
+  assert.equal(result.target_verified, null); assert.equal(result.delivery_verified, true);
   assert.equal(result.application_result, 'not_checked');
   const inputs = f.calls.filter(call => call.method === 'Input.dispatchMouseEvent');
   assert.deepEqual(inputs.map(call => call.args.buttons), [0, 1, 0]);
   const listener = f.api.debugger.onEvent.emit;
   f.api.debugger.onEvent.emit = (target, method, args) => listener(target, method,
     method === 'Runtime.bindingCalled' ? { ...args, payload: '{"matched":false}' } : args);
-  await assert.rejects(f.exec('click', { x: 55, y: 30 }), /target changed/);
+  await assert.rejects(f.exec('click', { x: 55, y: 30 }), error => {
+    assert.match(error.message, /target changed/); assert.equal(error.input_dispatched, true);
+    assert.equal(error.post_action.delivery, 'unknown'); return true;
+  });
   assert.ok((await f.exec('snapshot')).snapshot);
 });
 

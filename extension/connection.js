@@ -1,4 +1,5 @@
 import { compareVersions } from './version.js';
+import { errorData } from './errors.js';
 
 export function createConnection(chrome, CONNECTION, controller) {
   let socket;
@@ -89,7 +90,7 @@ export function createConnection(chrome, CONNECTION, controller) {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: request.id, result }));
         } catch (error) {
           if (request?.id && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ id: request.id, error: error.message || String(error) }));
+            ws.send(JSON.stringify({ id: request.id, ...errorData(error) }));
           }
         }
       };

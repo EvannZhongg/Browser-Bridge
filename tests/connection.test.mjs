@@ -42,12 +42,20 @@ async function fixture(t) {
     await ws.onmessage({ data: JSON.stringify({ id, command, arguments: args, owner: 'owner' }) });
     return ws.messages.find(message => message.id === id);
   };
-  return { ws, local, sockets, flush, command, get reloads() { return reloads; }, get executions() { return executions; },
+  return { ws, local, sockets, flush, command, controller, get reloads() { return reloads; }, get executions() { return executions; },
     message: message => new Promise(resolve => {
       assert.equal(api.runtime.onMessage.listener(message, { id: api.runtime.id }, resolve), true);
     }),
     set cleanupError(value) { cleanupError = value; }, set cleanupRejection(value) { cleanupRejection = value; }, set diskVersion(value) { diskVersion = value; } };
 }
+
+test('extension replies preserve only supported structured error evidence', async t => {
+  const f = await fixture(t);
+  const evidence = { input_dispatched: true, post_action: { delivery: 'unknown', navigation_observed: true }, diagnostics: { reason: 'obstructed' } };
+  f.controller.execute = async () => { throw Object.assign(new Error('Receipt lost'), evidence, { private_state: 'not transported' }); };
+  const result = await f.command('click');
+  assert.deepEqual(result, { id: result.id, error: 'Receipt lost', ...evidence });
+});
 
 test('popup release reports partial cleanup failures and rejected cleanup, then permits an explicit retry', async t => {
   const f = await fixture(t);

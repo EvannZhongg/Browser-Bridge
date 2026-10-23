@@ -3,8 +3,13 @@
 export function deadline(timeout_ms = 5000, phase = 'input', parentEnd = Infinity) {
   if (!Number.isInteger(timeout_ms) || timeout_ms < 100 || timeout_ms > 30000) throw new Error('timeout_ms must be 100..30000');
   const end = Math.min(Date.now() + timeout_ms, parentEnd);
-  let dispatched = false, waiting;
+  let dispatched = false, waiting, diagnostics;
   function error() {
+    const result = timeoutError();
+    if (diagnostics) result.diagnostics = diagnostics;
+    return result;
+  }
+  function timeoutError() {
     if (phase === 'evaluation') return Object.assign(new Error(dispatched ? 'JavaScript evaluation timed out. Page effects may already have occurred. Observe before continuing. Do not replay automatically.' : 'Evaluation preparation timed out; no expression was executed.'), { input_dispatched: dispatched });
     if (phase === 'fetch') return new Error(`Fetch did not finish within ${timeout_ms} ms; the temporary tab will be closed. Do not automatically replay the request.`);
     if (phase === 'wait') return Object.assign(new Error(`Condition was not satisfied within ${timeout_ms} ms`), { input_dispatched: false });
@@ -23,7 +28,7 @@ export function deadline(timeout_ms = 5000, phase = 'input', parentEnd = Infinit
       timer = setTimeout(() => reject(error()), remaining);
     })]); } finally { clearTimeout(timer); }
   }
-  return { run, has_dispatched: () => dispatched, child(ms, childPhase = phase) { return deadline(ms, childPhase, end); }, describe(detail) { waiting = detail; }, dispatch() { if (Date.now() >= end) throw error(); dispatched = true; }, remaining: () => Math.max(0, end - Date.now()) };
+  return { run, has_dispatched: () => dispatched, child(ms, childPhase = phase) { return deadline(ms, childPhase, end); }, describe(detail, state) { waiting = detail; diagnostics = state; }, dispatch() { if (Date.now() >= end) throw error(); dispatched = true; }, remaining: () => Math.max(0, end - Date.now()) };
 }
 
 export async function waitForTarget(cdp, value, target, node, budget, { editable = false } = {}) {
@@ -35,7 +40,7 @@ export async function waitForTarget(cdp, value, target, node, budget, { editable
     if (bounds?.detached) throw new Error('Element is detached; take a new snapshot. No input was dispatched.');
     if (bounds?.unsupported) throw new Error('Ref is not a supported editable field; no input was dispatched.');
     if (bounds?.ready && previous && JSON.stringify(bounds) === JSON.stringify(previous)) return;
-    budget.describe?.(`visible, enabled, stable target; current=${JSON.stringify(bounds)}`);
+    budget.describe?.(`visible, enabled, stable target; current=${JSON.stringify(bounds)}`, { reason: 'not_actionable', frame_id: node.frameId, target: bounds });
     previous = bounds?.ready ? bounds : null;
     await budget.run(() => new Promise(resolve => setTimeout(resolve, 20)));
   }

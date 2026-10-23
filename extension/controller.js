@@ -18,6 +18,7 @@ import { waitFor } from './wait.js';
 import { boundedRead, installOutcomeObserver } from './outcomes.js';
 import { createDrag, dragOptions } from './drag.js';
 import { createFetches, capturePage } from './fetch.js';
+import { errorData } from './errors.js';
 
 export function createController(api, notify = () => {}) {
   const claims = new Map();
@@ -390,7 +391,7 @@ export function createController(api, notify = () => {}) {
           const stepBudget = budget.child(step.timeout_ms ?? 30000, command === 'wait' ? 'wait' : 'input');
           results.push(await perform(tabId, command, { ...inputArgs, dialog_policy: step.dialog_policy ?? args.dialog_policy ?? 'ask', budget: stepBudget }));
         } catch (error) {
-          return { completed: false, results, started_at: args.start_at ?? 0, failed_step: index, next_unattempted_step: index + 1 < args.steps.length ? index + 1 : null, retry_failed_step_safe: error.input_dispatched === false, error: error.message, ...(error.post_action ? { post_action: error.post_action } : {}),
+          return { completed: false, results, started_at: args.start_at ?? 0, failed_step: index, next_unattempted_step: index + 1 < args.steps.length ? index + 1 : null, retry_failed_step_safe: error.input_dispatched === false, ...errorData(error),
             application_result: 'not_checked', observe_again: true };
         }
       }
@@ -401,7 +402,7 @@ export function createController(api, notify = () => {}) {
       if (args.result_type != null && !['json', 'element'].includes(args.result_type)) throw new Error('result_type must be json or element');
       if (args.cursor == null) expireCursor(tabId);
       if (args.cursor != null) return await evaluations.read(tabId, args);
-      const budget = deadline(args.timeout_ms ?? 10000, 'evaluation'), version = documents.get(tabId), claim = claims.get(tabId);
+      const budget = args.budget || deadline(args.timeout_ms ?? 10000, 'evaluation'), version = documents.get(tabId), claim = claims.get(tabId);
       const frameId = await resolveFrame(cdp, value, sessions, tabId, args, budget), target = sessions.target(tabId, frameId);
       const contextId = args.frame || args.frame_id ? pageContexts.get(JSON.stringify([tabId, target.sessionId, frameId])) : undefined;
       if ((args.frame || args.frame_id) && contextId == null) throw new Error('Page frame context is unavailable; observe again');
@@ -641,6 +642,9 @@ export function createController(api, notify = () => {}) {
 
   async function perform(tabId, command, args) {
     if (args.dialog_policy != null && !['ask', 'accept', 'dismiss'].includes(args.dialog_policy)) throw new Error('dialog_policy must be ask, accept or dismiss');
+    if (!args.budget && (['click', 'fill', 'type', 'press_key', 'hover', 'scroll', 'select_option', 'upload_file'].includes(command) || command === 'evaluate' && args.cursor == null)) {
+      args = { ...args, budget: deadline(args.timeout_ms ?? (command === 'evaluate' ? 10000 : 5000), command === 'evaluate' ? 'evaluation' : 'input') };
+    }
     const parent = dialogPolicies.get(tabId), state = { policy: args.dialog_policy ?? parent?.policy ?? 'ask', messages: [], parent };
     dialogPolicies.set(tabId, state);
     const version = documents.get(tabId), startTab = await api.tabs.get(tabId);
@@ -649,7 +653,7 @@ export function createController(api, notify = () => {}) {
     const startObservation = async () => { if (!watch || observer || dialogs.has(tabId)) return; try {
       observer = await boundedRead(async () => {
         if (args.ref) observationFrame = snapshots.get(tabId)?.refs.get(args.ref)?.frameId || observationFrame;
-        else if (args.frame || args.frame_id) observationFrame = await resolveFrame(cdp, value, sessions, tabId, args, deadline(Math.max(100, Math.min(200, args.budget?.remaining() ?? 200))));
+        else if (args.frame || args.frame_id) observationFrame = await resolveFrame(cdp, value, sessions, tabId, args, deadline(Math.max(100, Math.min(200, args.budget?.remaining() ?? 200))), { wait: false });
         observationTarget = sessions.target(tabId, observationFrame);
         observedVersion = frameStates.get(tabId)?.versions.get(observationFrame);
         const { executionContextId } = await cdp(observationTarget, 'Page.createIsolatedWorld', { frameId: observationFrame, worldName: 'browser-attach-outcome' });
@@ -677,7 +681,6 @@ export function createController(api, notify = () => {}) {
           current_url: current?.url ?? null, dom_changed: dom?.dom_changed ?? null,
           assessment: dialogs.has(tabId) || state.messages.length || documents.get(tabId) !== version || frameChanged || dom?.dom_changed ? 'observable_effects' : 'no_observable_effects',
           note: 'These observations do not prove business success or that an unchanged page received no input. Do not replay automatically.' };
-        error.message += ` Post-action observation: ${JSON.stringify(error.post_action)}`;
       } else if (state.messages.length) error.message += ` Dialogs: ${JSON.stringify(state.messages)}`;
       throw error;
     } finally {

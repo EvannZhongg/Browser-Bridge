@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deadline, inspectTarget, waitForTarget } from '../extension/actionability.js';
-import { createClick, clickOptions, describeHit, framePoint } from '../extension/click.js';
+import { createClick, clickOptions, describeHit, framePoint, normalizeHit, hitRelation } from '../extension/click.js';
 import { NAVIGATION_MAX_TIMEOUT_MS, NAVIGATION_OBSERVATION_TIMEOUT_MS, HUB_OPERATION_TIMEOUT_MS, CLIENT_RESPONSE_TIMEOUT_MS } from '../extension/limits.js';
 
 test('transport budgets leave headroom after maximum navigation plus observation', () => {
@@ -60,6 +60,8 @@ test('mouse parameters validate buttons, double clicks, modifiers and DOM limita
 test('hit hints follow ancestors and shadow/slot boundaries while preserving the actual hit node', () => {
   const element = (tag, parent, { clickable = false, disabled = false } = {}) => ({ nodeType: 1, tagName: tag.toUpperCase(),
     parentElement: parent, innerText: tag, getRootNode: () => ({}), getAttribute: () => null,
+    getBoundingClientRect: () => ({ x: 1, y: 2, width: 30, height: 40 }),
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ visibility: 'visible', position: 'fixed', zIndex: '9' }) } },
     matches: selector => selector.startsWith('button,') ? clickable : disabled });
   const button = element('button', null, { clickable: true }), span = element('span', button);
   const hit = describeHit.call(span);
@@ -73,6 +75,22 @@ test('hit hints follow ancestors and shadow/slot boundaries while preserving the
   assert.equal(describeHit.call(element('span', disabled)).disabled, true);
   const plain = describeHit.call(element('span', element('div', null)));
   assert.equal(plain.clickable_hint, false); assert.equal(plain.clickable_target, null);
+  assert.equal(plain.coordinate_space, 'frame_viewport_css_pixels'); assert.equal(plain.z_index, '9');
+});
+
+test('ShadowRoot hits resolve the hit element rather than substituting the host; relations follow slots and shadow roots', () => {
+  const host = { nodeType: 1 }, button = { nodeType: 1 }, blocker = { nodeType: 1 };
+  const root = { nodeType: 11, host, elementFromPoint(x, y) { assert.equal(x, 20); assert.equal(y, 30); return blocker; } };
+  assert.equal(normalizeHit.call(root, 20, 30), blocker);
+  assert.equal(normalizeHit.call({ element: button }), button);
+  assert.throws(() => normalizeHit.call({ ...root, elementFromPoint: () => null }), /no input was dispatched/);
+  assert.equal(hitRelation.call(button, blocker), null);
+  assert.equal(hitRelation.call(button, button), 'same_node');
+  button.parentNode = root;
+  assert.equal(hitRelation.call(host, button), 'composed_descendant');
+  const slot = { parentNode: root }, slotted = { assignedSlot: slot, parentNode: blocker };
+  assert.equal(hitRelation.call(slot, slotted), 'composed_descendant');
+  assert.equal(hitRelation.call(host, slotted), 'composed_descendant');
 });
 
 test('frame coordinate conversion preserves affine transforms and refuses perspective', () => {
@@ -80,6 +98,41 @@ test('frame coordinate conversion preserves affine transforms and refuses perspe
   assert.deepEqual(framePoint({x:50,y:25},quad,view), {x:-40,y:120});
   assert.deepEqual(framePoint({x:-40,y:120},quad,view,true), {x:50,y:25});
   assert.throws(() => framePoint({x:1,y:1},[0,0,100,0,80,100,0,100],view), /Perspective/);
+});
+
+test('ShadowRoot preparation uses frame-local hit coordinates and still rejects an unrelated hit element', async () => {
+  for (const blocked of [false, true]) {
+    const calls = [];
+    const cdp = async (target, method, args) => {
+      calls.push(method);
+      if (method === 'DOM.getContentQuads') return { quads: [[280, 280, 320, 280, 320, 320, 280, 320]] };
+      if (method === 'DOM.getNodeForLocation') return { backendNodeId: 7, frameId: 'child' };
+      if (method === 'DOM.resolveNode') return { object: { objectId: 'root', className: 'ShadowRoot' } };
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+      if (method === 'DOM.getFrameOwner') return { backendNodeId: 50 };
+      if (method === 'DOM.getBoxModel') return { model: { content: [100, 100, 500, 100, 500, 500, 100, 500] } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 1 };
+      if (method === 'Runtime.evaluate') return { result: { value: { width: 200, height: 200 } } };
+      if (method === 'DOM.describeNode') return { node: { backendNodeId: 99 } };
+      if (method === 'Runtime.callFunctionOn') {
+        if (args.functionDeclaration.includes('function inspectTarget')) return { result: { value: { ready: true } } };
+        if (args.functionDeclaration.includes('function normalizeHit')) {
+          const element = { nodeType: 1 };
+          const root = { nodeType: 11, host: {}, elementFromPoint(x, y) { assert.equal(x, 100); assert.equal(y, 100); return element; } };
+          assert.equal(normalizeHit.call(root, ...args.arguments.map(arg => arg.value)), element);
+          return { result: { objectId: 'element' } };
+        }
+        if (args.functionDeclaration.includes('function describeHit')) return { result: { value: { tag: 'button' } } };
+        if (args.functionDeclaration.includes('function hitRelation')) return { result: { value: blocked ? null : 'same_node' } };
+      }
+      return {};
+    };
+    const mouse = createClick(cdp, r => r.result.value, async () => ({ width: 800, height: 600, scroll_x: 0, scroll_y: 0 }), p => p, {});
+    const prepare = () => mouse.prepare(1, { target: { tabId: 1 }, backendNodeId: 99, objectId: 'button', frameId: 'child' }, {});
+    if (blocked) await assert.rejects(prepare(), error => error.diagnostics.reason === 'obstructed' && error.input_dispatched === false);
+    else assert.equal((await prepare()).relation, 'same_node');
+    assert.ok(!calls.some(method => method.startsWith('Input.')));
+  }
 });
 
 test('ancestor-frame obstruction reports its hit target and preserves the failure if diagnostics disappear', async () => {

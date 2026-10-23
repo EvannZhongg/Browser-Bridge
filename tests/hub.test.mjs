@@ -35,7 +35,7 @@ async function fixture(t, options) {
       if (!data.id || data.command === 'stall') return;
       if (data.command === 'read_text' && options?.stall) return;
       if (options?.failCommands?.has(data.command)) {
-        ws.send(JSON.stringify({ id: data.id, error: `${data.command} failed` }));
+        ws.send(JSON.stringify({ id: data.id, error: `${data.command} failed`, ...options.failure }));
         return;
       }
       let result = { ok: true };
@@ -143,7 +143,8 @@ test('unknown outcome disconnects the client and releases its claims without rep
 
 test('real stdio MCP exposes 23 tools including ordered batch, unified logs, single JSON content, PNG image, and validated upload', async t => {
   const failCommands = new Set();
-  const f = await fixture(t, { failCommands }), browser = await f.extension();
+  const failure = {};
+  const f = await fixture(t, { failCommands, failure }), browser = await f.extension();
   const temp = await mkdtemp(join(tmpdir(), 'attach-mcp-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const path = join(temp, 'config.json'), file = join(temp, '中文 empty.txt');
@@ -342,7 +343,13 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   assert.equal(f.requests.filter(item => item.command === 'upload_file').length, count);
   const error = await call('read_text', { tab_handle: 'expired' });
   assert.equal(error.isError, true);
-  assert.match(error.content[0].text, /^Tab handle/);
+  assert.match(JSON.parse(error.content[0].text).error, /^Tab handle/);
+  Object.assign(failure, { input_dispatched: true, post_action: { delivery: 'unknown', navigation_observed: true, current_url: 'https://example.com/after' }, diagnostics: { reason: 'obstructed' } });
+  failCommands.add('click');
+  const uncertain = await call('click', { tab_handle: handle, selector: '#submit' });
+  assert.equal(uncertain.isError, true);
+  assert.deepEqual(JSON.parse(uncertain.content[0].text), { error: 'click failed', ...failure });
+  failCommands.delete('click');
   assert.ok(!(await call('open_tab', { browser_id: browser.id, url: 'https://example.com/' })).isError);
   assert.equal(f.requests.find(item => item.command === 'open_tab').arguments.active, false);
   assert.ok(!(await call('tab_control', { action: 'activate', tab_handle: handle })).isError);

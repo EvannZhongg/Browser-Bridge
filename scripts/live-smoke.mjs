@@ -499,7 +499,17 @@ try {
   console.log(JSON.stringify({ ...report, results: undefined }, null, 2));
 } finally {
   await mcp?.close().catch(() => {});
-  cdp?.close();
+  // Edge can relaunch itself on Windows; killing its launcher alone leaves
+  // the temporary profile locked by the actual browser process.
+  if (browser && cdp?.readyState === WebSocket.OPEN) {
+    let timer;
+    try {
+      const closed = once(cdp, 'close');
+      cdp.send(JSON.stringify({ id: -1, method: 'Browser.close' }));
+      await Promise.race([closed, new Promise(resolve => { timer = setTimeout(resolve, 3000); })]);
+    } catch {} finally { clearTimeout(timer); }
+  }
+  cdp?.terminate();
   browser?.kill();
   await hub?.close();
   for (const socket of fixtureSockets) socket.destroy();

@@ -1,4 +1,5 @@
 import { HUB_OPERATION_TIMEOUT_MS } from '../extension/limits.js';
+import { errorData, errorFromData } from '../extension/errors.js';
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -171,7 +172,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
         else if (browser.ready && data.type === 'detached') forget(tabClaims.get(keyFor(browser.id, data.tab_id)));
         else if (browser.pending.has(data.id)) {
           const pending = browser.pending.get(data.id); browser.pending.delete(data.id);
-          if ('error' in data) pending.reject(new Error(String(data.error))); else pending.resolve(data.result || {});
+          if ('error' in data) pending.reject(errorFromData(data)); else pending.resolve(data.result || {});
         }
       } catch { ws.close(1008, 'Invalid extension message'); }
     });
@@ -198,7 +199,7 @@ export async function startHub(config, { port = config.port, operationTimeout = 
           const result = await execute(owner, observed, data.method, data.arguments || {});
           send(ws, { id: data.id, result });
         } catch (error) {
-          send(ws, { id: data?.id, error: error.message });
+          send(ws, { id: data?.id, ...errorData(error) });
           if (error instanceof OperationTimeout) { disconnected = true; ws.close(1011, 'Operation timeout'); }
         }
       });

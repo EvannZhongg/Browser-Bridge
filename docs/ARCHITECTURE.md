@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.18.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.19.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -97,15 +97,16 @@ HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档
 - **hover 与 drag**：hover 复用点击准备与隔离校验，仅派发一次 mouseMoved，清理不移走指针。drag 显式区分 pointer 与 HTML5；后者从真实 dragstart 截获 DragData，再用 CDP 派发 dragover/drop，校验可信 dragstart/drop/dragend。目的节点在按住后滚入视口；所有步骤共用标签队列和总预算，失败时只取消/释放本次手势。
 - **可选输入参数**：显式 offset 在元素 content quad 上插值后沿用命中与 OOPIF 边界检查；settle_ms 在 click/drag 首次派发前等待并复查就绪。drag trajectory 只替换既有插值段，采用法向控制点、平滑进度及随机间隔权重；type 的 delay_ms 可逐间隔独立区间采样。所有等待共用总预算，超时后没有继续派发的链；省略参数时不使用随机数，沿用既有确定性路径。不新增 tab 级历史、冷却、自动激活或重放路径。
 - **条件等待**：wait 复用严格 selector、可操作性和命中检查，支持出现、可见、可操作、文本/URL 子串及网络空闲；文本使用 innerText，expected 子串匹配和 previous 完整旧值比较均在 500 字符结果预览截取前完成。只读轮询，错误附带条件和最后状态。
-- **原生下拉**：select_option 直接用 selectedIndex setter 和合成 input/change 设置一个 HTML 选项，核验保留结果并返回 events_trusted=false。native click 的 select 命中（含 UA shadow 内部节点和关联 label）在派发前拒绝。
+- **原生下拉**：select_option 不要求可见或稳定几何，先只读核对节点、禁用/inert 祖先与唯一选项，再在一次派发中复查并用 selectedIndex setter 和合成 input/change 设置，核验保留结果并返回 events_trusted=false。单步和 batch 共用实现。native click 的 select 命中（含 UA shadow 内部节点和关联 label）在派发前拒绝。
 - **命中提示**：普通命中保留实际 hit node，沿父元素、Shadow host、slot 查找最近的 HTML/ARIA 可点击候选，返回 clickable_target；hint=false 表示未识别候选，不代表无法响应事件。CSSPseudoElement 先解析为事件所属的 originating element，提示标记 pseudo_element=true，并使用该元素安装事件校验。语义候选不会被用于替换点击目标。
 - **遮挡失败诊断**：当前 frame 的遮挡直接复用已读取的 hit_target；祖先 frame 遮挡额外用至多 200 ms 读取命中描述，诊断节点消失时保留原遮挡错误与 backend node ID。错误包含命中点和受阻 frame。根据共享预算的派发状态区分“未派发”和“结果未知”，避免 drag 按住后准备目的节点时误报零输入。
-- **送达不等于业务完成**：`target_verified` / `delivery_verified` / `value_verified` 分别证明可信事件命中、keydown 送达、字段文本写入；点击、按键、fill 和 batch 返回 `application_result: "not_checked"`。fill 不证明 React 状态、选项提交、blur 校验或保存完成。
+- **送达不等于业务完成**：原生 click/hover 的 delivery_verified 表示可信事件送达；target_verified=true 只用于显式元素目标，纯坐标为 null，target_verification 标明 element/coordinate_hit 和准备时的 same_node/composed_descendant。hit_relation 按 composed 祖先遍历处理 slot/ShadowRoot，派发后仍由隔离世界事件路径核验。value_verified 表示字段文本写入；点击、按键、fill 和 batch 返回 `application_result: "not_checked"`。fill 不证明 React 状态、选项提交、blur 校验或保存完成。
 - **有限多步输入**：batch 在现有标签队列内执行 1–20 步 click/fill/type/press_key/hover/scroll/select_option/wait，共享至多 30 秒预算，每步可另设更短超时；不增加后台任务、循环或脚本引擎；元素目标使用每步重新解析的 selector，type 也接受 focused=true。所有参数先验证，selector 每步重解析，尚未出现的目标只在准备阶段等待；歧义立即报错。首个失败、主文档变化或接管结束后停止，返回此前结果与失败索引；不回滚、不重放、不自动激活或切换输入模式。start_at 显式跳过已完成前缀，返回 failed_step、next_unattempted_step、retry_failed_step_safe；没有后台作业或自动选择续跑点。
 - **OOPIF 坐标**：点击从顶层派发。逐层用 `DOM.getBoxModel` 把坐标换算到祖先文档，并用 `DOM.getNodeForLocation` 确认该位置确实落在 frame owner 上，防止祖先页面的遮挡被跳过。
+- **命中对象**：伪元素先解析 originating Element；ShadowRoot 通过其 elementFromPoint 重新取得实际命中 Element，同进程子 frame 先把 session 坐标映射到所属文档视口。不将 ShadowRoot 直接当 Element 或无条件改成 host。后续身份、遮挡和事件回执检查保持一致；命中描述附带 frame-local rect 和样式诊断。
 - **DOM 模式**：`mode: "dom"` 是显式的、受控的降级路径，用于原生菜单或标签拖动暂时捕获输入时操作普通 HTML 控件。它调用 `HTMLElement.click()` 或原生 value setter，事件非可信、无用户激活，且绝不会在原生失败后自动启用。
 - **对话框策略**：ask 仍为默认；单操作/单步骤的显式 accept/dismiss 在事件回调中解除 JS 模态阻塞，保留消息与处理结果，最多自动处理 10 个。beforeunload dismiss 快速取消本次导航等待，实际主文档变化仍会停止 batch。
-- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver，仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动；读取最多 300 ms、清理最多 100 ms。assessment 为 observable_effects 或 no_observable_effects；观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。
+- **未知结果探测**：在可能写入的操作准备期安装目标 frame 的临时 MutationObserver；观察用的 frame 解析只尝试一次，不等待不存在的 frame 消耗动作准备预算。仅在不确定失败后做一次有界只读探测，回传对话框、导航、DOM 变动；读取最多 300 ms、清理最多 100 ms。assessment 为 observable_effects 或 no_observable_effects；观察不到变化不等于没有派发，不将证据升级成业务成功，不自动重放。扩展、Hub、客户端用 errors.js 保留 error 文本及 input_dispatched、post_action、diagnostics；MCP 工具执行失败返回 isError 与 JSON，batch 失败采用相同证据字段。
 - **元素截图/求值 ref**：复用既有截图 clip/元数据与 ref 注册/失效模型，分别增加元素 border box 截图和显式单 DOM Element 结果；不暴露 Runtime objectId。JSON 求值自动调用函数一次并等待 Promise，缓存续读不执行脚本。
 - **求值预算提示**：JSON 仍按顶层完整项分页；已有输出而下一项超出预算时，在同一响应提供 next_item 的 key/index、required_chars 和是否超过最大页预算。提示只读取缓存，不展开或改写嵌套值，也不提供任意脚本的执行进度。
 - **历史导航**：在已有 navigate 中选择 URL 或 back/forward，按 history entry 与主 frame 生命周期等待；同文档/BFCache 恢复不等新的加载事件，不用 evaluate 重放导航。

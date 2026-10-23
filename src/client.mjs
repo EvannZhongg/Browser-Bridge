@@ -1,4 +1,5 @@
 import { CLIENT_RESPONSE_TIMEOUT_MS } from '../extension/limits.js';
+import { errorFromData } from '../extension/errors.js';
 import { spawn } from 'node:child_process';
 import { open, mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -104,7 +105,7 @@ export class AttachClient {
         const item = this.pending.get(data.id);
         if (!item) return;
         this.pending.delete(data.id); clearTimeout(item.timer);
-        if ('error' in data) item.reject(new Error(String(data.error))); else item.resolve(data.result);
+        if ('error' in data) item.reject(errorFromData(data)); else item.resolve(data.result);
       });
       ws.on('close', () => {
         reject(new Error('Hub connection closed'));

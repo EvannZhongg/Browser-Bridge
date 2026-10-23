@@ -114,25 +114,37 @@ export function frameOptions(args) {
 async function resolveFrameOnce(cdp, value, sessions, tabId, args, budget) {
   frameOptions(args);
   const frames = await budget.run(() => sessions.frames(tabId));
+  const failure = (error, scope = {}) => {
+    const candidates = frames.slice(0, 10).map(frame => ({ frame_id: frame.id, parent_frame_id: frame.parentId ?? null, url: frame.url }));
+    error.diagnostics = { reason: 'frame_locator', ...scope, candidates, omitted_candidates: Math.max(0, frames.length - candidates.length) };
+    error.message += `; frame scope=${JSON.stringify(scope)}; current frames=${JSON.stringify(candidates)}${frames.length > candidates.length ? ` (${frames.length - candidates.length} more omitted)` : ''}`;
+    return error;
+  };
   if (args.frame_id != null) {
-    if (!frames.some(f => f.id === args.frame_id)) throw new Error('frame_id is unknown; take a new snapshot');
+    if (!frames.some(f => f.id === args.frame_id)) throw failure(new Error('frame_id is unknown; take a new snapshot'), { frame_id: args.frame_id });
     return args.frame_id;
   }
   if (!args.frame) return frames[0].id;
   const scope = args.frame;
   let frameId = frames[0].id;
-  for (const selector of scope.path || []) {
-    const target = sessions.target(tabId, frameId);
-    const send = (method, params) => budget.run(() => cdp(target, method, params));
-    const { executionContextId } = await send('Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' });
-    const result = await send('Runtime.evaluate', { contextId: executionContextId, expression: `(${queryElement.toString()})(${JSON.stringify(selector)},"css")`, objectGroup: 'browser-attach-frame' });
-    value(result);
+  for (const [pathIndex, selector] of (scope.path || []).entries()) {
+    const parentFrameId = frameId;
     try {
-      const { node } = await send('DOM.describeNode', { objectId: result.result.objectId });
-      if (!['IFRAME', 'FRAME'].includes(node.nodeName)) throw new Error('frame.path must resolve to iframe/frame elements');
-      frameId = node.frameId || node.contentDocument?.frameId;
-      if (!frameId) throw new Error('Frame document is not available yet');
-    } finally { await send('Runtime.releaseObjectGroup', { objectGroup: 'browser-attach-frame' }); }
+      const target = sessions.target(tabId, frameId);
+      const send = (method, params) => budget.run(() => cdp(target, method, params));
+      const { executionContextId } = await send('Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' });
+      const result = await send('Runtime.evaluate', { contextId: executionContextId, expression: `(${queryElement.toString()})(${JSON.stringify(selector)},"css")`, objectGroup: 'browser-attach-frame' });
+      value(result);
+      try {
+        const { node } = await send('DOM.describeNode', { objectId: result.result.objectId });
+        if (!['IFRAME', 'FRAME'].includes(node.nodeName)) throw new Error('frame.path must resolve to iframe/frame elements');
+        frameId = node.frameId || node.contentDocument?.frameId;
+        if (!frameId) throw new Error('Frame document is not available yet');
+      } finally { await send('Runtime.releaseObjectGroup', { objectGroup: 'browser-attach-frame' }); }
+    } catch (error) {
+      error.message += '; frame.path entries are CSS selectors, e.g. "#content_iframe"';
+      throw failure(error, { parent_frame_id: parentFrameId, path_index: pathIndex, selector });
+    }
   }
   const candidates = scope.path ? frames.filter(f => f.id === frameId) : frames.filter(f => f.id !== frames[0].id);
   const matches = [];
@@ -146,16 +158,17 @@ async function resolveFrameOnce(cdp, value, sessions, tabId, args, budget) {
     }
     matches.push(frame.id);
   }
-  if (matches.length !== 1) throw new Error(`Frame locator must match exactly once; matched ${matches.length}`);
+  if (matches.length !== 1) throw failure(new Error(`Frame locator must match exactly once; matched ${matches.length}`), { locator: scope, matched_frame_ids: matches.slice(0, 10) });
   return matches[0];
 }
 
-export async function resolveFrame(cdp, value, sessions, tabId, args, budget) {
+export async function resolveFrame(cdp, value, sessions, tabId, args, budget, { wait = true } = {}) {
   while (true) {
     try { return await resolveFrameOnce(cdp, value, sessions, tabId, args, budget); }
     catch (error) {
+      if (!wait) throw error;
       if (!/Frame locator.*matched 0|Frame document.*not available|Selector.*matched 0|context.*destroyed|cannot find context/i.test(error.message)) throw error;
-      budget.describe?.(`frame ${JSON.stringify(args.frame)}; current=${error.message}`);
+      budget.describe?.(`frame ${JSON.stringify(args.frame)}; current=${error.message}`, error.diagnostics);
       await budget.run(() => new Promise(resolve => setTimeout(resolve, 20)));
     }
   }

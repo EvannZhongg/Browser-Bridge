@@ -41,7 +41,7 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
     try {
       const receipt = JSON.parse(params.payload);
       if (receipt.matched === true) operation.resolve();
-      else operation.reject(new Error('Click target changed or became covered during mouse dispatch. Incorrect target input was blocked; observe again before retrying.'));
+      else operation.reject(new Error('Click target changed or became covered during mouse dispatch. Further incorrect target input was blocked; outcome is unknown. Observe again before retrying.'));
     } catch (error) { operation.reject(error); }
   }
   function cancel(tabId) { pending.get(tabId)?.reject(new Error('Tab detached during click; outcome is unknown. Observe before retrying.')); }
@@ -51,9 +51,9 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
     if (args.coordinate_space != null && !['viewport', 'document'].includes(args.coordinate_space)) throw new Error('coordinate_space must be viewport or document');
     if (node && args.coordinate_space != null) throw new Error('coordinate_space applies to coordinate clicks only');
     const budget = args.budget || deadline(args.timeout_ms);
-    const obstruction = detail => Object.assign(new Error(`${detail}. ${budget.has_dispatched()
+    const obstruction = (detail, diagnostics) => Object.assign(new Error(`${detail}. ${budget.has_dispatched()
       ? 'Input has already been dispatched. Outcome is unknown; observe before continuing. Do not replay automatically.'
-      : 'No input was dispatched.'}`), { input_dispatched: budget.has_dispatched() });
+      : 'No input was dispatched.'}`), { input_dispatched: budget.has_dispatched(), diagnostics });
     let target = node?.target || { tabId };
     const send = (method, params) => budget.run(() => cdp(target, method, params));
     let point, view;
@@ -106,13 +106,22 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
     const { frameId } = hitNode;
     let hit = await send('DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
     const pseudo = hit.object.className === 'CSSPseudoElement';
-    if (pseudo) {
-      // Pseudo-elements are event targets through their originating element,
-      // but their Runtime wrappers are not Elements and have no matches().
+    if (pseudo || hit.object.className === 'ShadowRoot') {
+      let localPoint = point;
+      if (!pseudo && frameId && (await send('Page.getFrameTree')).frameTree.frame.id !== frameId) {
+        // Same-process frame quads are session-relative, while ShadowRoot hit
+        // testing expects the owning document's viewport coordinates.
+        const owner = await send('DOM.getFrameOwner', { frameId });
+        const { model } = await send('DOM.getBoxModel', { backendNodeId: owner.backendNodeId });
+        const { executionContextId } = await send('Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' });
+        const frameView = value(await send('Runtime.evaluate', { contextId: executionContextId,
+          expression: '({width: innerWidth, height: innerHeight})', returnByValue: true }));
+        localPoint = framePoint(point, model.content, frameView, true);
+      }
       const normalized = await send('Runtime.callFunctionOn', { objectId: hit.object.objectId,
-        functionDeclaration: 'function() { if (this.element?.nodeType !== 1) throw new Error("Pseudo-element has no originating element; no input was dispatched."); return this.element; }', objectGroup: 'browser-attach' });
+        functionDeclaration: normalizeHit.toString(), arguments: [{ value: localPoint.x }, { value: localPoint.y }], objectGroup: 'browser-attach' });
       value(normalized);
-      if (!normalized.result?.objectId) throw new Error('Pseudo-element could not be resolved; no input was dispatched.');
+      if (!normalized.result?.objectId) throw new Error('Hit element could not be resolved; no input was dispatched.');
       hit = { object: normalized.result };
       const { node: origin } = await send('DOM.describeNode', { objectId: hit.object.objectId });
       backendNodeId = origin.backendNodeId;
@@ -120,12 +129,14 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
     const hitTarget = value(await send('Runtime.callFunctionOn', { objectId: hit.object.objectId,
       functionDeclaration: describeHit.toString(), returnByValue: true }));
     if (pseudo) hitTarget.pseudo_element = true;
+    let relation = null;
     if (node) {
-      const unblocked = value(await send('Runtime.callFunctionOn', {
-        objectId: node.objectId, functionDeclaration: 'function(hit) { for (let e = hit; e; e = e.parentNode || e.host) if (e === this) return true; return false; }',
+      relation = value(await send('Runtime.callFunctionOn', {
+        objectId: node.objectId, functionDeclaration: hitRelation.toString(),
         arguments: [{ objectId: hit.object.objectId }], returnByValue: true,
       }));
-      if (!unblocked) throw obstruction(`Another element covers this ref. hit_target=${JSON.stringify(hitTarget)}; point=${JSON.stringify(point)}; frame_id=${JSON.stringify(node.frameId)}`);
+      if (!relation) throw obstruction(`Another element covers this ref. hit_target=${JSON.stringify(hitTarget)}; point=${JSON.stringify(point)}; frame_id=${JSON.stringify(node.frameId)}`,
+        { reason: 'obstructed', hit_target: hitTarget, point, coordinate_space: 'session_viewport_css_pixels', frame_id: node.frameId, hit_relation: null });
     }
     // Dispatch through the root widget so overlays in ancestor documents cannot
     // be bypassed by sending directly to an OOPIF widget. Guard every boundary.
@@ -149,19 +160,20 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
           blocker = value(await diagnostic.run(() => cdp(parent.target, 'Runtime.callFunctionOn', { objectId: resolved.object.objectId,
             functionDeclaration: describeHit.toString(), returnByValue: true })));
         } catch { /* Preserve the obstruction error even if its node disappears. */ }
-        throw obstruction(`Another element covers this frame. hit_target=${JSON.stringify(blocker ?? { backend_node_id: parentHit.backendNodeId })}; point=${JSON.stringify(rootPoint)}; blocked_frame_id=${JSON.stringify(parent.frameId)}`);
+        throw obstruction(`Another element covers this frame. hit_target=${JSON.stringify(blocker ?? { backend_node_id: parentHit.backendNodeId })}; point=${JSON.stringify(rootPoint)}; blocked_frame_id=${JSON.stringify(parent.frameId)}`,
+          { reason: 'frame_obstructed', hit_target: blocker ?? null, point: rootPoint, coordinate_space: 'session_viewport_css_pixels', blocked_frame_id: parent.frameId });
       }
       const ownerFrameId = parent.ownerFrameId || (await budget.run(() => cdp(parent.target, 'Page.getFrameTree'))).frameTree.frame.id;
       boundaries.push({ target: parent.target, backendNodeId: owner.backendNodeId, frameId: ownerFrameId });
       current = parent.target; currentView = parentView;
     }
-    return { target, point: rootPoint, hitTarget, frameId: node?.frameId || frameId, backendNodeId: node?.backendNodeId || backendNodeId, boundaries };
+    return { target, point: rootPoint, hitTarget, relation, frameId: node?.frameId || frameId, backendNodeId: node?.backendNodeId || backendNodeId, boundaries };
   }
   async function click(tabId, node, args) {
     const options = { ...clickOptions(args), hover: args.hover === true };
     const budget = args.budget || deadline(args.timeout_ms);
     const prepared = await prepare(tabId, node, { ...args, budget });
-    const { target, point: rootPoint, hitTarget, frameId, backendNodeId, boundaries } = prepared;
+    const { target, point: rootPoint, hitTarget, relation, frameId, backendNodeId, boundaries } = prepared;
     if (!options.hover && hitTarget.native_select) throw new Error("Native select popup is unsupported. No input was dispatched. Use browser_select_option by label/value/index; press Esc if a native popup is already open.");
     const name = `__attachClick_${crypto.randomUUID().replaceAll('-', '')}`;
     const guards = [], contexts = new Set();
@@ -200,8 +212,10 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
         commands.push(dispatch({ type: 'mouseReleased', button: options.button, buttons: 0, clickCount: count, modifiers: options.modifiers }));
       }
       await budget.run(() => delivery(Promise.all([Promise.all(commands), receipt])));
-      if (options.hover) return { hovered: rootPoint, hit_target: hitTarget, page_state: pageState, target_verified: true, events_trusted: true, application_result: 'not_checked', observe_again: true };
-      return { clicked: rootPoint, hit_target: hitTarget, page_state: pageState, target_verified: true, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
+      const verification = { target_verified: node ? true : null, delivery_verified: true, events_trusted: true,
+        target_verification: { basis: node ? 'element' : 'coordinate_hit', hit_relation: relation } };
+      if (options.hover) return { hovered: rootPoint, hit_target: hitTarget, page_state: pageState, ...verification, application_result: 'not_checked', observe_again: true };
+      return { clicked: rootPoint, hit_target: hitTarget, page_state: pageState, ...verification, application_result: 'not_checked', coordinate_space: 'viewport_css_pixels', frame_id: node?.frameId || frameId, button: options.button, click_count: options.click_count, observe_again: true };
     } finally {
       pending.delete(tabId);
       // A page handler may have opened a modal. Renderer cleanup can finish after
@@ -219,17 +233,36 @@ export function createClick(cdp, value, viewport, position, sessions, getTab, ge
 
 export function describeHit() {
   const element = this.nodeType === 3 ? this.parentElement : this;
+  if (element?.nodeType !== 1) throw new Error('Hit target is not an Element; no input was dispatched.');
   let clickable, disabled = false, nativeSelect = false;
   for (let parent = element; parent; parent = parent.assignedSlot || parent.parentElement || parent.getRootNode().host) {
     if (parent.tagName === 'SELECT' || parent.tagName === 'LABEL' && parent.control?.tagName === 'SELECT') nativeSelect = true;
     if (!clickable && parent.matches('button,a[href],input,select,textarea,summary,[role="button"],[role="link"],[onclick]')) clickable = parent;
     if (parent.matches(':disabled,[inert],[aria-disabled="true"]')) disabled = true;
   }
-  return { tag: element.tagName?.toLowerCase(), text: (element.innerText || element.textContent || '').slice(0, 300),
+  const rect = element.getBoundingClientRect(), style = element.ownerDocument.defaultView.getComputedStyle(element);
+  return { tag: element.tagName?.toLowerCase(), id: element.id || null, text: (element.innerText || element.textContent || '').slice(0, 300),
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, coordinate_space: 'frame_viewport_css_pixels',
+    position: style.position, z_index: style.zIndex, visibility: style.visibility,
     role: element.getAttribute('role'), disabled, clickable_hint: !!clickable,
     native_select: nativeSelect,
     clickable_target: clickable ? { tag: clickable.tagName.toLowerCase(), role: clickable.getAttribute('role'),
       text: (clickable.innerText || clickable.textContent || '').slice(0, 300) } : null };
+}
+
+export function normalizeHit(x, y) {
+  let element = this.element || (this.nodeType === 3 ? this.parentElement : this);
+  if (element?.nodeType === 11 && element.host) element = element.elementFromPoint(x, y);
+  if (element?.nodeType !== 1) throw new Error('Hit test did not resolve an Element; no input was dispatched.');
+  return element;
+}
+
+export function hitRelation(hit) {
+  if (hit === this) return 'same_node';
+  for (let node = hit; node; node = node.assignedSlot || node.parentNode || node.host) {
+    if (node === this) return 'composed_descendant';
+  }
+  return null;
 }
 
 function installGuard(name, options, expiryMs, verifyDelivery) {

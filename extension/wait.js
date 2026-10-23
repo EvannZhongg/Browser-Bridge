@@ -5,8 +5,8 @@ export function waitOptions(args) {
   if (!['attached', 'visible', 'actionable', 'text', 'url', 'network_idle'].includes(args.condition)) throw new Error('Unknown wait condition');
   const element = ['attached', 'visible', 'actionable', 'text'].includes(args.condition);
   if (element) {
+    if (!args.selector || args.ref != null) throw new Error(`${args.condition} wait requires a reusable selector${args.condition === 'text' ? '; use selector="body" for whole-page rendered text' : ''}`);
     targetOptions(args);
-    if (!args.selector) throw new Error('Element waits require a reusable selector');
   } else if (args.selector != null || args.ref != null || args.frame_id != null || args.frame != null || args.nth != null || args.selector_type != null || args.name != null) throw new Error('This wait condition does not use an element target');
   if (args.condition === 'text' && (Number(typeof args.expected === 'string') + Number(typeof args.previous === 'string') !== 1)) throw new Error('text wait requires exactly one of expected (substring) or previous (full prior text)');
   if (args.condition === 'url' && typeof args.expected !== 'string') throw new Error('url wait requires expected text (substring)');
@@ -71,7 +71,9 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
       await budget.run(() => new Promise(resolve => setTimeout(resolve, 50)));
     }
   } catch (error) {
-    throw Object.assign(new Error(`Wait for ${description} failed: ${error.message}; current=${JSON.stringify(current)}`), { input_dispatched: false });
+    throw Object.assign(new Error(`Wait for ${description} failed: ${error.message}; current=${JSON.stringify(current)}`), {
+      input_dispatched: false, diagnostics: error.diagnostics ?? { reason: 'wait_unsatisfied', condition: args.condition, current },
+    });
   }
 }
 

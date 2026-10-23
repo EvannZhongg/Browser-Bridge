@@ -84,6 +84,24 @@ test('frame paths resolve each strict iframe selector, and exact URL/title match
   assert.throws(()=>targetOptions({selector:'button',frame_id:'old',frame:{title:'Inner'}}),/never both/);
 });
 
+test('failed frame paths and unknown ids report bounded current candidates and retain diagnostics on timeout', async () => {
+  const frames = [{ id: 'main', url: 'https://test/' }, ...Array.from({ length: 20 }, (_, i) => ({ id: `child-${i}`, parentId: 'main', url: `https://test/${i}` }))];
+  const sessions = { frames: async () => frames, target: tabId => ({ tabId }) };
+  const cdp = async (target, method) => method === 'Runtime.evaluate'
+    ? { exceptionDetails: { text: 'Selector must match exactly one element; matched 0' } } : { executionContextId: 1 };
+  const value = result => { if (result.exceptionDetails) throw new Error(result.exceptionDetails.text); };
+  await assert.rejects(resolveFrame(cdp, value, sessions, 9, { frame: { path: ['content_iframe'] } }, deadline(100)), error => {
+    assert.equal(error.input_dispatched, false);
+    assert.equal(error.diagnostics.path_index, 0); assert.equal(error.diagnostics.selector, 'content_iframe');
+    assert.equal(error.diagnostics.candidates.length, 10); assert.equal(error.diagnostics.omitted_candidates, 11);
+    assert.match(error.message, /CSS selectors.*#content_iframe.*child-0/); return true;
+  });
+  await assert.rejects(resolveFrame(cdp, value, sessions, 9, { frame_id: 'old' }, deadline(100)), error => {
+    assert.equal(error.diagnostics.reason, 'frame_locator');
+    assert.equal(error.diagnostics.candidates[0].frame_id, 'main'); return true;
+  });
+});
+
 test('label locators use real control associations, normalize whitespace, and preserve strict ambiguity', () => {
   const field = labels => ({ nodeType: 1, tagName: 'INPUT', labels: labels.map(textContent => ({ textContent })),
     matches: () => false, closest: () => null, getBoundingClientRect: () => ({ width: 10, height: 10 }),
