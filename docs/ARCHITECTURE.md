@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.19.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.20.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -56,6 +56,8 @@ MCP 层将 `discover(kind=browsers/tabs)` 映射为内部 `list_browsers/list_ta
 7. **清理**：`tab_control(action="release")` 先移除可视标记，再 `debugger.detach`，最后才忘记 claim——detach 失败不会静默把标签交给别人。断连、标签关闭、浏览器重启、用户停止调试都会清理状态。
 
 claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；需要前台渲染时显式调用 `tab_control(action="activate")`。
+
+普通 file:// 文档复用同一套 claim、队列、CDP session、观察与输入流程。page-url.js 统一 HTTP(S)/file URL 及凭据校验，controller 通过 chrome.extension.isAllowedFileSchemeAccess 检查用户文件授权；发现结果反映该开关，接管、普通操作和 batch 每一步重新检查。navigation 对 URL 及历史目标调用同一个校验器，检查计入派发前的准备预算；权限检查迟到不会触发导航。释放、关闭和显式激活不受文件权限校验阻塞，detach 失败仍保留控制权。open_tab 与 fetch 保持 HTTP(S) 范围，不新增 host 权限或本地文件读取接口。内置 PDF 内容仍受浏览器调试边界约束，不承诺其 AX 或截图覆盖。
 
 ## 单页读取
 

@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.19.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.20.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
 
 本文供按需查阅，不会自动通过 MCP 发送给 agent。MCP 初始化 `instructions` 提供通用规则，工具 description 与参数 schema 提供调用说明；宿主应把 instructions 纳入模型上下文。
 
@@ -13,6 +13,8 @@
 5. 按任务核对页面结果，结束后 `browser_tab_control(action="release", tab_handle)`。
 
 `tab_id` 必须来自本连接最近一次标签发现；`tab_handle` 不能跨连接使用。同一标签只允许一个 owner。claim 可省略 `expected_url` / `expected_title`；提供时须与发现及接管时的身份精确一致。省略标题校验可容忍标题变化，接管后仍应检查返回的当前身份。
+
+普通 `file://` 页面使用相同流程：先在浏览器中打开文件，在 Chrome / Edge 的扩展详情中为 BrowserAttach 开启“允许访问文件网址”，再发现并接管。发现结果的 `controllable` 包含该开关检查；接管、每次操作以及导航到本地文件前都会重新检查，释放控制不受该检查阻塞。改变开关可能重载扩展并作废旧连接与句柄，此时重新发现浏览器及标签再接管。AX、截图、输入、导航和 ref 失效规则与 HTTP(S) 页面一致。内置 PDF 查看器的正文 AX 和截图能力不在本次支持保证内，仍受浏览器限制；不会开放浏览器内部页或任意扩展页。
 
 `browser_open_tab({browser_id, url, active:false})` 默认后台打开 HTTP(S) 标签，返回 tab_id；加载后仍需发现并接管。`browser_tab_control` 的 action 必填：
 
@@ -344,7 +346,7 @@ until 仅支持 DOM 模式，按文本子串查找已渲染且有尺寸的最深
 
 ### 导航
 
-browser_navigate 的 url 与 direction=back/forward 二选一，目的地必须是不带 URL 凭据的 HTTP(S) 页面；无历史条目时在派发前失败。
+browser_navigate 的 url 与 direction=back/forward 二选一，目的地必须是不带 URL 凭据的 HTTP(S) 或 file:// 页面；本地目标需开启扩展的文件访问权限，前进和后退也检查目的地权限。无历史条目或目的地不受支持时在派发前失败。
 
 | 参数 | 默认 / 说明 |
 |---|---|
@@ -455,7 +457,7 @@ Authorization、Proxy-Authorization、Cookie、Set-Cookie 及 JSON/form 中命�
 
 ## 限制与排查
 
-- 范围为 Chrome / Edge 的 HTTP(S) 页面，不含浏览器内部页、扩展页、本地文件、Firefox / WebKit、系统原生 UI、下载管理和网络拦截。
+- 范围为 Chrome / Edge 的 HTTP(S) 与授权 file:// 页面，不含浏览器内部页、扩展页、Firefox / WebKit、系统原生 UI、下载管理和网络拦截；不保证内置 PDF 查看器的正文访问。open_tab 和 fetch 仍仅接受 HTTP(S)。
 - 后台操作要求浏览器运行且页面未冻结；窗口、渲染状态和网站弹窗仍可能影响送达。原生菜单或标签拖动捕获输入时先结束该交互。
 - Hub 日志在配对文件同目录的 hub.log；`browser-attach status` 查看连接，`browser-attach stop` 停止 Hub。
 - 宿主将大结果保存为 Artifact 后的长行截断，与工具游标分页不同；宿主适配与升级排查见 [Agent 集成](AGENT-INTEGRATION.md)。

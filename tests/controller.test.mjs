@@ -17,7 +17,8 @@ function fixture() {
   let customNodes;
   const axTrees = [];
   let binding;
-  const api = { storage: { session: { get: async () => structuredClone(stored), set: async value => { stored = structuredClone(value); } } },
+  const api = { extension: { isAllowedFileSchemeAccess: async () => true },
+    storage: { session: { get: async () => structuredClone(stored), set: async value => { stored = structuredClone(value); } } },
     tabGroups: { get: async id => { if (!groups.has(id)) throw new Error('Unknown group'); return groups.get(id); },
       update: async (id, args) => { Object.assign(groups.get(id), args); calls.push({ method: 'tabGroups.update', id, args }); } },
     action: {
@@ -91,6 +92,93 @@ function fixture() {
   const ref = snapshot => snapshot.snapshot.match(/\[([^\]]+)\] button/)[1];
   return { controller, exec, claim, ref, calls, api, notices, tabs, block: () => { blocked = true; }, modal: () => { modalOnClick = true; }, nodes: value => { customNodes = value; } };
 }
+
+test('file discovery and claim check the current file access setting without activating the tab', async () => {
+  const f = fixture();
+  f.tabs.get(9).url = 'file:///C:/中文 folder/sample.html';
+  let allowed = false;
+  f.api.extension.isAllowedFileSchemeAccess = async () => allowed;
+  assert.equal((await f.exec('list_tabs')).tabs[0].controllable, false);
+  await assert.rejects(f.exec('claim_tab'), /Local file access is disabled.*Allow access to file URLs/);
+  assert.equal(f.controller.claimedCount(), 0);
+  assert.equal(f.calls.length, 0);
+  allowed = true;
+  assert.equal((await f.exec('list_tabs')).tabs[0].controllable, true);
+  assert.equal((await f.exec('claim_tab')).activation_requested, false);
+  await assert.rejects(f.exec('claim_tab', { tab_handle: 'other' }, 'two'), /another session/);
+  assert.equal(f.calls.filter(c => c.method === 'attach').length, 1);
+  assert.ok(!f.calls.some(c => ['tabs.update', 'windows.update', 'Page.bringToFront'].includes(c.method)));
+});
+
+test('file pages reuse AX refs, screenshot, native input, and navigation invalidation', async () => {
+  const f = fixture(); f.tabs.get(9).url = 'file:///C:/sample.html'; await f.exec('claim_tab');
+  const tree = await f.exec('snapshot', { max_nodes: 2 });
+  assert.match(tree.snapshot, /button "Submit"/);
+  assert.equal((await f.exec('screenshot')).data, 'image-data');
+  const ref = f.ref(tree);
+  assert.equal((await f.exec('click', { ref })).delivery_verified, true);
+  await f.exec('press_key', { key: 'Enter' });
+  assert.ok(f.calls.some(c => c.method === 'Input.dispatchKeyEvent'));
+  const destination = 'file:///C:/中文 folder/next.html';
+  const result = await f.exec('navigate', { url: destination });
+  assert.equal(result.url, new URL(destination).href);
+  assert.equal(f.calls.filter(c => c.method === 'Page.navigate').length, 1);
+  await assert.rejects(f.exec('click', { ref }), /stale/);
+  await assert.rejects(f.exec('snapshot', { cursor: tree.next_cursor }), /stale/);
+  await f.exec('release_tab');
+  assert.equal(f.controller.claimedCount(), 0);
+  await assert.rejects(f.exec('snapshot'), /not claimed/);
+});
+
+test('revoked file permission blocks observations and input but preserves reliable release', async () => {
+  const f = fixture(); f.tabs.get(9).url = 'file:///C:/sample.html'; await f.exec('claim_tab');
+  await f.exec('snapshot');
+  f.api.extension.isAllowedFileSchemeAccess = async () => false;
+  const count = f.calls.length;
+  for (const command of ['snapshot', 'screenshot', 'click', 'press_key', 'navigate']) {
+    await assert.rejects(f.exec(command, { selector: '#submit', key: 'Enter', url: 'https://example.com/' }), /Local file access is disabled/);
+  }
+  assert.equal(f.calls.length, count);
+  const detach = f.api.debugger.detach;
+  f.api.debugger.detach = async () => { throw new Error('detach failed'); };
+  await assert.rejects(f.exec('release_tab'), /detach failed/);
+  assert.equal(f.controller.claimedCount(), 1);
+  f.api.debugger.detach = detach;
+  await f.exec('release_tab');
+  assert.equal(f.controller.claimedCount(), 0);
+});
+
+test('file batch rechecks permission between dispatched steps without replay', async () => {
+  const f = fixture(); f.tabs.get(9).url = 'file:///C:/sample.html'; await f.exec('claim_tab');
+  let allowed = true;
+  f.api.extension.isAllowedFileSchemeAccess = async () => allowed;
+  const send = f.api.debugger.sendCommand;
+  f.api.debugger.sendCommand = async (target, method, args) => {
+    const result = await send(target, method, args);
+    if (method === 'Input.dispatchMouseEvent' && args.type === 'mouseReleased') allowed = false;
+    return result;
+  };
+  const result = await f.exec('batch', { steps: [{ action: 'click', selector: '#submit' }, { action: 'press_key', key: 'Enter' }] });
+  assert.equal(result.failed_step, 1); assert.equal(result.results.length, 1);
+  assert.match(result.error, /Local file access is disabled/);
+  assert.equal(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent' && c.args.type === 'mouseReleased').length, 1);
+  assert.ok(!f.calls.some(c => c.method === 'Input.dispatchKeyEvent'));
+});
+
+test('HTTP to file navigation requires file access before dispatch; restricted URLs remain unclaimable', async () => {
+  const f = fixture(); await f.claim();
+  f.api.extension.isAllowedFileSchemeAccess = async () => false;
+  await assert.rejects(f.exec('navigate', { url: 'file:///C:/sample.html' }), /Local file access is disabled/);
+  assert.ok(!f.calls.some(c => c.method === 'Page.navigate'));
+  f.api.extension.isAllowedFileSchemeAccess = async () => true;
+  assert.equal((await f.exec('navigate', { url: 'file:///C:/sample.html' })).url, 'file:///C:/sample.html');
+  await f.exec('release_tab');
+  for (const url of ['chrome://settings', 'edge://settings', 'chrome-extension://other/index.html', 'https://user:pass@example.com/', 'data:text/html,hello']) {
+    f.tabs.get(9).url = url;
+    assert.equal((await f.exec('list_tabs')).tabs[0].controllable, false);
+    await assert.rejects(f.exec('claim_tab'), /Only http\(s\) and file/);
+  }
+});
 
 test('large AX observations page without exceeding the function argument limit', async () => {
   const f = fixture(); await f.claim();

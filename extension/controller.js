@@ -19,6 +19,7 @@ import { boundedRead, installOutcomeObserver } from './outcomes.js';
 import { createDrag, dragOptions } from './drag.js';
 import { createFetches, capturePage } from './fetch.js';
 import { errorData } from './errors.js';
+import { pageUrl } from './page-url.js';
 
 export function createController(api, notify = () => {}) {
   const claims = new Map();
@@ -35,7 +36,7 @@ export function createController(api, notify = () => {}) {
   const dialogWaiters = new Map();
   const visuals = createVisuals(api);
   const clickVisuals = createClickVisuals(api);
-  const navigation = createNavigation(cdp);
+  const navigation = createNavigation(cdp, controlUrl);
   const diagnostics = createDiagnostics(cdp);
   const sessions = createSessions(cdp, invalidateFrame, (tabId, sessionId) => {
     diagnostics.detach(tabId, sessionId);
@@ -60,6 +61,14 @@ export function createController(api, notify = () => {}) {
       throw new Error('Only http(s) pages without URL credentials can be controlled');
     }
     return parsed.href;
+  }
+
+  async function controlUrl(url) {
+    const normalized = pageUrl(url);
+    if (normalized.startsWith('file:') && !await api.extension.isAllowedFileSchemeAccess()) {
+      throw new Error('Local file access is disabled. Enable "Allow access to file URLs" in the BrowserAttach extension settings in Chrome/Edge.');
+    }
+    return normalized;
   }
 
   async function cdp(target, method, params = {}) {
@@ -386,7 +395,7 @@ export function createController(api, notify = () => {}) {
         try {
           if (claims.get(tabId) !== claim) throw new Error('Tab control ended during batch; observe before continuing');
           if (documents.get(tabId) !== documentVersion) throw new Error('Document changed during batch; observe before continuing');
-          httpUrl((await budget.run(() => api.tabs.get(tabId))).url);
+          await budget.run(async () => controlUrl((await api.tabs.get(tabId)).url));
           const { action: command, ...inputArgs } = step;
           const stepBudget = budget.child(step.timeout_ms ?? 30000, command === 'wait' ? 'wait' : 'input');
           results.push(await perform(tabId, command, { ...inputArgs, dialog_policy: step.dialog_policy ?? args.dialog_policy ?? 'ask', budget: stepBudget }));
@@ -475,7 +484,7 @@ export function createController(api, notify = () => {}) {
     if (command === 'release_tab') { await release(tabId); return { released: true }; }
     if (command === 'navigate') {
       await args.observe_start?.();
-      const url = args.direction != null ? undefined : httpUrl(args.url);
+      const url = args.direction != null ? undefined : args.url;
       if (args.direction != null && args.url != null) throw new Error('Provide url or direction, never both');
       evaluations.forget(tabId);
       snapshots.delete(tabId);
@@ -862,8 +871,13 @@ export function createController(api, notify = () => {}) {
     }
     if (command === 'list_tabs') {
       const tabs = (await api.tabs.query({})).filter(tab => !temporaryTabs.has(tab.id));
+      const fileAccess = tabs.some(tab => tab.url?.startsWith('file:')) && await api.extension.isAllowedFileSchemeAccess();
+      const controllable = url => {
+        try { return !pageUrl(url).startsWith('file:') || fileAccess; }
+        catch { return false; }
+      };
       return { tabs: tabs.map(tab => ({ tab_id: tab.id, window_id: tab.windowId, title: tab.title || '', url: tab.url || '',
-        active: tab.active, group_id: tab.groupId, controllable: /^https?:\/\//.test(tab.url || '') })) };
+        active: tab.active, group_id: tab.groupId, controllable: controllable(tab.url) })) };
     }
     if (command === 'release_owner') { fetches.forget(owner); return await releaseMatching(claim => claim.owner === owner); }
     const tabId = args.tab_id;
@@ -873,7 +887,7 @@ export function createController(api, notify = () => {}) {
         if (temporaryTabs.has(tabId)) throw new Error('Tab is already controlled by a fetch operation');
         const tab = await api.tabs.get(tabId);
         if ((args.expected_url != null && tab.url !== args.expected_url) || (args.expected_title != null && tab.title !== args.expected_title)) throw new Error('Tab title/URL changed. List tabs again or omit optional identity guards to claim by tab_id.');
-        httpUrl(tab.url);
+        await controlUrl(tab.url);
         const existing = claims.get(tabId);
         if (existing) {
           if (existing.owner === owner && existing.handle === args.tab_handle) return { claimed: true };
@@ -900,7 +914,7 @@ export function createController(api, notify = () => {}) {
         return { closed: true, tab_id: tabId };
       }
       if (command === 'release_tab') return await action(tabId, command, args);
-      httpUrl((await api.tabs.get(tabId)).url);
+      await controlUrl((await api.tabs.get(tabId)).url);
       const result = await perform(tabId, command, args);
       // A batch can stop because its tab closed. Preserve the partial results
       // instead of losing them to a metadata lookup on the vanished tab.

@@ -1,8 +1,17 @@
 # 验证报告
 
-当前版本 **0.19.0**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.20.0**（2026-10-23）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `node --test tests/*.test.mjs`：226 项通过。新增 file:// 发现与接管的实时授权、普通操作与 batch 中途停权、HTTP→file 导航派发前检查、文件导航后的 ref/分页失效、停权后可靠释放及 detach 失败保留控制权、历史目标权限检查和迟到权限回执不派发导航。
+- Chromium 156、Edge 155 headless：`node scripts/live-smoke.mjs --executable <浏览器路径> --files` 各通过 5 组集成检查。复用扩展 → Hub → stdio MCP 链路，验证中文/空格/# 文件路径、真实扩展设置中的文件权限开关、发现后独占接管且不激活、主文档与本地 iframe AX、PNG 截图、ref 原生 fill/type/按键/click 与 trusted 事件、DOM batch、文件 URL/前进/后退及 HTTP↔file 导航、旧 ref/cursor 失效、释放/连接断开/关闭后的控制权清理。测试脚本只在临时 profile 的扩展管理页切换权限；权限变更触发扩展重载后重新发现浏览器连接。
+- Chromium 156 原有 HTTP(S) `live-smoke`：254 次工具调用通过，包含 fetch、正文查询与分页、输入、对话框、上传、OOPIF、日志及大 AX 树回归。
+- `npm run test:package`：包外安装与 stdio MCP 通过，23 个工具、52 个发布文件，无配对密钥；未增加依赖或扩展权限。
+- 本机部署：Hub 已停止并从工作区重启，健康接口为 0.20.0 / ready；Chrome、Edge 均自动重载并上报 0.20.0。稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 manifest 为 0.20.0，其余 33 个非生成源码/资源文件 SHA-256 与工作区一致。已有 MCP 客户端需重新连接以刷新工具描述与连接句柄。
+- 当前边界：open_tab / fetch 仍仅支持 HTTP(S)；浏览器内部页和任意扩展页仍拒绝接管。内置 PDF 正文 AX/截图兼容性未纳入本次验收。
+
+## 0.19.0 验证
 
 - `npm test`：219 项通过。覆盖 ShadowRoot 命中归一化、同进程子 frame 的局部命中坐标、slot/ShadowRoot 祖先关系、归一化后仍拒绝遮挡、frame 候选诊断及超时保留、select 的只读准备和继承 inert、文本等待缺 selector 提示，以及扩展 → Hub → 客户端 → stdio MCP 的结构化错误证据传递。保留原有输入、导航、所有权、清理和升级回归。
 - Chromium 156、Edge 155 headless：`--issues` 各 10 个场景、`--primitives` 各 21 个场景、`--extended` 各 13 个场景通过。新增场景验证闭合 Shadow DOM 的真实 trusted 点击与 userActivation、实际 ShadowRoot 上的命中归一化、遮挡节点 rect/样式诊断、纯坐标验证范围、隐藏 select 的单步/batch 一致性和禁用/inert 拒绝、frame 定位候选、同进程与 OOPIF 的嵌套滚动/缩放/高度变化、元素截图、上传后 reload 及显式补填、求值超时后已观察到导航的 post_action。

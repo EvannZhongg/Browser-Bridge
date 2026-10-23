@@ -1,7 +1,8 @@
 import { NAVIGATION_MAX_TIMEOUT_MS } from './limits.js';
+import { pageUrl } from './page-url.js';
 
 // Lifecycle events can precede the Page.navigate reply. Keep them until its loader is known.
-export function createNavigation(cdp) {
+export function createNavigation(cdp, validateUrl = pageUrl) {
   const pending = new Map();
   function event(tabId, method, params) { pending.get(tabId)?.event(method, params); }
   function cancel(tabId, reason) { pending.get(tabId)?.cancel(reason); }
@@ -9,23 +10,22 @@ export function createNavigation(cdp) {
     if (!['commit', 'domcontentloaded', 'load'].includes(wait_until)) throw new Error('wait_until must be commit, domcontentloaded or load');
     if (!Number.isInteger(timeout_ms) || timeout_ms < 100 || timeout_ms > NAVIGATION_MAX_TIMEOUT_MS) throw new Error('timeout_ms must be 100..40000');
     const end = Date.now() + timeout_ms;
-    async function prepare(method) {
+    async function prepare(operation) {
       const remaining = end - Date.now(); let timer;
       try {
         if (remaining <= 0) throw new Error('Navigation preparation timed out; no navigation was dispatched');
-        return await Promise.race([cdp(tabId, method), new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Navigation preparation timed out; no navigation was dispatched')), remaining); })]);
+        return await Promise.race([operation(), new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Navigation preparation timed out; no navigation was dispatched')), remaining); })]);
       } finally { clearTimeout(timer); }
     }
     let entry, mainId;
     if (direction != null) {
       if (!['back', 'forward'].includes(direction) || url != null) throw new Error('Provide URL or direction=back/forward, never both');
-      const history = await prepare('Page.getNavigationHistory');
+      const history = await prepare(() => cdp(tabId, 'Page.getNavigationHistory'));
       entry = history.entries[history.currentIndex + (direction === 'back' ? -1 : 1)];
       if (!entry) throw new Error(`No ${direction} history entry; no navigation was dispatched`);
-      const destination = new URL(entry.url);
-      if (!['http:', 'https:'].includes(destination.protocol) || destination.username || destination.password) throw new Error('History entry is outside supported HTTP(S) scope; no navigation was dispatched');
-      mainId = (await prepare('Page.getFrameTree')).frameTree.frame.id;
-    }
+      await prepare(() => validateUrl(entry.url));
+      mainId = (await prepare(() => cdp(tabId, 'Page.getFrameTree'))).frameTree.frame.id;
+    } else url = await prepare(() => validateUrl(url));
     let result, currentDocument, completedDocument, resolveDone, rejectDone, timer;
     const events = [];
     const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });

@@ -17,6 +17,7 @@ Drive the Chrome / Edge tabs you already have open and already signed in from an
 ## What it does
 
 - Discover multiple browser profiles, pick one precisely, claim a tab exclusively, and release it when done.
+- Control existing ordinary `file://` tabs after enabling BrowserAttach's **Allow access to file URLs** setting in the browser's extension details; use the same discovery, claim, observation and input tools.
 - Read the accessibility tree, query names/values/nearby field context, inspect field values and supported editor models; click, fill and type through refs or strict CSS/XPath, HTML label, placeholder and AX role/name locators. Type can also target the currently focused field explicitly.
 - Native pointer hover, stepped drags and conditional waits; select HTML options without opening a native popup.
 - Navigate and go back/forward, open or close tabs, handle JavaScript dialogs, upload local files, and capture the whole page or a single element.
@@ -96,7 +97,7 @@ Claiming and ordinary input never activate a tab or window; call `browser_tab_co
 | `browser_wait` | Read-only wait for an element, text, URL or network idle |
 | `browser_click` / `browser_hover` / `browser_drag` / `browser_select_option` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_scroll` | Native/DOM input, pointer hover and drag, option selection, character typing and scrolling |
 | `browser_batch` | Run 1–20 click/fill/type/press_key/hover/scroll/select_option/wait steps in one queue; stops on the first failure and returns partial results |
-| `browser_navigate` | HTTP(S) navigation and load waiting |
+| `browser_navigate` | HTTP(S)/file navigation, back/forward and load waiting; local destinations require file access |
 | `browser_handle_dialog` | alert, confirm, prompt |
 | `browser_upload_file` | Native file input or an intercepted file chooser |
 | `browser_screenshot` | Viewport or full-page PNG with coordinate mapping |
@@ -129,7 +130,7 @@ MCP client → Node.js stdio MCP → 127.0.0.1 Hub
                                   ↕ local pairing
                           Chrome / Edge MV3 extension
                                   ↓ chrome.debugger / CDP
-                               existing HTTP(S) tabs
+                               existing HTTP(S) / authorized file:// tabs
 ```
 
 Each MCP connection holds its own control and handles cannot be used across connections. Disconnecting or stopping debugging releases control. The client endpoint requires a Bearer key and rejects web page Origins; the extension verifies a fixed Origin, key and version. `browser_evaluate` can read and write data with the page's existing sign-in state; after it runs, snapshot pagination expires while refs to the original nodes still resolve; a timeout or error may already have had an effect and must not be replayed automatically. No generic CDP tool is exposed.
@@ -138,7 +139,7 @@ Logs are collected from claim time, survive navigation and are cleared on releas
 
 The extension holds debugger permission and client actions can use existing site sign-in state; only connect clients you trust. Web page content must not be treated as user authorization. The pairing key and the generated `config.generated.js` must not be committed or published; the packaging check rejects packages that contain that file.
 
-Only HTTP(S) pages in Chrome / Edge are supported today. Download management, network interception and Firefox / WebKit are not supported. Cross-process iframes use recursive session routing covering snapshots, input, uploads and logs; clicks in perspective-transformed iframes are refused explicitly. Native pointer input requires an active, unsuspended tab in a non-minimized window, and focus and document visibility are diagnostic only; when the tab is not ready it returns without dispatch and suggests tab_control(action=activate) instead of stealing focus. Background screenshots may time out because the browser pauses rendering; native menus and tab drags may also suppress input.
+Chrome / Edge HTTP(S) pages and existing ordinary `file://` tabs with extension file access enabled are supported. File access is checked during discovery, claim, operations and navigation, including history destinations. `open_tab` and `fetch` still accept HTTP(S) only. Built-in PDF viewer AX/content and screenshots are browser-dependent and are not guaranteed; browser internal pages and arbitrary extension pages remain outside scope. Download management, network interception and Firefox / WebKit are not supported. Cross-process iframes use recursive session routing covering snapshots, input, uploads and logs; clicks in perspective-transformed iframes are refused explicitly. Native pointer input requires an active, unsuspended tab in a non-minimized window, and focus and document visibility are diagnostic only; when the tab is not ready it returns without dispatch and suggests tab_control(action=activate) instead of stealing focus. Background screenshots may time out because the browser pauses rendering; native menus and tab drags may also suppress input.
 
 ## Local development
 

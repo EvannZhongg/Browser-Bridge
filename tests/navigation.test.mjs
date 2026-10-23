@@ -63,6 +63,34 @@ test('history same-document and BFCache restoration complete without waiting for
   }
 });
 
+test('file history uses the same permission validator as URL navigation before dispatch', async () => {
+  const calls = [], checked = [];
+  let allowed = false, navigation;
+  navigation = createNavigation(async (tab, method, params) => {
+    calls.push(method);
+    if (method === 'Page.getNavigationHistory') return { currentIndex: 1, entries: [{ id: 1, url: 'file:///C:/previous.html' }, { id: 2, url: 'https://test/' }] };
+    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+    navigation.event(9, 'Page.navigatedWithinDocument', { frameId: 'main' });
+    return {};
+  }, async url => { checked.push(url); if (!allowed) throw new Error('file access disabled'); return url; });
+  await assert.rejects(navigation.navigate(9, undefined, { direction: 'back' }), /file access disabled/);
+  await assert.rejects(navigation.navigate(9, 'file:///C:/next.html'), /file access disabled/);
+  assert.deepEqual(calls, ['Page.getNavigationHistory']);
+  allowed = true;
+  assert.equal((await navigation.navigate(9, undefined, { direction: 'back' })).navigated_to, 'file:///C:/previous.html');
+  assert.deepEqual(checked, ['file:///C:/previous.html', 'file:///C:/next.html', 'file:///C:/previous.html']);
+  assert.equal(calls.filter(method => method === 'Page.navigateToHistoryEntry').length, 1);
+});
+
+test('a delayed file permission check cannot dispatch navigation after the preparation deadline', async () => {
+  const calls = []; let allow;
+  const navigation = createNavigation(async (tab, method) => { calls.push(method); return {}; }, () => new Promise(resolve => { allow = resolve; }));
+  await assert.rejects(navigation.navigate(9, 'file:///C:/next.html', { timeout_ms: 100 }), /preparation timed out.*no navigation was dispatched/);
+  allow('file:///C:/next.html');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, []);
+});
+
 test('URL navigation follows a replacement main loader, ignoring old and child lifecycle events', async () => {
   let navigation, calls = 0;
   navigation = createNavigation(async () => {

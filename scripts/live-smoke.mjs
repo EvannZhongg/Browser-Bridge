@@ -6,19 +6,22 @@ import { once } from 'node:events';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import WebSocket from 'ws';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { setup } from '../src/setup.mjs';
-import { ROOT, DEFAULT_CONFIG, VERSION } from '../src/config.mjs';
+import { ROOT, DEFAULT_CONFIG, VERSION, loadConfig } from '../src/config.mjs';
 import { startHub } from '../src/hub.mjs';
+import { AttachClient } from '../src/client.mjs';
 
-const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, connected: { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, connected: { type: 'boolean', default: false }, files: { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a Chromium/Edge browser that permits --load-extension');
+if (values.files && values.connected) throw new Error('--files requires a disposable browser profile');
 const temp = await mkdtemp(join(tmpdir(), 'attach-live-'));
 const checks = [], calls = [];
-let browser, hub, cdp, mcp;
+let browser, hub, cdp, mcp, command;
 const html = `<!doctype html><meta charset="utf-8"><title>Attach upload fixture</title>
 <label>Single<input id="single" type="file"></label>
 <label>Multiple<input id="multiple" type="file" multiple></label>
@@ -134,7 +137,7 @@ try {
   cdp = new WebSocket(`ws://127.0.0.1:${active[0]}${active[1]}`); await once(cdp, 'open');
   let id = 0; const pending = new Map();
   cdp.on('message', raw => { const data = JSON.parse(raw.toString()); const item = pending.get(data.id); if (item) { pending.delete(data.id); data.error ? item.reject(new Error(data.error.message)) : item.resolve(data.result); } });
-  const command = (method, params) => new Promise((resolve, reject) => { const requestId = ++id; pending.set(requestId, { resolve, reject }); cdp.send(JSON.stringify({ id: requestId, method, params })); });
+  command = (method, params, sessionId) => new Promise((resolve, reject) => { const requestId = ++id; pending.set(requestId, { resolve, reject }); cdp.send(JSON.stringify({ id: requestId, method, params, sessionId })); });
   await command('Target.createTarget', { url });
   }
   mcp = new Client({ name: 'live-test', version: '1' });
@@ -155,6 +158,9 @@ try {
   }, 'extension connection');
   assert.ok(browsers[0].capabilities.includes('upload_file'));
   const browserId = browsers[0].browser_id;
+  if (values.files) {
+    await checkFiles({ browserId, call, rawCall, configPath });
+  } else {
   const fetchArgs = { browser_id: browserId };
   const activeBefore = (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.filter(t => t.active).map(t => t.tab_id);
   let fetched = await call('fetch', { ...fetchArgs, url: url + 'fetch/redirect', wait_until: 'network_idle', max_chars: 5 });
@@ -493,9 +499,10 @@ try {
   assert.match(largeNext.snapshot, /group "Large row 0"/);
   checks.push(`12000 semantic DOM nodes snapshot/pagination with max_nodes=1 (${Date.now() - largeSnapshotStarted} ms, ${largeSnapshot.total_node_count} rendered AX entries)`);
   await call('tab_control', { ...handle, action: 'release' });
+  }
   const report = { date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()), family: values.family, user_agent: browsers[0].user_agent, extension_version: VERSION, checks, calls: calls.length, results: calls };
   const out = resolve(ROOT, 'test-results'); await mkdir(out, { recursive: true });
-  await writeFile(join(out, `npm-live-${values.family}.json`), JSON.stringify(report, null, 2));
+  await writeFile(join(out, `npm-live-${values.family}${values.files ? '-files' : ''}.json`), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, results: undefined }, null, 2));
 } finally {
   await mcp?.close().catch(() => {});
@@ -516,4 +523,103 @@ try {
   await new Promise(resolve => fixture.close(resolve));
   // Browser teardown may hold profile files briefly on Windows.
   await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }).catch(() => {});
+}
+
+async function checkFiles({ browserId, call, rawCall, configPath }) {
+  const config = await loadConfig(configPath), other = new AttachClient(config);
+  await mkdir(resolve(ROOT, 'test-results'), { recursive: true });
+  const directory = join(temp, '中文 space'); await mkdir(directory);
+  const file = join(directory, 'local #1.html'), next = join(directory, 'next.html');
+  const fileUrl = pathToFileURL(file).href, nextUrl = pathToFileURL(next).href;
+  await writeFile(file, `<!doctype html><meta charset="utf-8"><title>Local file fixture</title>
+    <h1>本地页面 AX 正文</h1><label>Name<input id="name"></label><button id="go">Increment</button>
+    <p id="state">0</p><iframe src="child.html"></iframe><script>
+    window.count=0;window.trusted=[];go.onclick=e=>{state.textContent=++window.count;window.trusted.push(e.isTrusted)};
+    document.querySelector('#name').oninput=e=>window.trusted.push(e.isTrusted);</script>`);
+  await writeFile(join(directory, 'child.html'), '<title>Local child</title><button>Local frame button</button>');
+  await writeFile(next, '<title>Next local file</title><h1>Next document</h1>');
+  const { targetId: settingsTarget } = await command('Target.createTarget', { url: values.family === 'edge' ? 'edge://extensions/' : 'chrome://extensions/', background: true });
+  const { sessionId } = await command('Target.attachToTarget', { targetId: settingsTarget, flatten: true });
+  async function fileAccess(enabled) {
+    const result = await command('Runtime.evaluate', { expression: `new Promise((resolve,reject)=>chrome.developerPrivate.updateExtensionConfiguration({extensionId:${JSON.stringify(config.extension_id)},fileAccess:${enabled}},()=>chrome.runtime.lastError?reject(Error(chrome.runtime.lastError.message)):resolve(true)))`, awaitPromise: true, returnByValue: true }, sessionId);
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+    // File access changes reload the extension and replace its connection identity.
+    await until(async () => {
+      const browser = (await call('discover', { kind: 'browsers' })).browsers[0];
+      if (!browser) return false;
+      browserId = browser.browser_id;
+      return true;
+    }, 'extension after file permission change');
+  }
+  const list = () => call('discover', { kind: 'tabs', browser_id: browserId });
+  const claim = tab => call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id, expected_url: tab.url });
+  const rejected = async (method, args, pattern) => {
+    const result = await rawCall(method, args); assert.equal(result.isError, true); assert.match(result.content[0].text, pattern);
+  };
+  let localTarget;
+  try {
+    // --load-extension permits initial loading without persisting developer mode.
+    const developerMode = await command('Runtime.evaluate', { expression: 'chrome.developerPrivate.updateProfileConfiguration({inDeveloperMode:true})', awaitPromise: true }, sessionId);
+    if (developerMode.exceptionDetails) throw new Error(developerMode.exceptionDetails.exception?.description || developerMode.exceptionDetails.text);
+    await fileAccess(false);
+    localTarget = (await command('Target.createTarget', { url: fileUrl })).targetId;
+    let tab = await until(async () => (await list()).tabs.find(t => t.url === fileUrl && t.title === 'Local file fixture'), 'local file fixture');
+    assert.equal(tab.controllable, false);
+    await rejected('claim_tab', { browser_id: browserId, tab_id: tab.tab_id }, /Local file access is disabled/);
+    checks.push('file access off: discovery marks unavailable, claim fails before attach');
+    await fileAccess(true);
+    tab = (await list()).tabs.find(t => t.tab_id === tab.tab_id); assert.equal(tab.controllable, true);
+    await assert.rejects(other.call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id }), /latest/);
+    const activeBefore = (await list()).tabs.filter(t => t.active).map(t => t.tab_id);
+    const handle = { tab_handle: (await claim(tab)).tab_handle };
+    assert.deepEqual((await list()).tabs.filter(t => t.active).map(t => t.tab_id), activeBefore);
+    await other.call('list_tabs', { browser_id: browserId });
+    await assert.rejects(other.call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id }), /another MCP session/);
+    const tree = await call('snapshot', handle);
+    assert.match(tree.snapshot, /本地页面 AX 正文/); assert.match(tree.snapshot, /Local frame button/); assert.deepEqual(tree.omitted_frames, []);
+    const button = tree.snapshot.match(/\[([^\]]+)\] button "Increment"/)[1];
+    const field = tree.snapshot.match(/\[([^\]]+)\] textbox "Name"/)[1];
+    await call('evaluate', { ...handle, expression: 'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))' });
+    const image = await rawCall('screenshot', handle);
+    assert.ok(!image.isError); const png = image.content.find(c => c.type === 'image'); assert.ok(png);
+    assert.equal(Buffer.from(png.data, 'base64').subarray(1, 4).toString(), 'PNG');
+    await writeFile(resolve(ROOT, 'test-results', `file-${values.family}.png`), Buffer.from(png.data, 'base64'));
+    await call('fill', { ...handle, ref: field, text: 'local' });
+    await call('type', { ...handle, ref: field, text: ' file' });
+    assert.equal((await call('read_text', { ...handle, selector: '#name', mode: 'value' })).text, 'local file');
+    await call('press_key', { ...handle, key: 'Tab' });
+    await call('click', { ...handle, ref: button });
+    const evaluate = async expression => (await call('evaluate', { ...handle, expression })).value;
+    assert.equal(await evaluate('window.count'), 1);
+    assert.ok((await evaluate('window.trusted')).every(Boolean));
+    const batch = await call('batch', { ...handle, steps: [{ action: 'fill', selector: '#name', text: 'DOM file', mode: 'dom' }, { action: 'click', selector: '#go', mode: 'dom' }] });
+    assert.equal(batch.completed, true); assert.equal(await evaluate('window.count'), 2);
+    checks.push('Unicode/space/# file path: exclusive observed claim, no activation, main/iframe AX, PNG, native ref fill/type/key/click with trusted events, DOM batch');
+    const paged = await call('snapshot', { ...handle, max_nodes: 1 });
+    assert.ok(paged.next_cursor);
+    const moved = await call('navigate', { ...handle, url: nextUrl }); assert.equal(moved.url, nextUrl); assert.match(moved.snapshot, /Next document/);
+    await rejected('click', { ...handle, ref: button }, /stale/);
+    await rejected('snapshot', { ...handle, cursor: paged.next_cursor }, /stale/);
+    assert.equal((await call('navigate', { ...handle, direction: 'back' })).url, fileUrl);
+    assert.equal((await call('navigate', { ...handle, direction: 'forward' })).url, nextUrl);
+    assert.equal((await call('navigate', { ...handle, url })).url, url);
+    assert.equal((await call('navigate', { ...handle, url: fileUrl })).url, fileUrl);
+    checks.push('file URL/back/forward and HTTP↔file navigation; old refs and snapshot cursors expire');
+    await call('tab_control', { ...handle, action: 'release' });
+    await rejected('snapshot', handle, /absent|expired/);
+    await other.call('claim_tab', { browser_id: browserId, tab_id: tab.tab_id });
+    await other.close();
+    await until(async () => (await list()).tabs.find(t => t.tab_id === tab.tab_id)?.control === 'available', 'file owner disconnect cleanup');
+    const finalHandle = { tab_handle: (await claim(tab)).tab_handle };
+    await call('tab_control', { ...finalHandle, action: 'close' });
+    assert.ok(!(await list()).tabs.some(t => t.tab_id === tab.tab_id));
+    await rejected('snapshot', finalHandle, /absent|expired/);
+    checks.push('release invalidates handle; another connection can claim; disconnect releases; close clears ownership');
+    await fileAccess(false);
+    checks.push('file permission toggled off and on through real browser extension settings');
+  } finally {
+    await other.close();
+    if (localTarget) await command('Target.closeTarget', { targetId: localTarget }).catch(() => {});
+    await command('Target.closeTarget', { targetId: settingsTarget }).catch(() => {});
+  }
 }
