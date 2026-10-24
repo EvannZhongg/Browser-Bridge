@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { DEFAULT_CONFIG, loadConfig } from '../src/config.mjs';
-import { ensureHub, hubIsRunning, AttachClient } from '../src/client.mjs';
+import { AttachClient } from '../src/client.mjs';
+import { ensureHub, hubIsRunning } from '../src/hub-runtime.mjs';
 
 try {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {

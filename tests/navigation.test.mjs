@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createNavigation } from '../extension/navigation.js';
-import { clippedPoint } from '../extension/click.js';
+import { clippedPoint } from '../extension/pointer.js';
 
 test('navigation matches loader and frame even when lifecycle events arrive before the command response', async () => {
   let navigation;

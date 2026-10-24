@@ -1,8 +1,18 @@
 # 验证报告
 
-当前版本 **0.21.0**（2026-10-24）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.21.1**（2026-10-24）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：240 项通过。原 controller 测试按观察、指针、键盘输入、对话框、截图/上传、滚动、求值和 fetch 分组，共用原有 fixture；保留控制权、队列、权限和清理的集成测试。新增不依赖日志的网络状态、错误文案无关的结构化未知结果、观察启动前失败仍恢复对话框策略，以及 select 异常跨 CDP 边界后保留结果未知证据的回归。
+- Chromium 156、Edge 155 完整 stdio MCP 集成：各 254 次工具调用通过，覆盖快照/ref、输入、上传、截图、导航、对话框、fetch、日志、嵌套 OOPIF 和 12000 个语义节点分页；Edge `interaction-smoke --primitives --headless` 22 个场景通过。
+- Chromium 文件页面集成：50 次工具调用、5 组检查通过，覆盖实时文件权限、中文/空格/# 路径、主文档与 iframe 观察、原生输入、HTTP↔file 导航和控制权清理。
+- Chromium 真实升级验证通过：同一临时 profile 内两个并发启动者完成 Hub 与扩展升级至 0.21.1，确认自动 runtime 重载及升级后页面操作。旧协议版本由当前代码修改版本号构造，不代表真实 0.16 扩展具备自动升级能力。
+- `npm run test:package`：仓库外安装和 stdio MCP 通过，60 个发布文件、23 个工具，无配对密钥。未增加工具、参数、依赖或扩展权限；补丁版本用于内部职责重构与清理修复。
+- 本机部署：Hub 已停止并从工作区重启，健康接口为 0.21.1 / ready；已配对 Chrome、Edge 均自动重载并实际重连为 0.21.1。稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 42 个非生成文件已核对：manifest 按 JSON 内容一致，其余文件字节一致。新 stdio 连接返回 0.21.1 和 23 个工具。
+- 验证日志与本机同步校验在本地忽略目录 `test-results/refactor-0.21.1/`；已有 MCP 客户端需重新连接以载入新版进程。
+
+## 0.21.0 验证
 
 - `npm test`：236 项通过。新增可操作性原因、有限祖先样式/滚动/transition 证据、零透明度放行、slot 继承 inert、无可见落点且保留既有派发事实、ref 历史上限及释放清理、身份解析期间文档变化、动作后观察不可用/未见变化/正面证据分型，以及明确状态等待的参数、严格匹配、节点替换、缺失 ARIA 状态和字段值不回显验证。
 - Chromium、Edge headless：`interaction-smoke --primitives` 各 22 个场景通过。新增扩展 → Hub 的真实 DOM 验证：一次 DOM 点击后在 batch 等待替换后的字段值、原生 checked/selected、AX role 定位的 aria-expanded/aria-selected、CSS/role 无匹配；原生 mixed、隐藏 DOM 不等于 CSS 无匹配、缺失状态不等于 false、等待超时后写次数仍为 1，以及旧 ref 的 snapshot_replaced 诊断。原有原生输入、hover、拖拽及滚动场景继续通过。

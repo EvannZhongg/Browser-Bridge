@@ -11,7 +11,8 @@ import { parseArgs } from 'node:util';
 import WebSocket from 'ws';
 import { ROOT, VERSION, writeJson } from '../src/config.mjs';
 import { setup } from '../src/setup.mjs';
-import { ensureHub, AttachClient } from '../src/client.mjs';
+import { AttachClient } from '../src/client.mjs';
+import { ensureHub } from '../src/hub-runtime.mjs';
 
 const { values } = parseArgs({ options: { executable: { type: 'string' } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');

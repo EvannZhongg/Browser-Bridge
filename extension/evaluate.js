@@ -13,9 +13,9 @@ async function evaluatePage(cdp, tabId, args) {
         expression: `(async () => { let result = await (\n${args.expression}\n); if (typeof result === "function") result = await result(); return ${args.result_type === 'element' ? 'result' : `(${serializeEvaluation.toString()})(result, ${CAPTURE_CHARS}, ${CAPTURE_NODES})`}; })()`,
         ...(args.result_type === 'element' ? { objectGroup: 'browser-attach-evaluation' } : {}), ...(args.context_id != null ? { contextId: args.context_id } : {}), awaitPromise: true, returnByValue: args.result_type !== 'element', userGesture: false, timeout,
       }),
-      new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(
+      new Promise((resolve, reject) => { timer = setTimeout(() => reject(Object.assign(new Error(
         'JavaScript evaluation timed out. It may still run or have changed the page; observe before continuing. Do not replay automatically.'
-      )), timeout); }),
+      ), { outcome_unknown: true })), timeout); }),
     ]);
     if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text);
     if (args.result_type === 'element') {
@@ -25,7 +25,7 @@ async function evaluatePage(cdp, tabId, args) {
     if (!response.result?.value || typeof response.result.value.truncated !== 'boolean') throw new Error('Invalid evaluation result');
     return { ...response.result.value, scope: args.frame || args.frame_id ? 'frame' : 'main_frame', ...(args.evaluation_frame ? { frame_id: args.evaluation_frame } : {}), observe_again: true };
   } catch (error) {
-    throw new Error(`Evaluation failed; page effects may already have occurred. ${String(error.message).slice(0, 12000)}`);
+    throw Object.assign(new Error(`Evaluation failed; page effects may already have occurred. ${String(error.message).slice(0, 12000)}`), { outcome_unknown: true });
   } finally { clearTimeout(timer); }
 }
 
@@ -100,7 +100,7 @@ export function createEvaluations(cdp) {
       let result;
       try { result = await evaluatePage(cdp, args.target || tabId, args); }
       catch (error) { if (results.get(tabId) === pending) results.delete(tabId); throw error; }
-      if (results.get(tabId) !== pending) throw new Error('Document or claim changed during evaluation; effects may already have occurred. Result was discarded. Observe before continuing; do not replay automatically.');
+      if (results.get(tabId) !== pending) throw Object.assign(new Error('Document or claim changed during evaluation; effects may already have occurred. Result was discarded. Observe before continuing; do not replay automatically.'), { outcome_unknown: true });
       if (result.element) { results.delete(tabId); return result; }
       const kind = Array.isArray(result.value) ? 'array' : typeof result.value === 'string' ? 'string' :
         result.value && typeof result.value === 'object' ? 'object' : 'scalar';

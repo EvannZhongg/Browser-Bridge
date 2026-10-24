@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { timingOption, sampleTiming, trajectoryOption, dragPath, pause } from '../extension/motion.js';
-import { clippedPoint, clickOptions } from '../extension/click.js';
+import { clickOptions } from '../extension/click.js';
+import { clippedPoint } from '../extension/pointer.js';
 import { typeOptions } from '../extension/input.js';
 import { dragOptions } from '../extension/drag.js';
 import { validateSteps } from '../extension/batch.js';

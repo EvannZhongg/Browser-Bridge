@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.21.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.21.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -19,22 +19,31 @@ MCP 客户端
 | `src/config.mjs` | 数据目录、配对文件校验、版本常量 |
 | `src/setup.mjs` | 生成配对密钥、暂存并替换稳定扩展目录、写 Nosis 配置 |
 | `src/hub.mjs` | 浏览器与会话注册、独占 claim、每标签串行队列、超时 |
-| `src/client.mjs` | MCP 到 Hub 的 WebSocket 客户端、启动升级协调与就绪检查 |
+| `src/client.mjs` | MCP 到 Hub 的 WebSocket 请求、回执与断连处理 |
+| `src/hub-runtime.mjs` | Hub 启动、升级协调与扩展就绪检查 |
 | `src/mcp.mjs` | 23 个工具的 schema、结果与图片封装 |
-| `extension/controller.js` | 操作实现；传输层从不暴露原始 CDP |
+| `extension/controller.js` | 所有权、标签队列、权限检查、生命周期协调与操作分派；传输层从不暴露原始 CDP |
 | `extension/connection.js` | 扩展连接、重连清理、升级维护与自行重载 |
 | `extension/sessions.js` | 扁平 debugger session 与 frame/OOPIF 归属 |
-| `extension/{click,input,actionability,scroll}.js` | 原生/DOM 输入、逐字按键、可操作性、容器滚动与有界查找 |
+| `extension/pointer.js` | 共享的原生指针就绪检查、落点准备、命中核验及 frame 坐标转换 |
+| `extension/{click,input,actionability,scroll}.js` | 原生/DOM 输入与回执、逐字按键、可操作性、容器滚动与有界查找 |
 | `extension/{drag,wait}.js` | 复用鼠标准备和严格定位的拖拽、只读条件等待；网络空闲复用被动请求表 |
 | `extension/batch.js` | 有限输入序列的参数预检；执行复用 controller 的单步流程与标签队列 |
 | `extension/motion.js` | 无状态的可选落点/延迟/拖拽参数校验、区间采样及拖拽插值；不维护动作历史或改变焦点 |
-| `extension/outcomes.js` | 临时 DOM 变动观察器与有界只读探测，不推断业务成功 |
-| `extension/fetch.js` | 单页读取的参数、隔离世界采集与每 owner 有界缓存分页；临时页生命周期复用 controller 的 attach、导航和标签队列 |
-| `extension/{snapshot,navigation,evaluate,diagnostics}.js` | 观察、导航、有界求值结果缓存与分页、日志缓冲 |
+| `extension/dialogs.js` | 当前对话框、嵌套操作策略、自动处理及被模态阻塞的 CDP 请求 |
+| `extension/outcomes.js` | 动作前临时 DOM 观察器、未知结果后的有界只读探测与证据封装，不推断业务成功 |
+| `extension/fetch.js`、`fetch-page.js` | 单页读取参数与缓存分页、临时页创建/导航/采集/关闭；复用 controller 的 attach 和标签队列 |
+| `extension/observation.js`、`snapshot.js` | 文档/frame 观察版本、AX 采集、ref 身份与失效历史；AX 渲染和快照分页 |
+| `extension/network.js` | 一份被动请求与文档响应状态，供 fetch、网络空闲等待及诊断日志使用 |
+| `extension/diagnostics.js`、`log-data.js` | 日志缓冲与分页、可选正文捕获、截断及脱敏；不拥有网络空闲或文档状态 |
+| `extension/{navigation,evaluate}.js` | 导航等待、有界求值结果缓存与分页 |
+| `extension/{screenshot,upload}.js` | 截图裁剪与采集、文件选择器状态和文件赋值 |
 | `extension/{locator,text}.js` | 严格 CSS/XPath/HTML label/placeholder/AX role-name 定位、每次解析的 frame URL/title/iframe 路径、DOM/字段/支持的编辑器模型读取 |
 | `extension/visuals.js`、`click-visuals.js` | 无标题红色原生标签组、临时点击反馈 |
 
 Hub 按需后台启动（`ensureHub`），多客户端共享；只监听 loopback。
+
+Hub 与扩展各自保留控制权及串行边界；controller 向具体模块传入所需能力，不共享可变状态总表。sessions 管 debugger session 的归属；observation 管文档/frame 的观察有效性。CDP 事件先更新同一份 network 状态，再将关联结果交给 diagnostics 记录，日志淘汰或读取不改变 fetch 与 wait 使用的网络事实。对话框策略和动作结果观察各自清理自己的状态；未知结果探测使用内部结构化标记，不依赖英文错误文案匹配。
 
 MCP 层将 `discover(kind=browsers/tabs)` 映射为内部 `list_browsers/list_tabs`，将 `tab_control(action=release/activate/close)` 映射为内部 `release_tab/activate_tab/close_tab`；分支参数先校验，再复用 Hub 和扩展的发现、所有权及串行执行流程。
 
@@ -65,7 +74,7 @@ claim 与普通输入都不激活标签或窗口，也不移动系统鼠标；�
 
 正文按 owner 保留至多 4 份各最多 1000000 字符的不可变采集，cursor 定位采集而非 URL；LRU 淘汰最久未读取的未完成采集，读完、owner 或扩展断连清除。一次读完和失败的请求不淘汰已有缓存。分页不执行脚本、不导航，临时标签关闭不会删除缓存。JSON 在采集上限内整份返回，不按 max_chars 拆分。导航等待跟随同一标签后续主文档 loader，完成时保留实际满足条件的文档身份；采集期间文档变化最多只读重采 3 次，状态码始终匹配本次采集的 frame/loader。控制权变化立即失败，断连后的迟到结果不能复活缓存。格式、采集上限与分页语义见使用指南。
 
-HTTP 状态复用 diagnostics 的 Network.responseReceived 观察，按主文档 frame/loader 精确匹配；额外保留 requestId、响应 URL、MIME、空体证据和加载错误码，只从匹配状态的 ExtraInfo 补充 Content-Length，防止重定向 hop、跨 session 请求和缓存 304 混淆。独立于可淘汰的日志正文保留至多 500 项文档状态元数据，断连/detach 清理。不新增 webRequest 或 host 权限，不重复请求页面。未匹配时 status/ok 返回 null；ok 仅表示 HTTP 2xx。ERR_HTTP_RESPONSE_CODE_FAILURE 若有已匹配的 HTTP 响应，返回状态及已确认的空体；不能证明正文为空时标记 unavailable，不采集浏览器错误页为目标正文。其他传输错误仍失败。HTML 标记 dom=rendered，保留观察到的 DOM，不声称是服务器原文；空标题省略。
+HTTP 状态复用 network.js 的 Network.responseReceived 观察，按主文档 frame/loader 精确匹配；额外保留 requestId、响应 URL、MIME、空体证据和加载错误码，只从匹配状态的 ExtraInfo 补充 Content-Length，防止重定向 hop、跨 session 请求和缓存 304 混淆。独立于可淘汰的日志正文保留至多 500 项文档状态元数据，断连/detach 清理。不新增 webRequest 或 host 权限，不重复请求页面。未匹配时 status/ok 返回 null；ok 仅表示 HTTP 2xx。ERR_HTTP_RESPONSE_CODE_FAILURE 若有已匹配的 HTTP 响应，返回状态及已确认的空体；不能证明正文为空时标记 unavailable，不采集浏览器错误页为目标正文。其他传输错误仍失败。HTML 标记 dom=rendered，保留观察到的 DOM，不声称是服务器原文；空标题省略。
 
 ## 观察模型
 

@@ -10,7 +10,7 @@ import WebSocket from 'ws';
 import { ROOT, VERSION, writeJson } from '../src/config.mjs';
 import { setup } from '../src/setup.mjs';
 import { startHub } from '../src/hub.mjs';
-import { ensureHub } from '../src/client.mjs';
+import { ensureHub } from '../src/hub-runtime.mjs';
 
 async function until(check) {
   for (let i = 0; i < 100; i++) { const value = await check(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 50)); }

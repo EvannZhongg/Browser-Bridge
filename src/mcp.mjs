@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { AttachClient, ensureHub } from './client.mjs';
+import { AttachClient } from './client.mjs';
+import { ensureHub } from './hub-runtime.mjs';
 import { VERSION } from './config.mjs';
 import { validateFiles } from './upload.mjs';
 import { dragOptions } from '../extension/drag.js';

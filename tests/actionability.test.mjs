@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deadline, inspectTarget, waitForTarget } from '../extension/actionability.js';
-import { createClick, clickOptions, describeHit, framePoint, normalizeHit, hitRelation } from '../extension/click.js';
+import { clickOptions } from '../extension/click.js';
+import { createPointer, describeHit, framePoint, normalizeHit, hitRelation } from '../extension/pointer.js';
 import { NAVIGATION_MAX_TIMEOUT_MS, NAVIGATION_OBSERVATION_TIMEOUT_MS, HUB_OPERATION_TIMEOUT_MS, CLIENT_RESPONSE_TIMEOUT_MS } from '../extension/limits.js';
 
 test('transport budgets leave headroom after maximum navigation plus observation', () => {
@@ -154,7 +155,7 @@ test('ShadowRoot preparation uses frame-local hit coordinates and still rejects 
       }
       return {};
     };
-    const mouse = createClick(cdp, r => r.result.value, async () => ({ width: 800, height: 600, scroll_x: 0, scroll_y: 0 }), p => p, {});
+    const mouse = createPointer(cdp, r => r.result.value, async () => ({ width: 800, height: 600, scroll_x: 0, scroll_y: 0 }), p => p, {});
     const prepare = () => mouse.prepare(1, { target: { tabId: 1 }, backendNodeId: 99, objectId: 'button', frameId: 'child' }, {});
     if (blocked) await assert.rejects(prepare(), error => error.diagnostics.reason === 'obstructed' && error.input_dispatched === false);
     else assert.equal((await prepare()).relation, 'same_node');
@@ -171,7 +172,7 @@ test('offscreen geometry has its own failure reason and preserves earlier gestur
       if (method === 'DOM.getContentQuads') return { quads: [[200, 200, 210, 200, 210, 210, 200, 210]] };
       throw new Error(`Unexpected command ${method}`);
     };
-    const mouse = createClick(cdp, r => r.result.value, async () => ({ width: 100, height: 100 }), null, {});
+    const mouse = createPointer(cdp, r => r.result.value, async () => ({ width: 100, height: 100 }), null, {});
     const budget = deadline(500); if (dispatched) budget.dispatch();
     await assert.rejects(mouse.prepare(1, { target: { tabId: 1 }, objectId: 'node', backendNodeId: 1, frameId: 'main' }, { budget, scroll: false }), error => {
       assert.equal(error.input_dispatched, dispatched); assert.equal(error.diagnostics.reason, 'no_visible_click_point'); return true;
@@ -200,7 +201,7 @@ test('ancestor-frame obstruction reports its hit target and preserves the failur
       if (method === 'DOM.resolveNode') return { object: { objectId: 'hit' } };
       return {};
     };
-    const mouse = createClick(cdp, r => r.result.value, async () => ({ width: 100, height: 100, scroll_x: 0, scroll_y: 0 }), p => p,
+    const mouse = createPointer(cdp, r => r.result.value, async () => ({ width: 100, height: 100, scroll_x: 0, scroll_y: 0 }), p => p,
       { parent: () => ({ target: { tabId: 1 }, frameId: 'child' }) });
     const budget = deadline(); if (dispatched) budget.dispatch();
     await assert.rejects(mouse.prepare(1, { target: { tabId: 1, sessionId: 's1' }, objectId: 'target', backendNodeId: 7, frameId: 'child' }, { budget }), error => {

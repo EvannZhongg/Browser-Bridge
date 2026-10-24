@@ -13,8 +13,8 @@ export function createNavigation(cdp, validateUrl = pageUrl) {
     async function prepare(operation) {
       const remaining = end - Date.now(); let timer;
       try {
-        if (remaining <= 0) throw new Error('Navigation preparation timed out; no navigation was dispatched');
-        return await Promise.race([operation(), new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Navigation preparation timed out; no navigation was dispatched')), remaining); })]);
+        if (remaining <= 0) throw Object.assign(new Error('Navigation preparation timed out; no navigation was dispatched'), { input_dispatched: false });
+        return await Promise.race([operation(), new Promise((resolve, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Navigation preparation timed out; no navigation was dispatched'), { input_dispatched: false })), remaining); })]);
       } finally { clearTimeout(timer); }
     }
     let entry, mainId;
@@ -54,9 +54,9 @@ export function createNavigation(cdp, validateUrl = pageUrl) {
         if (!direction && method === 'Page.frameNavigated' && !params.frame.parentId && params.frame.loaderId) currentDocument = { frameId: params.frame.id, loaderId: params.frame.loaderId };
         if (['Page.lifecycleEvent', 'Page.frameNavigated', 'Page.navigatedWithinDocument'].includes(method)) { events.push({ method, ...params }); check(); }
       },
-      cancel(reason) { rejectDone(reason || new Error('Tab detached during navigation; outcome is unknown.')); },
+      cancel(reason) { rejectDone(reason || Object.assign(new Error('Tab detached during navigation; outcome is unknown.'), { outcome_unknown: true })); },
     });
-    timer = setTimeout(() => rejectDone(Object.assign(new Error(`Navigation did not reach ${wait_until} within ${timeout_ms} ms. It may still be loading; observe the tab before another action.`), { code: 'NAVIGATION_TIMEOUT' })), Math.max(0, end - Date.now()));
+    timer = setTimeout(() => rejectDone(Object.assign(new Error(`Navigation did not reach ${wait_until} within ${timeout_ms} ms. It may still be loading; observe the tab before another action.`), { outcome_unknown: true, code: 'NAVIGATION_TIMEOUT' })), Math.max(0, end - Date.now()));
     try {
       // Attach rejection handlers immediately, including when the deadline wins first.
       const command = cdp(tabId, direction ? 'Page.navigateToHistoryEntry' : 'Page.navigate', direction ? { entryId: entry.id } : { url }).then(reply => {

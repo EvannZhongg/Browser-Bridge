@@ -15,7 +15,7 @@ export function dragOptions(args) {
   trajectoryOption(args.trajectory);
 }
 
-export function createDrag(cdp, value, mouse, viewport) {
+export function createDrag(cdp, value, pointer, viewport) {
   const pending = new Map();
   function event(tabId, method, params, sessionId) {
     const operation = pending.get(tabId);
@@ -23,26 +23,26 @@ export function createDrag(cdp, value, mouse, viewport) {
     if (['DOM.documentUpdated', 'Page.frameNavigated', 'Page.frameDetached', 'Page.navigatedWithinDocument'].includes(method)) {
       const frameId = params.frame?.id || params.frameId;
       if ([...operation.frames].some(key => { const [session, frame] = JSON.parse(key); return session === (sessionId ?? null) && (!frameId || frame === frameId); })) {
-        operation.error = new Error('Drag document/frame changed; outcome is unknown. Observe before continuing.');
+        operation.error = Object.assign(new Error('Drag document/frame changed; outcome is unknown. Observe before continuing.'), { outcome_unknown: true });
         operation.reject(operation.error);
       }
     }
-    if (method === 'Page.javascriptDialogOpening') { operation.error = new Error('Drag opened a JavaScript dialog; outcome is unknown. Observe and handle the dialog.'); operation.reject(operation.error); }
+    if (method === 'Page.javascriptDialogOpening') { operation.error = Object.assign(new Error('Drag opened a JavaScript dialog; outcome is unknown. Observe and handle the dialog.'), { outcome_unknown: true }); operation.reject(operation.error); }
     if (method === 'Input.dragIntercepted' && !sessionId) operation.intercept(params.data);
     if (method !== 'Runtime.bindingCalled' || params.name !== operation.name || !operation.contexts.has(JSON.stringify([sessionId, params.executionContextId]))) return;
     try {
       const { type, rejected } = JSON.parse(params.payload);
-      if (rejected) { operation.error = new Error('Drag target changed during dispatch; outcome is unknown. Observe before continuing.'); operation.reject(operation.error); }
+      if (rejected) { operation.error = Object.assign(new Error('Drag target changed during dispatch; outcome is unknown. Observe before continuing.'), { outcome_unknown: true }); operation.reject(operation.error); }
       operation.seen.add(type);
       const required = operation.html5 ? ['mousedown', 'dragstart', 'drop', 'dragend'] : ['pointerdown', 'pointermove', 'pointerup'];
       if (required.every(type => operation.seen.has(type))) operation.resolve();
     } catch (error) { operation.reject(error); }
   }
-  function cancel(tabId) { const operation = pending.get(tabId); if (operation) { operation.error = new Error('Tab detached during drag; outcome is unknown.'); operation.reject(operation.error); } }
+  function cancel(tabId) { const operation = pending.get(tabId); if (operation) { operation.error = Object.assign(new Error('Tab detached during drag; outcome is unknown.'), { outcome_unknown: true }); operation.reject(operation.error); } }
   async function drag(tabId, args, resolve, assertCurrent = () => {}) {
     dragOptions(args);
     const budget = args.budget || deadline(args.timeout_ms ?? 5000), html5 = args.mode === 'html5', steps = args.steps ?? 20;
-    await mouse.assertReady(tabId, budget);
+    await pointer.assertReady(tabId, budget);
     if (args.source.coordinate_space === 'document' && args.destination.coordinate_space === 'document') {
       const view = await budget.run(() => viewport(tabId)), a = args.source, b = args.destination;
       // Keep both endpoints in one viewport when possible. Centering them
@@ -57,7 +57,7 @@ export function createDrag(cdp, value, mouse, viewport) {
         })));
       }
     }
-    const source = await mouse.prepare(tabId, await resolve(args.source, budget), { ...args.source, budget });
+    const source = await pointer.prepare(tabId, await resolve(args.source, budget), { ...args.source, budget });
     const name = `__attachDrag_${crypto.randomUUID().replaceAll('-', '')}`, contexts = new Set(), guards = [], frames = new Set();
     let intercept; const intercepted = new Promise(resolve => { intercept = resolve; });
     const receipt = new Promise((resolve, reject) => pending.set(tabId, { name, contexts, frames, html5, seen: new Set(), resolve, reject, intercept }));
@@ -92,7 +92,7 @@ export function createDrag(cdp, value, mouse, viewport) {
       await guard(source, 'source');
       if (html5) { interceptEnabled = true; await send('Input.setInterceptDrags', { enabled: true }); }
       await pause(budget, args.settle_ms);
-      await mouse.assertReady(tabId, budget);
+      await pointer.assertReady(tabId, budget);
       budget.dispatch();
       await move(point);
       await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
@@ -102,14 +102,14 @@ export function createDrag(cdp, value, mouse, viewport) {
       const data = html5 ? await budget.run(() => delivery(intercepted)) : null;
       // Preparation scrolls the destination into view while the button remains held,
       // including nested containers, then rechecks frame boundaries and occlusion.
-      const destination = await mouse.prepare(tabId, await resolve(args.destination, budget), { ...args.destination, budget });
+      const destination = await pointer.prepare(tabId, await resolve(args.destination, budget), { ...args.destination, budget });
       await guard(destination, 'destination');
       const from = point;
       const path = dragPath(from, destination.point, steps, args.trajectory);
       if (args.trajectory) {
         const view = await budget.run(() => viewport(tabId));
         if (path.some(({ point }) => point.x < 0 || point.y < 0 || point.x >= view.width || point.y >= view.height)) {
-          throw new Error('Drag trajectory leaves the viewport. Outcome is unknown; observe before continuing.');
+          throw Object.assign(new Error('Drag trajectory leaves the viewport. Outcome is unknown; observe before continuing.'), { outcome_unknown: true });
         }
       }
       if (html5) await send('Input.dispatchDragEvent', { type: 'dragEnter', ...point, data });
@@ -146,7 +146,7 @@ export function createDrag(cdp, value, mouse, viewport) {
 
 function installDragReceipt(name, stage, html5, expiryMs) {
   const target = this, win = target.ownerDocument.defaultView, report = win[name];
-  // Cancelling pointerdown suppresses compatibility mouse down/up, but does
+  // Cancelling pointerdown suppresses compatibility pointer down/up, but does
   // not prevent a pointer-based control from receiving the drag.
   const down = html5 ? 'mousedown' : 'pointerdown';
   const types = stage === 'source' ? (html5 ? ['mousedown', 'dragstart', 'dragend'] : ['pointerdown', 'pointermove', 'pointerup'])

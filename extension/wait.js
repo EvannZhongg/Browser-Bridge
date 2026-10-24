@@ -19,7 +19,7 @@ export function waitOptions(args) {
   if (args.condition === 'network_idle' && (!Number.isInteger(args.idle_ms ?? 500) || (args.idle_ms ?? 500) < 100 || (args.idle_ms ?? 500) > 10000)) throw new Error('idle_ms must be 100..10000');
 }
 
-export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, args) {
+export async function waitFor(cdp, value, sessions, network, pointer, tabId, args) {
   waitOptions(args);
   const budget = args.budget || deadline(args.timeout_ms ?? 5000, 'wait');
   let current = 'not observed', previous;
@@ -27,7 +27,7 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
   try {
     while (true) {
       if (args.condition === 'network_idle') {
-        current = diagnostics.networkStatus(tabId);
+        current = network.networkStatus(tabId);
         if (!current.tracking_overflow && current.inflight === 0 && current.idle_ms >= (args.idle_ms ?? 500)) return { satisfied: true, condition: args.condition, current };
       } else if (args.condition === 'url') {
         current = value(await budget.run(() => cdp(tabId, 'Runtime.evaluate', { expression: 'location.href', returnByValue: true })));
@@ -55,7 +55,7 @@ export async function waitFor(cdp, value, sessions, diagnostics, mouse, tabId, a
               try {
                 const node = await resolveSelector(cdp, value, sessions, tabId, args, budget);
                 try {
-                  await mouse.prepare(tabId, node, { budget, scroll: false });
+                  await pointer.prepare(tabId, node, { budget, scroll: false });
                   current = { ...current, state: 'actionable' };
                 } finally {
                   await budget.run(() => cdp(node.target, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach' }));

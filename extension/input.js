@@ -13,7 +13,7 @@ export function inputMode(args) {
 async function bounded(operation, message, ms = 5000) {
   let timer;
   try { return await Promise.race([operation, new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`${message} Outcome is unknown. ${BUSY}`)), ms);
+    timer = setTimeout(() => reject(Object.assign(new Error(`${message} Outcome is unknown. ${BUSY}`), { outcome_unknown: true })), ms);
   })]); }
   finally { clearTimeout(timer); }
 }
@@ -24,13 +24,13 @@ export function createInput(cdp, value, sessions) {
     const operation = pending.get(tabId);
     if (!operation) return;
     if (method === 'Page.javascriptDialogOpening') {
-      operation.reject(new Error('The key action opened a JavaScript dialog. It may already have executed; use browser_snapshot and browser_handle_dialog before continuing.'));
+      operation.reject(Object.assign(new Error('The key action opened a JavaScript dialog. It may already have executed; use browser_snapshot and browser_handle_dialog before continuing.'), { outcome_unknown: true }));
     }
     if (method !== 'Runtime.bindingCalled' || params.name !== operation.name || !operation.contexts.has(JSON.stringify([sessionId, params.executionContextId]))) return;
     try { if (JSON.parse(params.payload).delivered === true) operation.resolve(); }
     catch (error) { operation.reject(error); }
   }
-  function cancel(tabId) { pending.get(tabId)?.reject(new Error('Tab detached during keyboard input; outcome is unknown. Observe before retrying.')); }
+  function cancel(tabId) { pending.get(tabId)?.reject(Object.assign(new Error('Tab detached during keyboard input; outcome is unknown. Observe before retrying.'), { outcome_unknown: true })); }
 
   async function focusedNode(tabId, budget, worlds, frames) {
     frames ||= await budget.run(() => sessions.frames(tabId));
@@ -127,7 +127,7 @@ export function createInput(cdp, value, sessions) {
     if (mode === 'native') await send('Input.insertText', { text: args.text });
     const matches = value(await send('Runtime.callFunctionOn', { objectId: node.objectId, returnByValue: true,
       functionDeclaration: verifyFill.toString(), arguments: [{ value: args.text }] }));
-    if (matches !== true) throw new Error(`Fill did not retain the requested text. Input may have been swallowed, focus may have moved, or the page may have reformatted it. Outcome is unknown. ${BUSY}`);
+    if (matches !== true) throw Object.assign(new Error(`Fill did not retain the requested text. Input may have been swallowed, focus may have moved, or the page may have reformatted it. Outcome is unknown. ${BUSY}`), { outcome_unknown: true });
     return { filled: true, method: mode, value_verified: true, ...(mode === 'dom' ? { events_trusted: false } : {}), application_result: 'not_checked', observe_again: true };
   }
 
@@ -151,10 +151,13 @@ export function createInput(cdp, value, sessions) {
       arguments: [{ value: choice }, { value: false }], returnByValue: true,
     })));
     budget.dispatch();
-    const result = value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', {
-      objectId: node.objectId, functionDeclaration: selectElement.toString(),
-      arguments: [{ value: choice }], returnByValue: true,
-    })));
+    let result;
+    try {
+      result = value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', {
+        objectId: node.objectId, functionDeclaration: selectElement.toString(),
+        arguments: [{ value: choice }], returnByValue: true,
+      })));
+    } catch (error) { error.outcome_unknown = true; throw error; }
     return { ...result, method: 'dom', events_trusted: false, application_result: 'not_checked', observe_again: true };
   }
   async function typeText(tabId, node, args) {
@@ -171,9 +174,9 @@ export function createInput(cdp, value, sessions) {
     for (const character of args.text) {
       const focused = value(await budget.run(() => cdp(node.target, 'Runtime.callFunctionOn', { objectId: node.objectId,
         functionDeclaration: 'function() { const a=this.getRootNode().activeElement; return this.isConnected && (a===this || this.contains(a)); }', returnByValue: true })));
-      if (!focused) throw new Error(`Typing stopped after ${typed} characters: original field detached or lost focus. Outcome is unknown; do not replay.`);
+      if (!focused) throw Object.assign(new Error(`Typing stopped after ${typed} characters: original field detached or lost focus. Outcome is unknown; do not replay.`), { outcome_unknown: true });
       try { await pressKey(tabId, character, { budget, character, expectedNode: node }); }
-      catch (error) { error.message = `Typing stopped after ${typed} verified characters; the current character may already have been delivered. ${error.message}`; throw error; }
+      catch (error) { error.outcome_unknown = true; error.message = `Typing stopped after ${typed} verified characters; the current character may already have been delivered. ${error.message}`; throw error; }
       typed++;
       if (typed < length) await pause(budget, args.delay_ms);
     }

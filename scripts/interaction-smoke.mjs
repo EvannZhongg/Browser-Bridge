@@ -12,7 +12,7 @@ import { ROOT } from '../src/config.mjs';
 import { setup } from '../src/setup.mjs';
 import { startHub } from '../src/hub.mjs';
 import { AttachClient } from '../src/client.mjs';
-import { normalizeHit } from '../extension/click.js';
+import { normalizeHit } from '../extension/pointer.js';
 
 const { values } = parseArgs({ options: { executable: { type: 'string' }, family: { type: 'string', default: 'chromium' }, headless: { type: 'boolean', default: false }, issues: { type: 'boolean', default: false }, primitives: { type: 'boolean', default: false }, extended: { type: 'boolean', default: false }, forms: { type: 'boolean', default: false }, regressions: { type: 'boolean', default: false }, 'input-capture': { type: 'boolean', default: false }, 'tab-indicators': { type: 'boolean', default: false } } });
 if (!values.executable) throw new Error('Pass --executable PATH to a browser that permits --load-extension');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { selectElement, selectOptions } from '../extension/input.js';
 import { waitFor, inspectWait, waitOptions } from '../extension/wait.js';
-import { createDiagnostics } from '../extension/diagnostics.js';
+import { createNetworkTracker } from '../extension/network.js';
 
 function selectFixture() {
   const events = [];
@@ -72,11 +72,11 @@ test('visible waits accept disabled elements while actionable waits report the d
 });
 
 test('network idle uses passive request tracking and does not claim quiet while a request is inflight', async () => {
-  const diagnostics = createDiagnostics();diagnostics.start(1);
-  diagnostics.event({ tabId: 1 }, 'Network.requestWillBeSent', { requestId: 'a', request: { url: 'https://test/', method: 'GET' } });
-  const run = () => waitFor(null, null, null, diagnostics, null, 1, { condition: 'network_idle', idle_ms: 100, timeout_ms: 150 });
+  const network = createNetworkTracker();network.start(1);
+  network.event({ tabId: 1 }, 'Network.requestWillBeSent', { requestId: 'a', request: { url: 'https://test/', method: 'GET' } });
+  const run = () => waitFor(null, null, null, network, null, 1, { condition: 'network_idle', idle_ms: 100, timeout_ms: 150 });
   await assert.rejects(run(), /inflight.*1/);
-  diagnostics.event({ tabId: 1 }, 'Network.loadingFinished', { requestId: 'a' });
+  network.event({ tabId: 1 }, 'Network.loadingFinished', { requestId: 'a' });
   assert.equal((await run()).satisfied, true);
 });
 

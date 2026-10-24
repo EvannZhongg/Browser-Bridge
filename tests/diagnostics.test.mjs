@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDiagnostics, boundedBody } from '../extension/diagnostics.js';
+import { createDiagnostics } from '../extension/diagnostics.js';
+import { boundedBody } from '../extension/log-data.js';
+import { createNetworkTracker } from '../extension/network.js';
 
 function fixture() {
+  const network = createNetworkTracker(); network.start(9);
   const logs = createDiagnostics(); logs.start(9);
-  return { logs, emit: (method, params, source = { tabId: 9 }) => logs.event(source, method, params),
+  return { logs, network, emit: (method, params, source = { tabId: 9 }) => logs.event(source, method, params, network.event(source, method, params)),
     read: (kind, args = {}) => logs.read(9, { kind, ...args }) };
 }
 
@@ -13,42 +16,42 @@ test('HTTP error metadata correlates failure, response headers and late ExtraInf
   f.emit('Network.responseReceived', { requestId: 'r', type: 'Document', frameId: 'main', loaderId: 'original',
     response: { status: 503, url: 'https://fixture.test/error', mimeType: 'text/html' } });
   f.emit('Network.loadingFailed', { requestId: 'r', errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' });
-  assert.equal(f.logs.failedDocument(9, 'main').empty_body, false);
+  assert.equal(f.network.failedDocument(9, 'main').empty_body, false);
   f.emit('Network.responseReceivedExtraInfo', { requestId: 'r', statusCode: 302, headers: { 'Content-Length': '0' } });
   f.emit('Network.responseReceivedExtraInfo', { requestId: 'r', statusCode: 503, headers: { 'Content-Length': '0' } }, { tabId: 9, sessionId: 'other' });
-  assert.equal(f.logs.failedDocument(9, 'main').empty_body, false);
+  assert.equal(f.network.failedDocument(9, 'main').empty_body, false);
   f.emit('Network.responseReceivedExtraInfo', { requestId: 'r', statusCode: 503, headers: { 'content-length': '0' } });
-  const failed = f.logs.failedDocument(9, 'main');
+  const failed = f.network.failedDocument(9, 'main');
   assert.equal(failed.status, 503); assert.equal(failed.empty_body, true); assert.equal(failed.contentType, 'text/html');
-  assert.equal(f.logs.documentStatus(9, { id: 'main', loaderId: 'error-page' }), null);
+  assert.equal(f.network.documentStatus(9, { id: 'main', loaderId: 'error-page' }), null);
   f.emit('Network.loadingFailed', { requestId: 'r', errorText: 'net::ERR_ABORTED' });
-  assert.equal(f.logs.failedDocument(9, 'main').error, 'net::ERR_HTTP_RESPONSE_CODE_FAILURE');
+  assert.equal(f.network.failedDocument(9, 'main').error, 'net::ERR_HTTP_RESPONSE_CODE_FAILURE');
   f.emit('Network.requestWillBeSent', { requestId: 'next', type: 'Document', frameId: 'main', request: { url: 'https://fixture.test/next', method: 'GET' } });
-  assert.equal(f.logs.failedDocument(9, 'main'), null);
+  assert.equal(f.network.failedDocument(9, 'main'), null);
   f.emit('Network.requestWillBeSent', { requestId: 'early', type: 'Document', frameId: 'main', request: { url: 'https://fixture.test/early', method: 'GET' } });
   f.emit('Network.responseReceivedExtraInfo', { requestId: 'early', statusCode: 503, headers: { 'content-length': '0' } });
   f.emit('Network.responseReceived', { requestId: 'early', type: 'Document', frameId: 'main', loaderId: 'early', response: { status: 503, url: 'https://fixture.test/early', mimeType: 'text/html' } });
   f.emit('Network.loadingFailed', { requestId: 'early', errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' });
-  assert.equal(f.logs.failedDocument(9, 'main').empty_body, true);
+  assert.equal(f.network.failedDocument(9, 'main').empty_body, true);
 });
 
 test('document status matches the frame and loader, survives log eviction and expires with the document or claim', () => {
   const f = fixture(), main = { id: 'main', loaderId: 'document' };
   const response = (frameId, loaderId, status, source) => f.emit('Network.responseReceived', { requestId: frameId, type: 'Document', frameId, loaderId, response: { status, url: 'https://fixture.test/' } }, source);
-  assert.equal(f.logs.documentStatus(9, main), null);
+  assert.equal(f.network.documentStatus(9, main), null);
   response('main', 'document', 404);
   response('child', 'document', 500);
   response('main', 'document', 403, { tabId: 9, sessionId: 'remote' });
-  assert.equal(f.logs.documentStatus(9, main), 404);
-  assert.equal(f.logs.documentStatus(9, { id: 'main', loaderId: 'other' }), null);
-  assert.equal(f.logs.documentStatus(9, { id: 'main' }), null);
+  assert.equal(f.network.documentStatus(9, main), 404);
+  assert.equal(f.network.documentStatus(9, { id: 'main', loaderId: 'other' }), null);
+  assert.equal(f.network.documentStatus(9, { id: 'main' }), null);
   for (let i = 0; i < 700; i++) f.emit('Network.responseReceived', { requestId: String(i), type: 'Fetch', response: { status: 200, url: 'https://fixture.test/api' } });
-  assert.equal(f.logs.documentStatus(9, main), 404);
+  assert.equal(f.network.documentStatus(9, main), 404);
   f.emit('Network.requestWillBeSent', { requestId: 'next', type: 'Document', frameId: 'main', request: { url: 'https://fixture.test/next', method: 'GET' } });
-  assert.equal(f.logs.documentStatus(9, main), null);
+  assert.equal(f.network.documentStatus(9, main), null);
   response('main', 'document', 200);
-  f.logs.forget(9);
-  assert.equal(f.logs.documentStatus(9, main), null);
+  f.logs.forget(9); f.network.forget(9);
+  assert.equal(f.network.documentStatus(9, main), null);
 });
 
 test('unified log query requires a kind and refuses irrelevant filters', () => {
@@ -135,7 +138,7 @@ test('log pagination never skips retained records; overflow is explicit and resp
   assert.equal(huge.next_seq, 701);
   assert.throws(() => f.read('console', { after_seq: 10000 }), /after_seq/);
   assert.throws(() => f.read('console', { max_chars: 2 }), /max_chars/);
-  f.logs.forget(9); assert.throws(() => f.read('console'), /unavailable/);
+  f.logs.forget(9); f.network.forget(9); assert.throws(() => f.read('console'), /unavailable/);
 });
 
 test('filters advance cursor through unmatched events and character budget evicts large messages', () => {
@@ -165,7 +168,7 @@ test('identical child/root request and context ids retain independent ownership'
   const finished = f.read('network').entries.slice(2);
   assert.deepEqual(finished.map(row => row.url), ['https://main.test/','https://remote.test/']);
   assert.deepEqual(finished.map(row => row.session_id), [null,'child']);
-  f.logs.detach(9,'child');
+  f.logs.detach(9,'child'); f.network.detach(9,'child');
   f.emit('Runtime.consoleAPICalled', {executionContextId:42,type:'log',args:[]}, {tabId:9,sessionId:'child'});
   assert.equal(f.read('console').entries.at(-1).frame_id, undefined);
 });
@@ -173,14 +176,16 @@ test('identical child/root request and context ids retain independent ownership'
 
 test('network details are opt-in, redact credentials, retain method/status and bound request/response bodies', async () => {
   const calls=[];const logs=createDiagnostics(async(target,method,args)=>{calls.push({method,args});return method==='Network.getResponseBody'?{body:'{"field":"kept","Authorization":"hidden-response"}',base64Encoded:false}:{};});
-  logs.start(9);const source={tabId:9};
-  logs.event(source,'Network.requestWillBeSent',{requestId:'old',type:'Fetch',request:{url:'https://test/api',method:'POST',headers:{Authorization:'secret'},postData:'old-secret'}});
+  const network = createNetworkTracker();
+  const emit = (source, method, params) => logs.event(source, method, params, network.event(source, method, params));
+  logs.start(9); network.start(9);const source={tabId:9};
+  emit(source,'Network.requestWillBeSent',{requestId:'old',type:'Fetch',request:{url:'https://test/api',method:'POST',headers:{Authorization:'secret'},postData:'old-secret'}});
   assert.equal(logs.read(9,{kind:'network'}).entries[0].headers,undefined);
   await logs.readDetails(9,{kind:'network',capture:{enabled:true,max_body_bytes:1024}},[source]);
-  logs.event(source,'Network.requestWillBeSent',{requestId:'new',type:'Fetch',request:{url:'https://test/api',method:'POST',headers:{Authorization:'Bearer hidden',Cookie:'session=hidden','X-Safe':'kept'},postData:'{"password":"hidden-password","field":"kept"}'}});
-  logs.event(source,'Network.responseReceived',{requestId:'new',response:{url:'https://test/api',status:201,headers:{'Set-Cookie':'hidden-cookie'},mimeType:'application/json'}});
-  logs.event(source,'Network.dataReceived',{requestId:'new',dataLength:60});
-  logs.event(source,'Network.loadingFinished',{requestId:'new'});
+  emit(source,'Network.requestWillBeSent',{requestId:'new',type:'Fetch',request:{url:'https://test/api',method:'POST',headers:{Authorization:'Bearer hidden',Cookie:'session=hidden','X-Safe':'kept'},postData:'{"password":"hidden-password","field":"kept"}'}});
+  emit(source,'Network.responseReceived',{requestId:'new',response:{url:'https://test/api',status:201,headers:{'Set-Cookie':'hidden-cookie'},mimeType:'application/json'}});
+  emit(source,'Network.dataReceived',{requestId:'new',dataLength:60});
+  emit(source,'Network.loadingFinished',{requestId:'new'});
   const result=await logs.readDetails(9,{kind:'network',max_chars:100000},[source]);
   assert.ok(result.entries.some(e=>e.method==='POST'&&e.request_body?.text.includes('kept')));
   assert.ok(result.entries.some(e=>e.status===201));assert.ok(result.entries.some(e=>e.response_body?.text.includes('kept')));
@@ -193,9 +198,11 @@ test('network details are opt-in, redact credentials, retain method/status and b
 
 test('oversized decoded responses are reported without fetching an unbounded decompressed body', async () => {
   let bodyReads=0;const logs=createDiagnostics(async(target,method)=>{if(method==='Network.getResponseBody')bodyReads++;return {};});
-  logs.start(9);const source={tabId:9};await logs.readDetails(9,{kind:'network',capture:{enabled:true,max_body_bytes:1024}},[source]);
-  logs.event(source,'Network.requestWillBeSent',{requestId:'r',type:'XHR',request:{url:'https://test/',method:'GET'}});
-  logs.event(source,'Network.dataReceived',{requestId:'r',dataLength:10000000});logs.event(source,'Network.loadingFinished',{requestId:'r',encodedDataLength:20});
+  const network = createNetworkTracker();
+  const emit = (source, method, params) => logs.event(source, method, params, network.event(source, method, params));
+  logs.start(9); network.start(9);const source={tabId:9};await logs.readDetails(9,{kind:'network',capture:{enabled:true,max_body_bytes:1024}},[source]);
+  emit(source,'Network.requestWillBeSent',{requestId:'r',type:'XHR',request:{url:'https://test/',method:'GET'}});
+  emit(source,'Network.dataReceived',{requestId:'r',dataLength:10000000});emit(source,'Network.loadingFinished',{requestId:'r',encodedDataLength:20});
   const result=await logs.readDetails(9,{kind:'network'},[source]);
   assert.equal(bodyReads,0);assert.ok(result.entries.some(e=>/exceeds capture/.test(e.response_body_unavailable)));
   assert.ok(boundedBody('x'.repeat(2000),1024).truncated);
@@ -204,9 +211,11 @@ test('oversized decoded responses are reported without fetching an unbounded dec
 
 test('late response body reads cannot recreate data after release or capture reconfiguration', async () => {
   let finish;const logs=createDiagnostics(async(target,method)=>method==='Network.getResponseBody'?new Promise(resolve=>{finish=resolve}):{});
-  const source={tabId:9};logs.start(9);await logs.readDetails(9,{kind:'network',capture:{enabled:true}},[source]);
-  logs.event(source,'Network.requestWillBeSent',{requestId:'r',type:'Fetch',request:{url:'https://test/',method:'GET'}});
-  logs.event(source,'Network.loadingFinished',{requestId:'r'});logs.forget(9);finish({body:'late',base64Encoded:false});
-  await new Promise(resolve=>setImmediate(resolve));logs.start(9);
+  const network = createNetworkTracker();
+  const emit = (source, method, params) => logs.event(source, method, params, network.event(source, method, params));
+  const source={tabId:9};logs.start(9); network.start(9);await logs.readDetails(9,{kind:'network',capture:{enabled:true}},[source]);
+  emit(source,'Network.requestWillBeSent',{requestId:'r',type:'Fetch',request:{url:'https://test/',method:'GET'}});
+  emit(source,'Network.loadingFinished',{requestId:'r'});logs.forget(9);finish({body:'late',base64Encoded:false});
+  await new Promise(resolve=>setImmediate(resolve));logs.start(9); network.start(9);
   assert.equal(logs.read(9,{kind:'network'}).entries.length,0);assert.equal(logs.networkOptions(9).maxTotalBufferSize,0);
 });

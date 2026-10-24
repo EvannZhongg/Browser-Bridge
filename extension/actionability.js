@@ -10,14 +10,15 @@ export function deadline(timeout_ms = 5000, phase = 'input', parentEnd = Infinit
     return result;
   }
   function timeoutError() {
-    if (phase === 'evaluation') return Object.assign(new Error(dispatched ? 'JavaScript evaluation timed out. Page effects may already have occurred. Observe before continuing. Do not replay automatically.' : 'Evaluation preparation timed out; no expression was executed.'), { input_dispatched: dispatched });
+    if (phase === 'evaluation') return Object.assign(new Error(dispatched ? 'JavaScript evaluation timed out. Page effects may already have occurred. Observe before continuing. Do not replay automatically.' : 'Evaluation preparation timed out; no expression was executed.'), { input_dispatched: dispatched, outcome_unknown: dispatched });
     if (phase === 'fetch') return new Error(`Fetch did not finish within ${timeout_ms} ms; the temporary tab will be closed. Do not automatically replay the request.`);
     if (phase === 'wait') return Object.assign(new Error(`Condition was not satisfied within ${timeout_ms} ms`), { input_dispatched: false });
-    if (phase === 'observation') return new Error(`Navigation observation timed out within ${timeout_ms} ms; navigation already succeeded. Take a new snapshot.`);
+    if (phase === 'observation') return Object.assign(new Error(`Navigation observation timed out within ${timeout_ms} ms; navigation already succeeded. Take a new snapshot.`), { outcome_unknown: true });
     const result = new Error(dispatched
       ? `Input did not finish with verified delivery within ${timeout_ms} ms. Outcome is unknown. Browser UI may be capturing input; press Esc to dismiss a native menu. Observe before retrying; never automatically replay or fall back.`
       : `Target did not become actionable within ${timeout_ms} ms${waiting ? `; waiting for ${waiting}` : ''}; no input was dispatched.`);
     result.input_dispatched = dispatched;
+    result.outcome_unknown = dispatched;
     return result;
   }
   async function run(operation) {
@@ -39,7 +40,7 @@ export async function waitForTarget(cdp, value, target, node, budget, { editable
     })));
     if (bounds?.detached || bounds?.unsupported) throw Object.assign(new Error(`${bounds.detached
       ? 'Element is detached; take a new snapshot.'
-      : 'Target is not a supported editable field.'} ${budget.has_dispatched() ? 'Input was already dispatched; outcome is unknown. Do not replay automatically.' : 'No input was dispatched.'}`), {
+      : 'Target is not a supported editable field.'} ${budget.has_dispatched() ? 'Input was already dispatched; outcome is unknown. Do not replay automatically.' : 'No input was dispatched.'}`), { outcome_unknown: true,
       input_dispatched: budget.has_dispatched(), diagnostics: { reason: bounds.detached ? 'element_detached' : 'unsupported_editable', frame_id: node.frameId },
     });
     if (bounds?.ready && previous && JSON.stringify(bounds) === JSON.stringify(previous)) return;
@@ -90,6 +91,6 @@ export function inspectTarget(editable) {
 export async function delivery(operation, ms = 1250) {
   let timer;
   try { return await Promise.race([operation, new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('Native input has no verified receipt. Outcome is unknown. Browser UI may be capturing input; press Esc to dismiss a native menu, then observe. Never automatically replay or fall back.')), ms);
+    timer = setTimeout(() => reject(Object.assign(new Error('Native input has no verified receipt. Outcome is unknown. Browser UI may be capturing input; press Esc to dismiss a native menu, then observe. Never automatically replay or fall back.'), { outcome_unknown: true })), ms);
   })]); } finally { clearTimeout(timer); }
 }
