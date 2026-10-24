@@ -293,25 +293,22 @@ try {
   const readyTree = await call('snapshot', handle);
   const readyRef = readyTree.snapshot.split('\n').find(line => line.includes('button "Offscreen target"')).match(/\[([^\]]+)\]/)[1];
   const backgroundCover = await call('open_tab', { browser_id: browserId, url: `${url}?click-cover`, active: true });
-  for (const target of [{ selector: '#offscreen' }, { ref: readyRef }, { x: 100, y: 100 }]) {
-    const start = performance.now();
-    const blocked = await rawCall('click', { ...handle, ...target, timeout_ms: 30000 });
-    assert.equal(blocked.isError, true);
-    assert.match(blocked.content[0].text, /TAB_NOT_READY.*browser_tab_control action=activate.*No input was dispatched/);
-    assert.doesNotMatch(blocked.content[0].text, /unknown/i);
-    assert.ok(performance.now() - start < 2000, 'background click must fail quickly, not consume the input deadline');
+  const backgroundPoint = (await evaluate('(()=>{const r=document.querySelector("#offscreen").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()')).value;
+  for (const target of [{ selector: '#offscreen' }, { ref: readyRef }, backgroundPoint]) {
+    const clicked = await call('click', { ...handle, ...target });
+    assert.equal(clicked.delivery_verified, true);assert.equal(clicked.events_trusted, true);assert.equal(clicked.page_state.tab_active, false);
   }
-  assert.equal((await evaluate('window.extraClicks')).value, 3);
+  assert.equal((await evaluate('window.extraClicks')).value, 6);
   await call('click', { ...handle, selector: '#offscreen', mode: 'dom' });
-  assert.equal((await evaluate('window.extraClicks')).value, 4);
+  assert.equal((await evaluate('window.extraClicks')).value, 7);
   await call('tab_control', { ...handle, action: 'activate' });
   await call('snapshot', handle);
   assert.equal((await call('click', { ...handle, selector: '#offscreen' })).target_verified, true);
-  assert.equal((await evaluate('window.extraClicks')).value, 5);
+  assert.equal((await evaluate('window.extraClicks')).value, 8);
   const listedCover = await until(async () => (await call('discover', { kind: 'tabs', browser_id: browserId })).tabs.find(tab => tab.tab_id === backgroundCover.tab_id && tab.title === 'Attach upload fixture'), 'background click cover');
   const coverClaim = await call('claim_tab', { browser_id: browserId, tab_id: listedCover.tab_id });
   await call('tab_control', { action: 'close', tab_handle: coverClaim.tab_handle });
-  checks.push('background native ref/selector/coordinate click fast rejection without effects; explicit DOM and activation recovery; span/button hit hints');
+  checks.push('background native ref/selector/coordinate click verifies trusted delivery without activation; explicit DOM and foreground click; span/button hit hints');
   assert.equal((await rawCall('click', { ...handle, selector: 'button' })).isError, true);
   await call('fill', { ...handle, selector: '#name', mode: 'dom', text: 'selector input' });
   assert.equal((await call('read_text', { ...handle, selector: '#name', mode: 'value' })).text, 'selector input');

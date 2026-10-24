@@ -29,7 +29,7 @@ export function createMcp(client) {
     'Per tab, refs survive input/evaluation while the node and its accessible identity remain unchanged. A new snapshot or main-document change invalidates all refs; subframe changes invalidate that subtree. Input/new evaluation invalidates snapshot pagination; cursor continuation preserves refs.\n' +
     'Selectors resolve anew each call: css/xpath, associated HTML label, exact placeholder, or AX role with optional exact name. Matches must be unique unless nth is explicit. CSS/XPath/label/placeholder do not pierce shadow roots; use AX roles or refs there. Coordinates are viewport CSS pixels unless coordinate_space=document.\n' +
     'Tool failures return isError with JSON error and available input_dispatched, diagnostics and post_action evidence. After an action error or timeout, observe before deciding what to do. Never automatically replay an uncertain action or switch input modes to resend it. Timeouts do not cancel pending navigation or asynchronous JavaScript. Post-action observations cannot prove that nothing was dispatched. Verification proves only reported event delivery or retained values, not application success or saving.\n' +
-    'Explicit click/fill mode=dom uses untrusted events without user activation. Native click/hover/drag requires an active, unsuspended tab in a non-minimized window. TAB_NOT_READY means no input was dispatched: activate the tab, take a snapshot, then retry.\n' +
+    'Explicit click/fill mode=dom uses untrusted events without user activation. Native pointer input requires an unsuspended tab in a non-minimized window. Only an unmodified left single click may target an inactive tab; hover, drag and other click variants require an active tab. TAB_NOT_READY means no input was dispatched: activate the tab, take a snapshot, then retry.\n' +
     'For an unhandled JS dialog use snapshot/handle_dialog; logs remain readable.\n' +
     'Only upload local files intended for the website by the task; selecting files may transmit them immediately.' });
   const handle = { tab_handle: z.string() };
@@ -138,7 +138,7 @@ export function createMcp(client) {
     if (args.kind === 'network' && args.level != null) throw new Error('level is only valid for kind=console');
     return args;
   });
-  tool('click', 'Click one ref, selector or x/y; element targets auto-scroll. Native target_verified=true requires an explicit element target; coordinates return null and verify trusted delivery to the coordinate hit only. native select hits require select_option.', {
+  tool('click', 'Click one ref, selector or x/y; element targets auto-scroll. An unmodified left single click may target an inactive tab. Native target_verified=true requires an explicit element target; coordinates return null and verify trusted delivery to the coordinate hit only. native select hits require select_option.', {
     ...offset, ...settle,
     ...handle, ...inputTimeout, ...target, button: z.enum(['left', 'middle', 'right']).default('left'), click_count: z.union([z.literal(1), z.literal(2)]).default(1), modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).default([]), x: z.number().optional(), y: z.number().optional(), coordinate_space: z.enum(['viewport', 'document']).optional().describe('Coordinates only; document scrolls the top-level page first.'), mode: z.enum(['native', 'dom']).default('native').describe('DOM click requires an element target and a left single click without modifiers.'),
   }, null, args => {

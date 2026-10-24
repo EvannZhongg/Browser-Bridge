@@ -51,7 +51,7 @@ export function createClick(cdp, value, { prepare, assertReady }) {
       // tabs/focus while we resolved a frame or installed the event guards.
       await pause(budget, args.settle_ms);
       if (failure) throw failure;
-      const pageState = await assertReady(tabId, budget);
+      const pageState = await assertReady(tabId, budget, options.hover ? 'hover' : 'click', args);
       if (failure) throw failure;
       budget.dispatch();
       const dispatch = params => budget.run(() => cdp(tabId, 'Input.dispatchMouseEvent', { ...params, ...rootPoint }));

@@ -224,7 +224,7 @@ export function createController(api, notify = () => {}) {
     if (command === 'drag') {
       dragOptions(args);
       args = { ...args, budget: deadline(args.timeout_ms ?? 5000) };
-      await pointer.assertReady(tabId, args.budget);
+      await pointer.assertReady(tabId, args.budget, 'drag');
       await args.observe_start?.();
       const claim = claims.get(tabId), documentVersion = observations.version(tabId);
       for (const target of sessions.targets(tabId)) await args.budget.run(() => cdp(target, 'Runtime.releaseObjectGroup', { objectGroup: 'browser-attach' }));
@@ -282,10 +282,9 @@ export function createController(api, notify = () => {}) {
     if (['click', 'fill', 'type', 'hover', 'select_option'].includes(command)) targetOptions(args, { coordinates: command === 'hover' || command === 'click' && inputMode(args) !== 'dom', focused: command === 'type' });
     if (command === 'click') clickOptions(args);
     if (['click', 'fill', 'type', 'press_key', 'scroll', 'hover', 'select_option', 'upload_file'].includes(command)) args = { ...args, budget: args.budget || deadline(args.timeout_ms) };
-    // Check before any renderer preparation or ref invalidation. A rejected
-    // inactive native click is known not to have dispatched, unlike a lost
-    // receipt after input. DOM mode remains an explicit separate operation.
-    if (command === 'hover' || command === 'click' && inputMode(args) === 'native') await pointer.assertReady(tabId, args.budget);
+    // Reject unavailable input before renderer preparation or ref invalidation;
+    // a lost receipt after dispatch must instead report an unknown outcome.
+    if (command === 'hover' || command === 'click' && inputMode(args) === 'native') await pointer.assertReady(tabId, args.budget, command, args);
     await args.observe_start?.();
     // Reusable selectors permit many actions without a snapshot. Release the
     // previous operation's remote wrappers before resolving this one. Refs store

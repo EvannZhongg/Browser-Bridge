@@ -15,17 +15,17 @@ test('large AX observations page without exceeding the function argument limit',
   assert.equal(second.node_count, 2); assert.equal(second.truncated, true);
 });
 
-test('background native click fails before renderer work, keeps refs and can recover after explicit activation', async () => {
+test('background right click fails before renderer work, keeps refs and can recover after explicit activation', async () => {
   const f = fixture(); await f.claim(); const ref = f.ref(await f.exec('snapshot'));
   f.tabs.get(9).active = false;
   f.calls.length = 0;
-  await assert.rejects(f.exec('click', { ref, timeout_ms: 30000 }), error => {
+  await assert.rejects(f.exec('click', { ref, button: 'right', timeout_ms: 30000 }), error => {
     assert.match(error.message, /TAB_NOT_READY.*tab not active.*browser_tab_control action=activate.*No input was dispatched/);
     assert.doesNotMatch(error.message, /unknown/i); return true;
   });
   assert.equal(f.calls.length, 0);
   await f.exec('activate_tab');
-  assert.equal((await f.exec('click', { ref })).target_verified, true);
+  assert.equal((await f.exec('click', { ref, button: 'right' })).target_verified, true);
 });
 
 test('an unresponsive click preflight fails in 500ms without consuming the input timeout or dispatching late input', async t => {

@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.21.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.22.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
 
 本文供按需查阅，不会自动通过 MCP 发送给 agent。MCP 初始化 `instructions` 提供通用规则，工具 description 与参数 schema 提供调用说明；宿主应把 instructions 纳入模型上下文。
 
@@ -203,7 +203,9 @@ click/hover/fill/type 的输入准备会检查可见、启用、非 inert 和几
 
 准备失败的 diagnostics.reason 区分 display_none、visibility_hidden、zero_size、disabled、inert、read_only、unstable_geometry 和 no_visible_click_point；遮挡仍使用 obstructed/frame_obstructed。不可操作时附当前矩形及至多 8 层 composed 祖先（含目标）的 display、visibility、opacity、pointer-events、overflow、可滚动方向及 transition 属性/时长，ancestors_truncated 表示更深信息未采集。这些是当前样式证据，不推断 hover 触发条件或动画是否即将结束；opacity=0 不单独拒绝输入。
 
-原生 click/hover/drag 要求活动、未冻结/丢弃的标签与未最小化窗口，准备前及派发前各检查一次，单次最多 500 ms。窗口失焦、document.visibilityState=hidden 或 document.hasFocus()=false 不独立触发拒绝；Click/Hover 成功结果的 page_state 提供这些诊断信号，实际送达仍需回执。就绪失败的处理见[结果未知时](#结果未知时)。
+原生 click/hover/drag 要求未冻结/丢弃的标签与未最小化窗口，准备前及派发前各检查一次，单次最多 500 ms。无修饰键的左键单击（button=left、click_count=1、modifiers=[]，均为默认值）可在非活动标签尝试执行，支持 ref、selector 及坐标目标；hover、drag、其他按钮、双击及带修饰键的点击仍要求活动标签。普通点击不会自动激活标签，后台事件送达和网站业务成功仍需分别核验，不能据此假设依赖悬停展开的流程也可后台执行。
+
+窗口失焦、document.visibilityState=hidden 或 document.hasFocus()=false 不独立触发拒绝；Click/Hover 成功结果的 page_state 提供这些诊断信号，以及派发前检查观察到的 tab_active。就绪检查通过不保证后台点击每次送达；实际送达仍需可信事件回执，缺失时报告结果未知，不自动重放或切换 DOM 模式。就绪失败的处理见[结果未知时](#结果未知时)。
 
 native 与 dom 由调用者显式选择。DOM click/fill 使用非可信事件且没有用户激活，不能满足依赖 isTrusted、pointer 事件或用户激活的功能。
 

@@ -1,8 +1,19 @@
 # 验证报告
 
-当前版本 **0.21.1**（2026-10-24）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.22.0**（2026-10-24）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：243 项通过。新增非活动标签的单次左键单击（ref / selector / viewport / document 坐标）仍取得可信回执且不激活标签；hover、拖拽、其他按键、双击与带修饰键的点击仍在派发前以 `TAB_NOT_READY` 拒绝；派发前的就绪检查允许左键单击期间的标签切换，仍拒绝视图冻结或目标丢弃，`page_state` 带 `tab_active`。
+- Chromium 156、Edge 155 headless：`interaction-smoke --regressions` 各 35 个场景通过。后台 ref / selector / viewport / document / offset 各 3 次（每浏览器 15 次，合计 30 次）均 `delivery_verified` 且标签激活与窗口焦点状态不变；连续两次后台 batch、后台回执丢失（1 次效果、不重放）、后台遮挡（未派发）、受限动作组、settle 期间切换标签等场景通过。
+- Chromium 156 `interaction-smoke` 默认场景 17 项通过，覆盖前台、后台 ref 与坐标、遮挡窗口、缩放、hover 偏移、闭合 Shadow DOM 与导航。
+- Chromium 156、Edge 155 完整 stdio MCP `live-smoke`：各 255 次工具调用、27 项检查通过；后台 ref / selector / 坐标点击均在 `tab_active=false` 下取得可信送达，显式激活、DOM 模式与命中提示的既有行为保持。
+- `npm run test:package`：仓库外安装与 stdio MCP 通过，23 个工具、60 个发布文件，无配对密钥；未增加工具、参数、依赖或扩展权限。次版本反映点击就绪语义的变化。
+- 本机部署：Hub 从工作区重启为 0.22.0 / ready；已配对 Chrome、Edge 均上报 0.22.0；稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 42 个文件逐一核对与工作区一致。
+- 真实既有 profile 探测：从未激活的后台页面上，Edge 取得可信回执并产生 1 次点击；Chrome 未取得回执，返回结果未知、`input_dispatched=true` 且未重放（0 次效果）。验证日志为本地忽略目录 `test-results/` 中的 `*-0220*` 文件。
+- 当前边界：非活动标签只允许单次左键单击，送达仍以可信回执为准；无回执时报告结果未知，不自动激活、不重放、不切换 DOM 模式。hover、拖拽与其他点击变体继续要求活动标签。
+
+## 0.21.1 验证
 
 - `npm test`：240 项通过。原 controller 测试按观察、指针、键盘输入、对话框、截图/上传、滚动、求值和 fetch 分组，共用原有 fixture；保留控制权、队列、权限和清理的集成测试。新增不依赖日志的网络状态、错误文案无关的结构化未知结果、观察启动前失败仍恢复对话框策略，以及 select 异常跨 CDP 边界后保留结果未知证据的回归。
 - Chromium 156、Edge 155 完整 stdio MCP 集成：各 254 次工具调用通过，覆盖快照/ref、输入、上传、截图、导航、对话框、fetch、日志、嵌套 OOPIF 和 12000 个语义节点分页；Edge `interaction-smoke --primitives --headless` 22 个场景通过。

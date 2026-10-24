@@ -2,7 +2,9 @@ import { deadline, waitForTarget } from './actionability.js';
 import { offsetOption } from './motion.js';
 
 export function createPointer(cdp, value, viewport, position, sessions, getTab, getWindow) {
-  async function assertReady(tabId, budget) {
+  async function assertReady(tabId, budget, action, args = {}) {
+    const inactiveClick = action === 'click' && (args.button ?? 'left') === 'left' &&
+      (args.click_count ?? 1) === 1 && (args.modifiers ?? []).length === 0;
     const timeout = Math.min(500, budget.remaining());
     const guidance = 'Call browser_tab_control action=activate with this tab_handle, then browser_snapshot and retry the requested pointer action. If focus is still unavailable, restore/focus the browser window. No input was dispatched.';
     let timer;
@@ -11,22 +13,21 @@ export function createPointer(cdp, value, viewport, position, sessions, getTab, 
       return await Promise.race([
         (async () => {
           const tab = await getTab(tabId);
-          if (!tab.active || tab.discarded || tab.frozen) throw new Error(`tab not active or renderer suspended (active=${tab.active}, discarded=${!!tab.discarded}, frozen=${!!tab.frozen})`);
+          if ((!tab.active && !inactiveClick) || tab.discarded || tab.frozen) throw new Error(`tab not active or renderer suspended (active=${tab.active}, discarded=${!!tab.discarded}, frozen=${!!tab.frozen})`);
           const window = await getWindow(tab.windowId);
           if (window.state === 'minimized') throw new Error('browser window is minimized');
           const state = value(await cdp(tabId, 'Runtime.evaluate', {
             expression: '({visibility_state: document.visibilityState, has_focus: document.hasFocus()})', returnByValue: true,
           }));
           if (typeof state?.visibility_state !== 'string' || typeof state.has_focus !== 'boolean') throw new Error('page readiness unavailable');
-          // Occlusion can make an active renderer report hidden without
-          // preventing CDP input. Focus/visibility are diagnostics; the isolated
-          // event guard below verifies delivery to the intended element.
-          return { ...state, window_focused: window.focused };
+          // A hidden renderer can still receive a complete click, while an
+          // isolated move or drag may stall. Delivery still needs a trusted receipt.
+          return { ...state, tab_active: tab.active, window_focused: window.focused };
         })(),
         new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(`readiness check did not respond within ${timeout} ms`)), timeout); }),
       ]);
     } catch (error) {
-      throw new Error(`TAB_NOT_READY: Native pointer input not dispatched: ${error.message}. ${guidance}`);
+      throw Object.assign(new Error(`TAB_NOT_READY: Native pointer input not dispatched: ${error.message}. ${guidance}`), { input_dispatched: false });
     } finally { clearTimeout(timer); }
   }
   async function prepare(tabId, node, args) {

@@ -42,7 +42,7 @@ export function createDrag(cdp, value, pointer, viewport) {
   async function drag(tabId, args, resolve, assertCurrent = () => {}) {
     dragOptions(args);
     const budget = args.budget || deadline(args.timeout_ms ?? 5000), html5 = args.mode === 'html5', steps = args.steps ?? 20;
-    await pointer.assertReady(tabId, budget);
+    await pointer.assertReady(tabId, budget, 'drag');
     if (args.source.coordinate_space === 'document' && args.destination.coordinate_space === 'document') {
       const view = await budget.run(() => viewport(tabId)), a = args.source, b = args.destination;
       // Keep both endpoints in one viewport when possible. Centering them
@@ -92,7 +92,7 @@ export function createDrag(cdp, value, pointer, viewport) {
       await guard(source, 'source');
       if (html5) { interceptEnabled = true; await send('Input.setInterceptDrags', { enabled: true }); }
       await pause(budget, args.settle_ms);
-      await pointer.assertReady(tabId, budget);
+      await pointer.assertReady(tabId, budget, 'drag');
       budget.dispatch();
       await move(point);
       await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });

@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.21.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.22.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -103,7 +103,7 @@ HTTP 状态复用 network.js 的 Network.responseReceived 观察，按主文档 
 - **type 与 fill**：fill 替换文字，type 保留选区，逐字符复用原生按键与 keydown 回执；字符之间可延迟，不把 insertText 伪装成键盘序列。浏览器处理 keypress/input 及 preventDefault，非 ASCII 不模拟系统 IME。
 - **焦点输入与语义定位**：type 的 focused=true 与 ref/selector 互斥，复用 press_key 的 frame/开放 Shadow DOM 焦点解析，固定最初可编辑元素并逐字检查，不重新聚焦。selector_type 的 label/placeholder 在隔离世界按真实 HTML 关联/属性查询，role/name 每次读取所选 frame 的 AX 树并严格匹配，以 AX 树顺序支持 nth；统一返回原有节点结构，继续复用输入、命中核验及 batch 流程，无组件库适配器。
 - **只重试准备**：等待阶段可以反复轮询，但一旦派发就不再重试。超时分为"未派发"和"已派发、结果未知"两种错误文本。
-- **原生指针就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求活动、未暂停的 tab 与未最小化的窗口。不满足时以 TAB_NOT_READY 明确报告当前指针输入未派发，并提示 tab_control(action=activate) → snapshot → click。click 不主动激活；仅显式 tab_control(action=activate) 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
+- **原生指针就绪检查**：准备前和派发前各做一次至多 500 ms 的有界检查；要求未冻结/丢弃的 tab 与未最小化的窗口。无修饰键的左键单击可在非活动标签尝试执行；hover、drag、其他按钮、双击及带修饰键的点击仍要求活动标签。检查失败以 TAB_NOT_READY 明确报告当前指针输入未派发，并提示 tab_control(action=activate) → snapshot → 所请求动作。click/hover 成功结果的 page_state.tab_active 记录派发前检查观察到的活动状态。普通操作不主动激活；仅显式 tab_control(action=activate) 在 focus_window=true 时请求窗口聚焦和 Page.bringToFront。
 - **焦点信号边界**：OS 窗口失焦、遮挡或 document.visibilityState=hidden 不一定阻止 CDP 输入；document.hasFocus() 在 iframe 导航后也可能为 false。这些值作为 page_state 诊断，不独立拒绝点击。实际送达仍由隔离世界的可信事件回执校验；没有回执时不自动重放。
 - **送达预算**：原生 click/hover/press_key 的派发及可信回执另有 1250 ms 上限，清理最多 250 ms；系统菜单捕获输入时快速释放队列，仍报告结果未知并提示 Esc，不自动重放。
 - **hover 与 drag**：hover 复用点击准备与隔离校验，仅派发一次 mouseMoved，清理不移走指针。drag 显式区分 pointer 与 HTML5；后者从真实 dragstart 截获 DragData，再用 CDP 派发 dragover/drop，校验可信 dragstart/drop/dragend。目的节点在按住后滚入视口；所有步骤共用标签队列和总预算，失败时只取消/释放本次手势。

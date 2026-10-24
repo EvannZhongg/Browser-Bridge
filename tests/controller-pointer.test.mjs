@@ -2,6 +2,64 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture } from './helpers/controller-fixture.mjs';
 
+test('inactive left single click verifies ref, selector and coordinate delivery without activation', async () => {
+  for (const target of ['ref', 'selector', 'viewport', 'document']) {
+    const f = fixture(); await f.claim(); const ref = f.ref(await f.exec('snapshot'));
+    f.tabs.get(9).active = false;
+    f.api.windows.get = async () => ({ focused: false, state: 'normal' });
+    const send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (tab, method, args) => method === 'Runtime.evaluate' && args.expression.includes('visibility_state: document.visibilityState')
+      ? { result: { value: { visibility_state: 'hidden', has_focus: false } } } : send(tab, method, args);
+    const args = target === 'ref' ? { ref } : target === 'selector' ? { selector: '#submit' } :
+      { x: 55, y: 30, ...(target === 'document' ? { coordinate_space: 'document' } : {}) };
+    const result = await f.exec('click', { ...args, button: 'left', click_count: 1, modifiers: [] });
+    assert.equal(result.delivery_verified, true); assert.equal(result.events_trusted, true);
+    assert.equal(result.target_verified, ['ref', 'selector'].includes(target) ? true : null);
+    assert.deepEqual(result.page_state, { visibility_state: 'hidden', has_focus: false, tab_active: false, window_focused: false });
+    assert.equal(f.tabs.get(9).active, false);
+    assert.ok(!f.calls.some(c => ['Page.bringToFront', 'tabs.update', 'windows.update'].includes(c.method)));
+    assert.deepEqual(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent').map(c => c.args.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+  }
+});
+
+test('inactive hover, drag and other click variants remain unavailable before input', async () => {
+  const actions = [
+    ['hover', { x: 20, y: 20 }],
+    ...['pointer', 'html5'].map(mode => ['drag', { source: { x: 20, y: 20 }, destination: { x: 80, y: 20 }, mode }]),
+    ...[{ button: 'right' }, { button: 'middle' }, { click_count: 2 },
+      ...['Alt', 'Control', 'Meta', 'Shift'].map(key => ({ modifiers: [key] }))].map(options => ['click', { x: 20, y: 20, ...options }]),
+  ];
+  for (const [action, args] of actions) {
+    const f = fixture(); await f.claim(); f.tabs.get(9).active = false; f.calls.length = 0;
+    await assert.rejects(f.exec(action, args), error => {
+      assert.match(error.message, /TAB_NOT_READY.*tab not active.*No input was dispatched/);
+      assert.equal(error.input_dispatched, false); return true;
+    });
+    assert.ok(!f.calls.some(c => c.method.startsWith('Input.')));
+    assert.ok(!f.calls.some(c => ['Page.bringToFront', 'tabs.update', 'windows.update'].includes(c.method)));
+  }
+});
+
+test('final click readiness permits a tab switch only for a left single click and still rejects suspension', async () => {
+  for (const change of ['inactive', 'right_inactive', 'frozen', 'discarded']) {
+    const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
+    f.api.debugger.sendCommand = async (target, method, args) => {
+      const result = await send(target, method, args);
+      if (method === 'Runtime.callFunctionOn' && args.functionDeclaration.includes('function installGuard')) {
+        f.tabs.get(9).active = false;
+        if (['frozen', 'discarded'].includes(change)) f.tabs.get(9)[change] = true;
+      }
+      return result;
+    };
+    const action = f.exec('click', { x: 20, y: 20, ...(change === 'right_inactive' ? { button: 'right' } : {}) });
+    if (change === 'inactive') assert.equal((await action).page_state.tab_active, false);
+    else {
+      await assert.rejects(action, /TAB_NOT_READY.*No input was dispatched/);
+      assert.ok(!f.calls.some(c => c.method.startsWith('Input.')));
+    }
+  }
+});
+
 test('active occluded and unfocused native click verifies delivery without bringing the page forward', async () => {
   for (const state of [{ visibility_state: 'hidden', has_focus: false }, { visibility_state: 'visible', has_focus: false }]) {
     const f = fixture(); await f.claim(); const send = f.api.debugger.sendCommand;
@@ -20,7 +78,7 @@ test('active occluded and unfocused native click verifies delivery without bring
   await assert.rejects(f.exec('click', { x: 10, y: 10 }), /TAB_NOT_READY.*minimized/);
   assert.equal(f.calls.length, 0);
   for (const property of ['discarded', 'frozen']) {
-    const f = fixture(); await f.claim(); f.tabs.get(9)[property] = true; f.calls.length = 0;
+    const f = fixture(); await f.claim(); f.tabs.get(9).active = false; f.tabs.get(9)[property] = true; f.calls.length = 0;
     await assert.rejects(f.exec('click', { selector: '#submit' }), /TAB_NOT_READY.*renderer suspended/);
     assert.equal(f.calls.length, 0);
   }
@@ -87,12 +145,13 @@ test('mouse acknowledgments cannot serialize dispatch; mismatched events never r
 });
 
 test('missing trusted click events time out explicitly and the tab remains usable', async () => {
-  const f = fixture(); await f.claim();
+  const f = fixture(); await f.claim(); f.tabs.get(9).active = false;
   const emit = f.api.debugger.onEvent.emit;
   f.api.debugger.onEvent.emit = (target, method, args) => {
     if (method !== 'Runtime.bindingCalled') emit(target, method, args);
   };
   await assert.rejects(f.exec('click', { x: 55, y: 30 }), /Outcome is unknown/);
+  assert.equal(f.calls.filter(c => c.method === 'Input.dispatchMouseEvent').length, 3);
   assert.ok((await f.exec('snapshot')).snapshot);
 });
 
