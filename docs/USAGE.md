@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.22.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.22.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
 
 本文供按需查阅，不会自动通过 MCP 发送给 agent。MCP 初始化 `instructions` 提供通用规则，工具 description 与参数 schema 提供调用说明；宿主应把 instructions 纳入模型上下文。
 
@@ -70,6 +70,20 @@
 | `application_result: "not_checked"` | 尚未检查应用是否接受、提交或保存 |
 
 这些核验不代替业务检查。下拉过滤文字不等于选项已提交，字段值不等于框架状态已保存；按任务观察选中项、成功提示或业务接口。
+
+定位与输入失败可按 `diagnostics.reason` 区分，无须解析英文错误文案：
+
+| reason | 含义 |
+|---|---|
+| `selector_not_found` | 准备预算内未找到 selector/nth 目标，或直接读取时目标不存在 |
+| `selector_ambiguous` | CSS/XPath/label/placeholder/AX role 匹配不唯一；附有界候选与匹配总数 |
+| `selector_invalid` / `selector_not_element` | 选择器解析失败 / 结果不是元素 |
+| `value_not_retained` | fill 后实际文本与请求不一致；不回显请求值或实际值，不推断是格式化还是输入被吞 |
+| `delivery_unverified` | 可信输入事件回执未在回执预算内完成 |
+| `target_changed` | click/hover 派发期间的目标核验被拒绝，可能已有前序输入送达 |
+| `preparation_timeout` / `input_timeout` | 无更具体准备原因的超时 / 已进入派发阶段后操作超时 |
+
+已有 `stale_ref`、`frame_locator`、可操作性及遮挡原因保持各自语义。frame 路径查询失败仍以 `frame_locator` 为 reason，可在 cause 和 selector_diagnostics 中保留底层选择器原因。定位辅助脚本抛出的诊断通过 CDP 单独读取；文档已销毁或无法读取时保留原错误，诊断可能缺失。派发后超时不会沿用准备阶段的定位/可操作性原因。上述原因不是重放许可；结合 `input_dispatched` 与 `post_action` 判断下一步，不推断服务端业务拒绝。
 
 ### 结果未知时
 

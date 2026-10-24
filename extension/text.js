@@ -1,4 +1,5 @@
 import { queryElement, targetOptions } from './locator.js';
+import { checkedValue } from './errors.js';
 
 export async function readText(cdp, value, tabId, args) {
   const max = args.max_chars ?? 20000, offset = args.offset ?? 0, mode = args.mode ?? 'visible';
@@ -12,8 +13,9 @@ export async function readText(cdp, value, tabId, args) {
   const options = { selector: args.selector, selector_type: args.selector_type, nth: args.nth, mode, offset, max_chars: max };
   if (args.node) return value(await cdp(tabId, 'Runtime.callFunctionOn', { objectId: args.node.objectId, returnByValue: true,
     functionDeclaration: `function(args) { return (${extractText.toString()})(args, () => this); }`, arguments: [{ value: options }] }));
-  return value(await cdp(tabId, 'Runtime.evaluate', { returnByValue: true, ...(args.context_id != null ? { contextId: args.context_id } : {}),
-    expression: `(${extractText.toString()})(${JSON.stringify(options)},${queryElement.toString()})` }));
+  const send = (method, params) => cdp(tabId, method, params);
+  return await checkedValue(await send('Runtime.evaluate', { returnByValue: true, ...(args.context_id != null ? { contextId: args.context_id } : {}),
+    expression: `(${extractText.toString()})(${JSON.stringify(options)},${queryElement.toString()})` }), send, value);
 }
 
 export function extractText(args, query) {

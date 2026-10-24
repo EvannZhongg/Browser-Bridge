@@ -1,5 +1,6 @@
 import { deadline, inspectTarget } from './actionability.js';
 import { queryElement, targetOptions, resolveSelector, resolveFrame } from './locator.js';
+import { checkedValue } from './errors.js';
 
 export const WAIT_CONDITIONS = ['attached', 'absent', 'visible', 'actionable', 'text', 'value', 'checked', 'selected', 'expanded', 'url', 'network_idle'];
 
@@ -46,8 +47,9 @@ export async function waitFor(cdp, value, sessions, network, pointer, tabId, arg
             }
           } else {
             const { executionContextId } = await budget.run(() => cdp(target, 'Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' }));
-            current = value(await budget.run(() => cdp(target, 'Runtime.evaluate', { contextId: executionContextId, returnByValue: true,
-              expression: `(${inspectWait.toString()})((${queryElement.toString()}),(${inspectTarget.toString()}),${JSON.stringify(args)})` })));
+            const send = (method, params) => budget.run(() => cdp(target, method, params));
+            current = await checkedValue(await send('Runtime.evaluate', { contextId: executionContextId, returnByValue: true,
+              expression: `(${inspectWait.toString()})((${queryElement.toString()}),(${inspectTarget.toString()}),${JSON.stringify(args)})` }), send, value);
           }
           const stable = current?.ready && previous?.ready && JSON.stringify(current) === JSON.stringify(previous);
           if (current?.satisfied && (args.condition !== 'actionable' || stable)) {

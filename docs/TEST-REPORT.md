@@ -1,8 +1,17 @@
 # 验证报告
 
-当前版本 **0.22.0**（2026-10-24）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.22.1**（2026-10-25）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：246 项通过。新增隔离世界选择器诊断经 CDP 异常对象读取、单步/read_text/wait/batch 传递及 frame 路径底层原因保留；诊断读取失败保留原异常并清理 wrapper。补充准备/派发超时分类、派发后不沿用准备诊断、fill 值不匹配保留未知结果且不回显字段值。后续新增的 click 目标变化原因断言另通过 15 项指针回归。
+- Chromium 156、Edge 155 headless 完整 stdio MCP `live-smoke`：各 267 次工具调用、29 项检查通过。新增真实 CSS/XPath 语法错误、CSS/AX role 歧义、缺失 selector、read_text/wait/batch 错误原因经过扩展 → Hub → MCP 的检查；原生 fill 同步格式化返回 value_not_retained、input_dispatched=true 及 post_action，真实 input 事件仅 1 次。保留上传、对话框、OOPIF、日志、后台输入与大 AX 树回归。
+- Edge 首次与 Chromium 并行执行时，原有遮挡检查在 500 ms 准备预算内超时，未派发输入；未修改该检查预算，独立复跑完整脚本通过。
+- `npm run test:package`：包外安装与 stdio MCP 通过，23 个工具、60 个发布文件，无配对密钥。未增加工具、参数、依赖或扩展权限，版本按诊断修复递增至 0.22.1。
+- 本机部署：协调升级因现有 MCP 连接拒绝后，使用项目 stop/start 重启；Hub 为 0.22.1 / ready，已配对 Chrome、Edge 均为 0.22.1。稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 42 个文件已核对：manifest 版本一致，其余非生成文件 SHA-256 一致。
+- 当前边界：原因码不推断业务成功或服务端拒绝，也不授权重放；文档/上下文销毁导致异常诊断无法读取时保留原错误，diagnostics 可能缺失。已有 MCP 客户端需重连，重新发现和接管标签。
+
+## 0.22.0 验证
 
 - `npm test`：243 项通过。新增非活动标签的单次左键单击（ref / selector / viewport / document 坐标）仍取得可信回执且不激活标签；hover、拖拽、其他按键、双击与带修饰键的点击仍在派发前以 `TAB_NOT_READY` 拒绝；派发前的就绪检查允许左键单击期间的标签切换，仍拒绝视图冻结或目标丢弃，`page_state` 带 `tab_active`。
 - Chromium 156、Edge 155 headless：`interaction-smoke --regressions` 各 35 个场景通过。后台 ref / selector / viewport / document / offset 各 3 次（每浏览器 15 次，合计 30 次）均 `delivery_verified` 且标签激活与窗口焦点状态不变；连续两次后台 batch、后台回执丢失（1 次效果、不重放）、后台遮挡（未派发）、受限动作组、settle 期间切换标签等场景通过。

@@ -14,7 +14,9 @@ export function createClick(cdp, value, { prepare, assertReady }) {
     try {
       const receipt = JSON.parse(params.payload);
       if (receipt.matched === true) operation.resolve();
-      else operation.reject(Object.assign(new Error('Click target changed or became covered during mouse dispatch. Further incorrect target input was blocked; outcome is unknown. Observe again before retrying.'), { outcome_unknown: true }));
+      else operation.reject(Object.assign(new Error('Click target changed or became covered during mouse dispatch. Further incorrect target input was blocked; outcome is unknown. Observe again before retrying.'), {
+        outcome_unknown: true, diagnostics: { reason: 'target_changed' },
+      }));
     } catch (error) { operation.reject(error); }
   }
   function cancel(tabId) { pending.get(tabId)?.reject(Object.assign(new Error('Tab detached during click; outcome is unknown. Observe before retrying.'), { outcome_unknown: true })); }

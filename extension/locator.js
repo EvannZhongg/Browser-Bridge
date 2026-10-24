@@ -1,3 +1,5 @@
+import { checkedValue } from './errors.js';
+
 // Selectors are reusable queries, never identities inferred from old AX text.
 export function targetOptions(args, { coordinates = false, focused = false } = {}) {
   const hasRef = args.ref != null, hasSelector = args.selector != null;
@@ -19,19 +21,26 @@ export function targetOptions(args, { coordinates = false, focused = false } = {
 
 export function queryElement(selector, type = 'css', nth, waitForMatch = false) {
   if (nth != null && (!Number.isSafeInteger(nth) || nth < 0)) throw new Error('nth must be a nonnegative safe integer (zero-based)');
+  const failure = (message, reason, detail = {}) => Object.assign(new Error(message), {
+    diagnostics: { reason, selector_type: type, ...detail },
+  });
   let element, count, at;
-  if (type === 'xpath') {
-    const result = document.evaluate(selector, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-    count = result.snapshotLength; at = index => result.snapshotItem(index);
-  } else {
-    const normalize = text => text.replace(/\s+/g, ' ').trim();
-    const elements = type === 'label'
-      ? Array.from(document.querySelectorAll('input,textarea,select,button,meter,output,progress')).filter(element =>
-        Array.from(element.labels || []).some(label => normalize(label.textContent || '') === normalize(selector)))
-      : type === 'placeholder'
-        ? Array.from(document.querySelectorAll('[placeholder]')).filter(element => element.getAttribute('placeholder') === selector)
-        : document.querySelectorAll(selector);
-    count = elements.length; at = index => elements[index];
+  try {
+    if (type === 'xpath') {
+      const result = document.evaluate(selector, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      count = result.snapshotLength; at = index => result.snapshotItem(index);
+    } else {
+      const normalize = text => text.replace(/\s+/g, ' ').trim();
+      const elements = type === 'label'
+        ? Array.from(document.querySelectorAll('input,textarea,select,button,meter,output,progress')).filter(element =>
+          Array.from(element.labels || []).some(label => normalize(label.textContent || '') === normalize(selector)))
+        : type === 'placeholder'
+          ? Array.from(document.querySelectorAll('[placeholder]')).filter(element => element.getAttribute('placeholder') === selector)
+          : document.querySelectorAll(selector);
+      count = elements.length; at = index => elements[index];
+    }
+  } catch (error) {
+    throw failure(error.message, 'selector_invalid');
   }
   if (waitForMatch && (count === 0 || (nth != null && nth >= count))) return null;
   if (nth == null && count !== 1) {
@@ -43,11 +52,12 @@ export function queryElement(selector, type = 'css', nth, waitForMatch = false) 
         disabled: node.matches(':disabled') || !!node.closest('[inert], [aria-disabled="true"]'),
         visible: rect.width > 0 && rect.height > 0 && style.visibility === 'visible' };
     });
-    throw new Error(`Selector must match exactly one element; matched ${count}. Scope the selector or provide an explicit zero-based nth. Candidates: ${JSON.stringify(candidates)}${count > candidates.length ? ` (${count - candidates.length} more omitted)` : ''}`);
+    throw failure(`Selector must match exactly one element; matched ${count}. Scope the selector or provide an explicit zero-based nth. Candidates: ${JSON.stringify(candidates)}${count > candidates.length ? ` (${count - candidates.length} more omitted)` : ''}`,
+      count ? 'selector_ambiguous' : 'selector_not_found', { matched: count, candidates, omitted_candidates: Math.max(0, count - candidates.length) });
   }
-  if (nth != null && nth >= count) throw new Error(`Selector nth=${nth} is out of range; matched ${count}`);
+  if (nth != null && nth >= count) throw failure(`Selector nth=${nth} is out of range; matched ${count}`, 'selector_not_found', { matched: count, nth });
   element = at(nth ?? 0);
-  if (element.nodeType !== 1) throw new Error('Selector must resolve to an element');
+  if (element.nodeType !== 1) throw failure('Selector must resolve to an element', 'selector_not_element');
   return element;
 }
 
@@ -66,22 +76,27 @@ export async function resolveSelector(cdp, value, sessions, tabId, args, budget,
     } else {
       const result = await send('Runtime.evaluate', { contextId: context.executionContextId, objectGroup: 'browser-attach',
         expression: `(${queryElement.toString()})(${JSON.stringify(args.selector)},${JSON.stringify(args.selector_type ?? 'css')},${args.nth ?? 'undefined'},true)` });
-      value(result);
+      await checkedValue(result, send, value);
       if (result.result?.subtype !== 'null') {
-        if (!result.result?.objectId) throw new Error('Selector did not resolve to an element');
+        if (!result.result?.objectId) throw Object.assign(new Error('Selector did not resolve to an element'), {
+          diagnostics: { reason: 'selector_not_element', frame_id: frameId },
+        });
         const { node } = await send('DOM.describeNode', { objectId: result.result.objectId });
         backendNodeId = node.backendNodeId;
       }
     }
     if (backendNodeId != null) break;
     if (!wait) return null;
-    budget.describe?.(`selector ${JSON.stringify(args.selector)}${args.name == null ? '' : ` name=${JSON.stringify(args.name)}`}${args.nth == null ? '' : ` nth=${args.nth}`} to appear; current=no matching element`);
+    budget.describe?.(`selector ${JSON.stringify(args.selector)}${args.name == null ? '' : ` name=${JSON.stringify(args.name)}`}${args.nth == null ? '' : ` nth=${args.nth}`} to appear; current=no matching element`,
+      { reason: 'selector_not_found', selector_type: args.selector_type ?? 'css', frame_id: frameId, ...(args.nth == null ? {} : { nth: args.nth }) });
     await budget.run(() => new Promise(resolve => setTimeout(resolve, 20)));
   }
   // Hit-test refs resolve in the default world too. CDP forbids passing object
   // arguments between worlds, even when both wrappers refer to the same node.
   const resolved = await send('DOM.resolveNode', { backendNodeId, objectGroup: 'browser-attach' });
-  if (!resolved.object?.objectId) throw new Error('Selector target detached before resolution; no input was dispatched');
+  if (!resolved.object?.objectId) throw Object.assign(new Error('Selector target detached before resolution; no input was dispatched'), {
+    diagnostics: { reason: 'element_detached', frame_id: frameId },
+  });
   return { target, frameId, objectId: resolved.object.objectId, backendNodeId };
 }
 
@@ -98,7 +113,13 @@ export function matchRole(nodes, args) {
     for (let i = (node.childIds?.length || 0) - 1; i >= 0; i--) pending.push(byId.get(node.childIds[i]));
   }
   const candidates = [...matches.values()];
-  if (args.nth == null && candidates.length > 1) throw new Error(`Role selector must match exactly one element; matched ${candidates.length}. Provide name or an explicit zero-based nth. Candidates: ${JSON.stringify(candidates.slice(0, 10).map((node, nth) => ({ nth, role: node.role?.value, name: String(node.name?.value || '').slice(0, 120) })))}`);
+  if (args.nth == null && candidates.length > 1) {
+    const preview = candidates.slice(0, 10).map((node, nth) => ({ nth, role: node.role?.value, name: String(node.name?.value || '').slice(0, 120) }));
+    throw Object.assign(new Error(`Role selector must match exactly one element; matched ${candidates.length}. Provide name or an explicit zero-based nth. Candidates: ${JSON.stringify(preview)}`), {
+      diagnostics: { reason: 'selector_ambiguous', selector_type: 'role', matched: candidates.length,
+        candidates: preview, omitted_candidates: Math.max(0, candidates.length - preview.length) },
+    });
+  }
   return candidates[args.nth ?? 0] || null;
 }
 
@@ -116,7 +137,7 @@ async function resolveFrameOnce(cdp, value, sessions, tabId, args, budget) {
   const frames = await budget.run(() => sessions.frames(tabId));
   const failure = (error, scope = {}) => {
     const candidates = frames.slice(0, 10).map(frame => ({ frame_id: frame.id, parent_frame_id: frame.parentId ?? null, url: frame.url }));
-    error.diagnostics = { reason: 'frame_locator', ...scope, candidates, omitted_candidates: Math.max(0, frames.length - candidates.length) };
+    error.diagnostics = { reason: 'frame_locator', ...(error.diagnostics ? { cause: error.diagnostics.reason, selector_diagnostics: error.diagnostics } : {}), ...scope, candidates, omitted_candidates: Math.max(0, frames.length - candidates.length) };
     error.message += `; frame scope=${JSON.stringify(scope)}; current frames=${JSON.stringify(candidates)}${frames.length > candidates.length ? ` (${frames.length - candidates.length} more omitted)` : ''}`;
     return error;
   };
@@ -134,7 +155,7 @@ async function resolveFrameOnce(cdp, value, sessions, tabId, args, budget) {
       const send = (method, params) => budget.run(() => cdp(target, method, params));
       const { executionContextId } = await send('Page.createIsolatedWorld', { frameId, worldName: 'browser-attach-locator' });
       const result = await send('Runtime.evaluate', { contextId: executionContextId, expression: `(${queryElement.toString()})(${JSON.stringify(selector)},"css")`, objectGroup: 'browser-attach-frame' });
-      value(result);
+      await checkedValue(result, send, value);
       try {
         const { node } = await send('DOM.describeNode', { objectId: result.result.objectId });
         if (!['IFRAME', 'FRAME'].includes(node.nodeName)) throw new Error('frame.path must resolve to iframe/frame elements');

@@ -127,7 +127,9 @@ export function createInput(cdp, value, sessions) {
     if (mode === 'native') await send('Input.insertText', { text: args.text });
     const matches = value(await send('Runtime.callFunctionOn', { objectId: node.objectId, returnByValue: true,
       functionDeclaration: verifyFill.toString(), arguments: [{ value: args.text }] }));
-    if (matches !== true) throw Object.assign(new Error(`Fill did not retain the requested text. Input may have been swallowed, focus may have moved, or the page may have reformatted it. Outcome is unknown. ${BUSY}`), { outcome_unknown: true });
+    if (matches !== true) throw Object.assign(new Error(`Fill did not retain the requested text. Input may have been swallowed, focus may have moved, or the page may have reformatted it. Outcome is unknown. ${BUSY}`), {
+      outcome_unknown: true, diagnostics: { reason: 'value_not_retained', frame_id: node.frameId },
+    });
     return { filled: true, method: mode, value_verified: true, ...(mode === 'dom' ? { events_trusted: false } : {}), application_result: 'not_checked', observe_again: true };
   }
 

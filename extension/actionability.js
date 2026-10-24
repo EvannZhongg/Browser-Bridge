@@ -6,7 +6,7 @@ export function deadline(timeout_ms = 5000, phase = 'input', parentEnd = Infinit
   let dispatched = false, waiting, diagnostics;
   function error() {
     const result = timeoutError();
-    if (diagnostics) result.diagnostics = diagnostics;
+    if (diagnostics && !dispatched) result.diagnostics = diagnostics;
     return result;
   }
   function timeoutError() {
@@ -19,6 +19,7 @@ export function deadline(timeout_ms = 5000, phase = 'input', parentEnd = Infinit
       : `Target did not become actionable within ${timeout_ms} ms${waiting ? `; waiting for ${waiting}` : ''}; no input was dispatched.`);
     result.input_dispatched = dispatched;
     result.outcome_unknown = dispatched;
+    result.diagnostics = { reason: dispatched ? 'input_timeout' : 'preparation_timeout' };
     return result;
   }
   async function run(operation) {
@@ -91,6 +92,8 @@ export function inspectTarget(editable) {
 export async function delivery(operation, ms = 1250) {
   let timer;
   try { return await Promise.race([operation, new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(Object.assign(new Error('Native input has no verified receipt. Outcome is unknown. Browser UI may be capturing input; press Esc to dismiss a native menu, then observe. Never automatically replay or fall back.'), { outcome_unknown: true })), ms);
+    timer = setTimeout(() => reject(Object.assign(new Error('Native input has no verified receipt. Outcome is unknown. Browser UI may be capturing input; press Esc to dismiss a native menu, then observe. Never automatically replay or fall back.'), {
+      outcome_unknown: true, diagnostics: { reason: 'delivery_unverified' },
+    })), ms);
   })]); } finally { clearTimeout(timer); }
 }

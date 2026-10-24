@@ -184,7 +184,14 @@ test('native fill detects swallowed or reformatted text and never falls back or 
     return result;
   };
   const snapshot = await f.exec('snapshot'), ref = snapshot.snapshot.match(/\[([^\]]+)\] textbox/)[1];
-  await assert.rejects(f.exec('fill', { ref, text: 'lost' }), /did not retain.*Outcome is unknown/);
+  await assert.rejects(f.exec('fill', { ref, text: 'lost' }), error => {
+    assert.match(error.message, /did not retain.*Outcome is unknown/);
+    assert.equal(error.diagnostics.reason, 'value_not_retained');
+    assert.equal(error.input_dispatched, true);
+    assert.equal(error.post_action.delivery, 'unknown');
+    assert.ok(!JSON.stringify(error.diagnostics).includes('lost'));
+    return true;
+  });
   assert.equal(f.calls.filter(call => call.method === 'Input.insertText').length, 1);
   assert.ok((await f.exec('snapshot')).snapshot);
 });

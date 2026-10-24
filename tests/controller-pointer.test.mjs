@@ -139,6 +139,7 @@ test('mouse acknowledgments cannot serialize dispatch; mismatched events never r
     method === 'Runtime.bindingCalled' ? { ...args, payload: '{"matched":false}' } : args);
   await assert.rejects(f.exec('click', { x: 55, y: 30 }), error => {
     assert.match(error.message, /target changed/); assert.equal(error.input_dispatched, true);
+    assert.equal(error.diagnostics.reason, 'target_changed');
     assert.equal(error.post_action.delivery, 'unknown'); return true;
   });
   assert.ok((await f.exec('snapshot')).snapshot);

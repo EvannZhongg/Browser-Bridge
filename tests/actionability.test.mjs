@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deadline, inspectTarget, waitForTarget } from '../extension/actionability.js';
+import { deadline, inspectTarget, waitForTarget, delivery } from '../extension/actionability.js';
 import { clickOptions } from '../extension/click.js';
 import { createPointer, describeHit, framePoint, normalizeHit, hitRelation } from '../extension/pointer.js';
 import { NAVIGATION_MAX_TIMEOUT_MS, NAVIGATION_OBSERVATION_TIMEOUT_MS, HUB_OPERATION_TIMEOUT_MS, CLIENT_RESPONSE_TIMEOUT_MS } from '../extension/limits.js';
@@ -58,6 +58,21 @@ test('a timed out preparation cannot dispatch when its CDP reply eventually arri
   assert.equal(dispatched, 0);
   const sent = deadline(100); sent.dispatch();
   await assert.rejects(sent.run(() => new Promise(() => {})), /Outcome is unknown.*never automatically replay/);
+});
+
+test('input timeouts distinguish preparation, dispatch and missing receipts without stale preparation reasons', async () => {
+  const preparing = deadline(100);
+  await assert.rejects(preparing.run(() => new Promise(() => {})), error => {
+    assert.equal(error.diagnostics.reason, 'preparation_timeout'); assert.equal(error.input_dispatched, false); return true;
+  });
+  const sent = deadline(100);
+  sent.describe('waiting for element', { reason: 'selector_not_found' }); sent.dispatch();
+  await assert.rejects(sent.run(() => new Promise(() => {})), error => {
+    assert.equal(error.diagnostics.reason, 'input_timeout'); assert.equal(error.input_dispatched, true); assert.equal(error.outcome_unknown, true); return true;
+  });
+  await assert.rejects(delivery(new Promise(() => {}), 10), error => {
+    assert.equal(error.diagnostics.reason, 'delivery_unverified'); assert.equal(error.outcome_unknown, true); return true;
+  });
 });
 
 test('shared DOM check handles inherited inert across shadow hosts, visibility, disabled and read-only', () => {

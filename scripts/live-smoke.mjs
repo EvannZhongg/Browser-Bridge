@@ -309,7 +309,35 @@ try {
   const coverClaim = await call('claim_tab', { browser_id: browserId, tab_id: listedCover.tab_id });
   await call('tab_control', { action: 'close', tab_handle: coverClaim.tab_handle });
   checks.push('background native ref/selector/coordinate click verifies trusted delivery without activation; explicit DOM and foreground click; span/button hit hints');
-  assert.equal((await rawCall('click', { ...handle, selector: 'button' })).isError, true);
+  for (const [method, args, reason] of [
+    ['click', { selector: 'button' }, 'selector_ambiguous'],
+    ['click', { selector: 'button', selector_type: 'role' }, 'selector_ambiguous'],
+    ['click', { selector: '[' }, 'selector_invalid'],
+    ['click', { selector: '//*[', selector_type: 'xpath' }, 'selector_invalid'],
+    ['click', { selector: '#missing-selector', timeout_ms: 150 }, 'selector_not_found'],
+    ['read_text', { selector: 'input' }, 'selector_ambiguous'],
+    ['read_text', { selector: '#missing-selector' }, 'selector_not_found'],
+    ['wait', { selector: 'button', condition: 'attached' }, 'selector_ambiguous'],
+  ]) {
+    const result = await rawCall(method, { ...handle, ...args });
+    assert.equal(result.isError, true);
+    const error = JSON.parse(result.content[0].text);
+    assert.equal(error.diagnostics?.reason, reason, result.content[0].text);
+    if (method !== 'read_text') assert.equal(error.input_dispatched, false);
+  }
+  const failedBatch = await rawCall('batch', { ...handle, steps: [{ action: 'click', selector: 'button' }] });
+  assert.equal(failedBatch.isError, true);
+  assert.equal(JSON.parse(failedBatch.content[0].text).diagnostics.reason, 'selector_ambiguous');
+  checks.push('selector failure reasons cross real CDP, extension, Hub and stdio MCP for CSS/XPath/role, text, wait and batch');
+  await evaluate(`(()=>{const input=document.createElement('input');input.id='format-probe';input.oninput=()=>{input.dataset.inputs=String(Number(input.dataset.inputs||0)+1);input.value='1,234'};document.body.append(input)})()`);
+  const formatted = await rawCall('fill', { ...handle, selector: '#format-probe', text: '1234' });
+  assert.equal(formatted.isError, true);
+  const formatError = JSON.parse(formatted.content[0].text);
+  assert.equal(formatError.diagnostics.reason, 'value_not_retained');
+  assert.equal(formatError.input_dispatched, true); assert.equal(formatError.post_action.delivery, 'unknown');
+  assert.equal((await evaluate(`document.querySelector('#format-probe').dataset.inputs`)).value, '1');
+  await evaluate(`document.querySelector('#format-probe').remove()`);
+  checks.push('native fill formatting mismatch reports value_not_retained with unknown-outcome evidence and one input event');
   await call('fill', { ...handle, selector: '#name', mode: 'dom', text: 'selector input' });
   assert.equal((await call('read_text', { ...handle, selector: '#name', mode: 'value' })).text, 'selector input');
   const textPage = await call('read_text', { ...handle, selector: '#full-text', mode: 'value', max_chars: 4 });

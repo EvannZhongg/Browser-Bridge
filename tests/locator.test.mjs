@@ -15,6 +15,7 @@ test('explicit nth selects CSS/XPath document order; omission remains strict', (
   for (const type of ['css', 'xpath']) {
     assert.throws(() => query('input', type), error => {
       assert.match(error.message, /matched 2/);
+      assert.equal(error.diagnostics.reason, 'selector_ambiguous'); assert.equal(error.diagnostics.matched, 2);
       assert.match(error.message, /"nth":0,"tag":"button","text":"Choice 0","disabled":false,"visible":true/);
       assert.match(error.message, /"nth":1,"tag":"button","text":"Choice 1","disabled":true,"visible":false/);
       return true;
@@ -127,7 +128,10 @@ test('role locators use exact browser AX identities in tree order and re-resolve
   assert.equal(matchRole(nodes, { selector: 'option', nth: 0 }).backendDOMNodeId, 2);
   assert.equal(matchRole(nodes, { selector: 'option', name: '2026' }).backendDOMNodeId, 1);
   assert.equal(matchRole(nodes, { selector: 'option', name: '202' }), null);
-  assert.throws(() => matchRole(nodes, { selector: 'option' }), /matched 2/);
+  assert.throws(() => matchRole(nodes, { selector: 'option' }), error => {
+    assert.match(error.message, /matched 2/);
+    assert.equal(error.diagnostics.reason, 'selector_ambiguous'); assert.equal(error.diagnostics.selector_type, 'role'); return true;
+  });
   let backend = 10;
   const sessions = { frames: async () => [{ id: 'main' }], target: () => ({ tabId: 9 }) };
   const cdp = async (target, method, params) => method === 'Accessibility.getFullAXTree'
