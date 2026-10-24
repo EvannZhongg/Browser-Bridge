@@ -1,6 +1,6 @@
 # 架构与设计边界
 
-当前实现为 **0.22.1**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
+当前实现为 **0.23.0**。本文说明 BrowserAttach 的组件、控制模型与设计取舍；工具参数见 [使用指南](USAGE.md)。
 
 ## 组件与数据流
 
@@ -34,6 +34,7 @@ MCP 客户端
 | `extension/outcomes.js` | 动作前临时 DOM 观察器、未知结果后的有界只读探测与证据封装，不推断业务成功 |
 | `extension/fetch.js`、`fetch-page.js` | 单页读取参数与缓存分页、临时页创建/导航/采集/关闭；复用 controller 的 attach 和标签队列 |
 | `extension/observation.js`、`snapshot.js` | 文档/frame 观察版本、AX 采集、ref 身份与失效历史；AX 渲染和快照分页 |
+| `extension/fields.js` | 每次观察按 debugger session 采集 DOMSnapshot，按 frame/backend 节点身份关联 AX，提取结构化字段事实和原生文件选择状态 |
 | `extension/network.js` | 一份被动请求与文档响应状态，供 fetch、网络空闲等待及诊断日志使用 |
 | `extension/diagnostics.js`、`log-data.js` | 日志缓冲与分页、可选正文捕获、截断及脱敏；不拥有网络空闲或文档状态 |
 | `extension/{navigation,evaluate}.js` | 导航等待、有界求值结果缓存与分页 |
@@ -82,6 +83,7 @@ HTTP 状态复用 network.js 的 Network.responseReceived 观察，按主文档 
 - **交互视图**：可选 `profile=interactive` 在同一渲染器中仅保留 AX 控件角色、可聚焦/可编辑节点及其祖先链和控件内文本，不以 backendNodeId/ref 是否存在判断交互性。独立文本和合并正文可隐藏或截取预览，控件名称、值和 ref 的原始 AX 身份保留；默认 `full` 行为不变。筛选仍读取完整 AX 树，只降低输出与分页成本；视图参数绑定分页观察。
 - **文本查询与精简输出**：`snapshot(query=...)` 复用同一次 AX 渲染，按当前视图中节点的完整名称（含合并正文）、value 或字段 context 做不区分大小写的字面子串筛选，只输出匹配行和对应 frame 标题；不搜索 role/ref 或任意 DOM 属性，不新增索引缓存。新查询仍采集新观察并使旧 refs 失效，query 与分页绑定。默认省略 viewport、snapshot_id 和重复规则说明，`verbose=true` 返回前两项；frame 覆盖、视图、预算和游标语义保留。
 - **字段上下文**：表单控件可附带 context 并参与 query，保留至多 160 字符的前一兄弟分支 AX 文本；只在四层以内 generic/none/group 祖先、单控件容器中查找，每次容器/文本遍历分别限制 64/32 节点。不将其伪装为 accessible name，不用于 label 定位或 ref 身份验证；interactive/text=false 也保留提示。
+- **结构化字段**：profile=fields 复用相同观察状态、ref 注册、上下文提取、双预算分页与失效模型，以 fields 数组输出 DOM 与 AX 事实。每个 debugger session 在本次观察内至多一次 DOMSnapshot.captureSnapshot；按文档 frameId 与 backendNodeId 关联，不用选择器或名称推断身份，不逐字段读取普通 DOM 属性。DOMSnapshot 同时保留闭合 Shadow DOM、原生实时值与选项状态；只对文件 input 在隔离世界读取 FileList 的数量/名称，并释放 object group。默认限于 AX 暴露的原生字段与 AX 字段角色；include_hidden 显式加入 AX 缺失的原生字段，其 ref 可空。密码值不进入字段结果及查询。名称来自 AX，labels 来自 HTML label 名称来源，context 保持提示语义；原生/AX 值不合并成业务提交值。会话内 DOM 捕获只存在于本次采集，续读使用既有 entries，不增加持久 DOM 缓存。AX/DOM/FileList 与跨 frame 读取不是原子事务。
 - **ref 解析**：ref 保存 `backendNodeId`、所属 frame/session 和观察时的 AX role/name；动作时重新 `DOM.resolveNode` 并用局部 AX 查询核对语义身份。输入与求值不清空 refs，只使快照分页失效；原节点仍连接时可复用，节点替换、role/name 改变、文档或 frame 变化时安全失败，不按 role/name 猜测替代节点。
 - **ref 失效诊断**：controller 每标签保留最近至多 1000 个已清理 ref 的 cause/frame_id，不保留 DOM 对象、字段值或替代定位信息。新观察、文档/frame 变化及对话框清理记录各自原因；解析时单独报告节点脱离、session 或 AX 身份变化。释放、断连、关闭和 detach 清空历史，淘汰后返回 unknown_ref。
 - **双预算**：`max_nodes` 限制节点数，`max_chars` 限制每行序列化后的累计字符数；两者独立，任一耗尽都会返回 `next_cursor`。

@@ -1,6 +1,6 @@
 # BrowserAttach 使用指南
 
-适用于 **0.22.1**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
+适用于 **0.23.0**：Node.js 22+、Chrome / Edge 125+、23 个 MCP 工具。安装、配对与升级见 [README](../README.md)，宿主配置见 [Agent 集成](AGENT-INTEGRATION.md)，内部机制见 [架构说明](ARCHITECTURE.md)。
 
 本文供按需查阅，不会自动通过 MCP 发送给 agent。MCP 初始化 `instructions` 提供通用规则，工具 description 与参数 schema 提供调用说明；宿主应把 instructions 纳入模型上下文。
 
@@ -34,7 +34,7 @@
 | `browser_open_tab` | 在指定配置中打开 HTTP(S) 标签 |
 | `browser_claim_tab` | 独占接管已发现的标签 |
 | `browser_tab_control` | 释放、激活或关闭标签 |
-| `browser_snapshot` | AX 语义树、元素 ref、查询与 frame 覆盖 |
+| `browser_snapshot` | AX 语义树或结构化字段数组、元素 ref、查询与 frame 覆盖 |
 | `browser_read_text` | 正文、字段值或支持的编辑器模型 |
 | `browser_fetch` | 使用登录态在临时后台标签读取一个 URL |
 | `browser_click` | 原生点击或显式 DOM 点击 |
@@ -138,20 +138,21 @@ snapshot 返回 AX 语义树，每行 `[token:n] role "name" 状态`；`[token:n
 
 | 参数 | 用途与默认值 |
 |---|---|
-| `profile` | `full`；interactive 只保留控件、可聚焦/编辑节点及祖先链，自定义控件可能被省略 |
+| `profile` | `full`；interactive 保留控件、可聚焦/编辑节点及祖先链；fields 返回结构化字段数组，见下文 |
+| `include_hidden` | 仅 fields，默认 false；true 额外读取未暴露到 AX 的原生字段，如隐藏 input |
 | `text` | true；false 隐去独立正文，保留控件名称和值 |
 | `text_limit` | 正文名称预览上限 0–10000；interactive 默认 80，full 默认不截断；控件名称和值保留完整 |
 | `query` | 1–2000 字符的名称/value/context 字面子串，不区分大小写；零命中正常返回 |
 | `max_nodes` / `max_chars` | 600 / 24000；范围分别为 1–3000 / 1–2000000，两个预算独立 |
 | `verbose` | false；true 额外返回 viewport 和 snapshot_id |
 
-查询在当前视图中匹配完整名称/value，再截取正文预览；不搜索 role、ref 或未暴露给 AX 的属性。阅读查询保留 full，interactive 会先筛掉正文。视图和查询减少返回量，不减少完整 AX 树采集。
+full/interactive 查询在当前视图中匹配完整名称/value/context，再截取正文预览；不搜索 role、ref 或未暴露给 AX 的属性。阅读查询保留 full，interactive 会先筛掉正文。视图和查询减少返回量，不减少完整 AX 树采集。
 
 ```json
 {"tab_handle":"...","query":"保存","max_nodes":20}
 ```
 
-`next_cursor` 继续同一份观察，保留 refs。续读可省略 profile/text/text_limit/query；显式提供时须与原观察一致。单个节点放不进预算会报出所需大小。主 frame、同进程 iframe 和跨进程 iframe（OOPIF）均可覆盖；未能读取或期间变化的 frame 见 omitted_frames。
+`next_cursor` 继续同一份观察，保留 refs。续读可省略 profile/text/text_limit/query/include_hidden；显式提供时须与原观察一致。单个节点或字段放不进预算会报出所需大小。主 frame、同进程 iframe 和跨进程 iframe（OOPIF）均可覆盖；未能读取或期间变化的 frame 见 omitted_frames。
 
 | 事件 | ref / 快照分页的影响 |
 |---|---|
@@ -167,6 +168,32 @@ ref 对应原节点及其可访问身份；节点被替换、脱离文档或 rol
 ref 错误的 diagnostics.reason=stale_ref，cause 区分 snapshot_replaced、document_navigation/document_updated、same_document_navigation、frame_changed、frame_session_changed、element_detached 和 identity_changed 等原因。每标签至多保留最近 1000 个已清理 ref 的失效原因，释放或断连清空；超出范围或未由本次接管创建的 ref 返回 unknown_ref，不推断其来源。
 
 表单控件可附带 `context="性别"` 等邻近文本，在 interactive 或 text=false 下也保留，并参与 query。context 来自有限祖先范围内、仅含一个控件的容器中前一兄弟节点的 AX 文本；只是观察提示，不代表真实标签关联，不改写 AX name，也不参与 ref 身份校验。复杂布局可能没有 context。
+
+### 结构化字段观察
+
+```json
+{"tab_handle":"...","profile":"fields"}
+{"tab_handle":"...","profile":"fields","query":"TEXTS28"}
+{"tab_handle":"...","profile":"fields","include_hidden":true,"query":"rawFee"}
+```
+
+fields 视图用 `fields` 数组替代 snapshot 文本，保留重复标签和字段名，避免以标签作为键覆盖数据。`node_count/total_node_count` 与 max_nodes 计数字段，max_chars 仍按完整序列化项计算。`frames` 列出本次观察的 frame_id/URL，读取失败及变化见 omitted_frames。每行示例：
+
+```json
+{
+  "ref":"token:1", "frame_id":"frame-id",
+  "labels":["签证费"], "context":null,
+  "ax":{"role":"textbox","name":"签证费","value":"1,234.00","readonly":true},
+  "dom":{"tag":"input","id":"fee","name":"TEXTS28","type":"text","value":"1,234.00","value_source":"input_value"}
+}
+```
+
+- `ax` 是浏览器提供的名称、角色、值及 disabled/readonly/required/invalid/checked/selected/expanded/multiselectable 状态；缺失属性不推断为 false。`labels` 来自浏览器 AX 名称的真实 HTML label 来源，context 则是现有有界附近文本，两者不改写 AX name。
+- `dom.id/name/type/placeholder` 来自原生 DOM 快照属性；input 缺少 type 时记录 text。`dom.value` 的 value_source 区分 input_value、textarea_value、selected_option、text_content。select 附 multiple 和 selected_options 的值/标签；checkbox/radio 附原生 checked，AX checked=mixed 另行保留。contenteditable/output 的值是捕获的 textContent，不声称为编辑器完整模型。
+- 默认包括暴露到 AX 的原生 input/textarea/select/output/contenteditable，以及 AX 字段角色的自定义控件；不把普通按钮当字段。文件 input 即使 AX 角色是 button 也识别为字段。include_hidden=true 才额外包括未暴露到 AX 的原生字段；此类行 ax/ref 可为 null，只提供可观察的 DOM 事实。密码字段省略 DOM 与 AX 值，返回 value_redacted=true。
+- 文件 input 的 `dom.files={available,count,names}` 只报告隔离世界读取时的当前本地选择，不读取文件内容，不代表服务端附件数量或接受结果；读取失败为 available=false。上传后组件清空 input 时 count 可为 0。
+- query 在 AX 名称/值、labels/context、DOM id/name/placeholder/value 和选中选项值/标签上作字面子串匹配。text/text_limit 只控制正文，不截断字段值。分页续读不重新采集；要核对当前值应发起新的字段观察。
+- DOM 与 AX 按所属 frame/session 的 backend 节点身份关联，支持闭合 Shadow DOM 和 OOPIF。两次捕获之间节点被替换时不按 id/name 猜测新节点，只有 AX 事实的行 dom=null；无法判断原生字段类型时也省略 AX value。各 frame 与文件列表分步读取，不提供跨来源原子快照、业务提交值、组件内部模型或并发写入归属判断。读取最终保存结果仍需任务相关的页面或接口证据。
 
 ### browser_read_text
 

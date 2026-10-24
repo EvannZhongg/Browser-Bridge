@@ -1,8 +1,16 @@
 # 验证报告
 
-当前版本 **0.22.1**（2026-10-25）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
+当前版本 **0.23.0**（2026-10-25）。浏览器验证使用本地 fixture 和临时 profile；测试链路在各项下说明。
 
 ## 当前版本
+
+- `npm test`：253 项通过。新增结构化字段保留重复标签、真实 HTML label 来源与附近 context、DOM/AX 值区分、原生多选与 mixed 状态、隐藏字段显式读取、密码值省略、节点身份缺失不按名称合并、完整行双预算分页、session 级 DOM 捕获复用与文件选择只读采集。覆盖输入后 cursor 失效且 ref 保留、新观察替换旧 ref、子 frame 变化只移除子树、文档捕获中导航不恢复旧引用。
+- Chromium 156、Edge 155 headless 完整 stdio MCP `live-smoke`：各 281 次调用、31 项检查通过。真实 DOMSnapshot 与 AX 关联验证重复 HTML 标签、TEXTS28 字段名查询、格式化/只读值、多选原始值/标签、checkbox mixed、隐藏输入、密码省略、闭合 Shadow DOM、同源 iframe、OOPIF、文件选择数量/中文文件名、分页与字段 ref 操作；单纯观察不派发 input。保留输入、截图、上传、对话框、日志与 12000 节点 AX 分页回归。
+- `npm run test:package`：包外安装与 stdio MCP 通过，23 个工具、61 个发布文件，无配对密钥；新增 fields 模块纳入包边界检查。没有新工具、依赖或扩展权限，观察能力扩展升至 0.23.0。
+- 本机部署：协调升级因已有 MCP 连接拒绝后，按 stop/start 重启；Hub 为 0.23.0 / ready，Chrome、Edge 扩展均为 0.23.0。稳定扩展目录 `F:\.nosis\browser-attach\extension` 的 43 个文件已核对：manifest 版本一致，其余非生成源码/资源 SHA-256 一致。
+- 当前边界：跨 frame、AX/DOM/FileList 分步采集不具备事务或并发写入归属；自定义组件内部模型、最终提交值和服务端附件状态仍需任务相关检查。隐藏原生字段可能无 AX/ref，未关联 DOM 身份的 AX 行省略值；缺失或失败的 frame 保留 omitted_frames。已有 MCP 客户端需重连刷新字段视图参数并重新发现/接管。
+
+## 0.22.1 验证
 
 - `npm test`：246 项通过。新增隔离世界选择器诊断经 CDP 异常对象读取、单步/read_text/wait/batch 传递及 frame 路径底层原因保留；诊断读取失败保留原异常并清理 wrapper。补充准备/派发超时分类、派发后不沿用准备诊断、fill 值不匹配保留未知结果且不回显字段值。后续新增的 click 目标变化原因断言另通过 15 项指针回归。
 - Chromium 156、Edge 155 headless 完整 stdio MCP `live-smoke`：各 267 次工具调用、29 项检查通过。新增真实 CSS/XPath 语法错误、CSS/AX role 歧义、缺失 selector、read_text/wait/batch 错误原因经过扩展 → Hub → MCP 的检查；原生 fill 同步格式化返回 value_not_retained、input_dispatched=true 及 post_action，真实 input 事件仅 1 次。保留上传、对话框、OOPIF、日志、后台输入与大 AX 树回归。

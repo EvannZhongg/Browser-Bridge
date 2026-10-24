@@ -259,6 +259,58 @@ try {
   const unmatched = await call('snapshot', { ...handle, query: 'no-such-fixture-control' });
   assert.equal(unmatched.snapshot, ''); assert.equal(unmatched.node_count, 0); assert.equal(unmatched.next_cursor, null);
   checks.push('compact default/full reading, fresh AX name query with actionable ref, query pagination/verbose metadata and zero matches');
+  await evaluate(`(() => {
+    const section=document.createElement('section');section.id='field-observation-fixture';
+    section.innerHTML='<label for="observed-fee">签证费</label><input id="observed-fee" name="TEXTS28" value="1,234.00" readonly>'+
+      '<label>签证费<input id="observed-other" name="TEXTS29" value="0"></label>'+
+      '<input name="rawFee" type="hidden" value="1234">'+
+      '<label>多选<select id="observed-select" multiple><option value="cn" selected>中国</option><option value="us" selected>美国</option></select></label>'+
+      '<label>同意<input id="observed-check" type="checkbox"></label>'+
+      '<label>密码<input id="observed-password" type="password" value="field-observation-secret"></label>'+
+      '<div id="observed-custom" role="combobox" aria-label="自定义选项" aria-expanded="false" tabindex="0">显示项</div>'+
+      '<div id="observed-shadow"></div>';
+    document.body.append(section);document.querySelector('#observed-check').indeterminate=true;
+    const root=document.querySelector('#observed-shadow').attachShadow({mode:'closed'});
+    root.innerHTML='<label>影子字段<input id="shadow-field" name="shadowName" value="shadow value"></label>';
+    window.fieldObservationEvents=0;section.addEventListener('input',()=>window.fieldObservationEvents++);
+    const frame=document.createElement('iframe');
+    frame.srcdoc='<label>同源字段<input name="sameOriginField" value="same-origin value"></label>';
+    const loaded=new Promise(resolve=>frame.onload=resolve);section.append(frame);return loaded;
+  })()`);
+  const fieldView = await call('snapshot', { ...handle, profile: 'fields', max_nodes: 3000, max_chars: 100000 });
+  assert.equal(fieldView.snapshot, undefined); assert.deepEqual(fieldView.omitted_frames, []);
+  const fee = fieldView.fields.find(field => field.dom?.name === 'TEXTS28');
+  assert.ok(fee?.ref); assert.equal(fee.dom.value, '1,234.00'); assert.equal(fee.ax.readonly, true);
+  assert.ok(fee.labels.includes('签证费'), JSON.stringify(fee));
+  assert.equal(fieldView.fields.filter(field => field.labels.includes('签证费')).length, 2);
+  assert.ok(!fieldView.fields.some(field => field.dom?.name === 'rawFee'));
+  assert.ok(!JSON.stringify(fieldView).includes('field-observation-secret'));
+  assert.deepEqual(fieldView.fields.find(field => field.dom?.id === 'observed-select').dom.selected_options,
+    [{ value: 'cn', label: '中国' }, { value: 'us', label: '美国' }]);
+  assert.equal(fieldView.fields.find(field => field.dom?.id === 'observed-check').ax.checked, 'mixed');
+  assert.equal(fieldView.fields.find(field => field.dom?.id === 'observed-custom').ax.role, 'combobox');
+  assert.equal(fieldView.fields.find(field => field.dom?.name === 'shadowName').dom.value, 'shadow value');
+  const sameOriginField = fieldView.fields.find(field => field.dom?.name === 'sameOriginField');
+  assert.equal(sameOriginField.dom.value, 'same-origin value'); assert.notEqual(sameOriginField.frame_id, fee.frame_id);
+  const selectedFiles = fieldView.fields.find(field => field.dom?.type === 'file');
+  assert.equal(selectedFiles.dom.files.available, true); assert.equal(selectedFiles.dom.files.count, 0);
+  assert.equal((await evaluate('window.fieldObservationEvents')).value, 0);
+  const hiddenFields = await call('snapshot', { ...handle, profile: 'fields', include_hidden: true, query: 'rawFee' });
+  assert.equal(hiddenFields.fields.length, 1); assert.equal(hiddenFields.fields[0].ref, null);
+  assert.equal(hiddenFields.fields[0].dom.value, '1234');
+  const fieldQuery = await call('snapshot', { ...handle, profile: 'fields', query: 'TEXTS28' });
+  assert.equal(fieldQuery.fields.length, 1);
+  let fieldPage = await call('snapshot', { ...handle, profile: 'fields', query: '签证费', max_nodes: 1 });
+  const firstFieldRef = fieldPage.fields[0].ref;
+  assert.equal(fieldPage.truncated, true);
+  fieldPage = await call('snapshot', { ...handle, cursor: fieldPage.next_cursor });
+  assert.equal(fieldPage.fields.length, 1); assert.equal(fieldPage.next_cursor, null);
+  await call('fill', { ...handle, ref: fieldPage.fields[0].ref, text: '2', mode: 'dom' });
+  assert.equal((await evaluate('document.querySelector("#observed-other").value')).value, '2');
+  const readOnlyField = await rawCall('fill', { ...handle, ref: firstFieldRef, text: '3', timeout_ms: 1000 });
+  assert.equal(readOnlyField.isError, true); assert.equal(JSON.parse(readOnlyField.content[0].text).diagnostics.reason, 'read_only');
+  await evaluate('document.querySelector("#field-observation-fixture").remove()');
+  checks.push('structured DOM/AX field arrays: duplicate HTML labels, id/name queries, hidden opt-in, password omission, multi-select/mixed state, closed Shadow DOM, native file selection, immutable pagination and actionable refs without observation input');
   assert.ok(!(await call('logs', { ...handle, kind: 'console' })).entries.some(entry => entry.text === 'attach-before-claim'));
   assert.deepEqual((await evaluate('Promise.resolve({title: document.title, answer: 6 * 7})')).value,
     { title: 'Attach upload fixture', answer: 42 });
@@ -403,7 +455,9 @@ try {
   assert.equal((await state()).files.single[0].text, 'Attach 上传内容\n'); checks.push('single file content + Unicode path');
   assert.ok((await state()).events.includes('single:input'));
   assert.ok((await state()).events.includes('single:change'));
-  await snapshot();
+  const uploadedField = await call('snapshot', { ...handle, profile: 'fields', query: 'single' });
+  assert.equal(uploadedField.fields[0].dom.files.count, 1);
+  assert.deepEqual(uploadedField.fields[0].dom.files.names, ['中文 space.txt']);
   assert.equal((await rawCall('upload_file', { ...handle, ref: single, files: [file] })).isError, true); checks.push('new snapshot expires the old ref');
   await call('upload_file', { ...handle, ref: await ref('Multiple'), files: [file, empty] });
   await until(async () => (await state()).files.multiple?.length === 2, 'multiple file content');
@@ -445,6 +499,14 @@ try {
   };
   const frameState = async id => (await evaluate(`window.frameState[${JSON.stringify(id)}]`)).value;
   await until(async () => (await snapshot()).snapshot.includes('Nested button'), 'nested OOPIF snapshot');
+  const frameFields = await call('snapshot', { ...handle, profile: 'fields', max_chars: 100000 });
+  assert.deepEqual(frameFields.omitted_frames, []);
+  const childField = frameFields.fields.find(field => field.ax?.name === 'Child name');
+  assert.ok(childField?.ref); assert.equal(childField.dom.id, 'name');
+  assert.ok(frameFields.frames.some(frame => frame.frame_id === childField.frame_id && frame.url.includes('/frame')));
+  await call('fill', { ...handle, ref: childField.ref, text: 'field OOPIF', mode: 'dom' });
+  assert.equal((await frameState('child')).text, 'field OOPIF');
+  checks.push('structured fields join OOPIF DOM/AX by frame/session and produce usable child refs');
   const childClick = await call('click', { ...handle, ref: await childRef('button', 'Child button') });
   await until(async () => (await frameState('child'))?.clicks === 1, 'OOPIF native click');
   await call('click', { ...handle, ...childClick.clicked });

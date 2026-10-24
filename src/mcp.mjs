@@ -103,13 +103,14 @@ export function createMcp(client) {
     if (args.focus_window != null) throw new Error('focus_window is only valid for action=activate');
     return { tab_handle: args.tab_handle };
   });
-  tool('snapshot', 'Read an AX tree with refs and frame coverage, or find nodes by query without returning the whole tree. A new observation replaces refs; next_cursor continues unchanged view options.', {
+  tool('snapshot', 'Read an AX tree, or profile=fields for structured DOM/AX field facts with refs, HTML labels, nearby context and native values. Field rows distinguish DOM values from AX values, not submitted data or application success. A new observation replaces refs; next_cursor continues the captured view.', {
     ...handle, max_nodes: integerRange('max_nodes', 1, 3000).default(600),
     max_chars: integerRange('max_chars', 1, 2000000).default(24000), cursor: z.string().optional(),
-    profile: z.enum(['full', 'interactive']).optional().describe('Default full; interactive keeps controls, focusable/editable nodes and ancestors.'),
+    profile: z.enum(['full', 'interactive', 'fields']).optional().describe('Default full; interactive keeps controls and ancestors; fields returns a fields array instead of AX text.'),
+    include_hidden: z.boolean().optional().describe('fields only, default false: also include native fields omitted from AX, such as hidden inputs. These may have ref=null. Password values are omitted.'),
     text: z.boolean().optional().describe('Default true; false hides prose, preserving control names and values.'),
     text_limit: integerRange('text_limit', 0, 10000).optional().describe('Prose preview length, marked with …; control names/values stay complete. Default 80 for interactive, unlimited for full.'),
-    query: z.string().min(1).max(2000).optional().describe('Case-insensitive literal substring of AX names, values or field context, before text previews. Context is nearby text, not an accessible name. Returns matching lines and refs; zero matches is not an error.'),
+    query: z.string().min(1).max(2000).optional().describe('Case-insensitive literal substring of names, values or nearby context. fields also searches HTML labels, DOM id/name/placeholder and selected options. Zero matches is not an error.'),
     verbose: z.boolean().default(false).describe('Include viewport and snapshot_id.'),
   });
   tool('read_text', 'Read rendered page/frame text, optionally scoped to a selector. mode=value reads a field; mode=editor reads a Monaco/CodeMirror 5 model. complete_source reports completeness; next_offset continues live text, which may change.', {

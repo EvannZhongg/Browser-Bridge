@@ -166,7 +166,8 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   const scrollSchema = tools.find(tool => tool.name === 'browser_scroll').inputSchema.properties;
   assert.deepEqual(scrollSchema.mode.enum, ['dom', 'wheel']); assert.equal(scrollSchema.mode.default, 'dom');
   const snapshotSchema = tools.find(tool => tool.name === 'browser_snapshot').inputSchema.properties;
-  assert.deepEqual(snapshotSchema.profile.enum, ['full', 'interactive']);
+  assert.deepEqual(snapshotSchema.profile.enum, ['full', 'interactive', 'fields']);
+  assert.equal(snapshotSchema.include_hidden.type, 'boolean');
   assert.equal(snapshotSchema.text.type, 'boolean'); assert.equal(snapshotSchema.text_limit.maximum, 10000);
   assert.equal(snapshotSchema.query.maxLength, 2000); assert.equal(snapshotSchema.verbose.default, false);
   for (const name of ['upload_file', 'open_tab', 'discover', 'tab_control', 'evaluate', 'logs']) assert.ok(tools.some(tool => tool.name === `browser_${name}`));
@@ -229,6 +230,10 @@ test('real stdio MCP exposes 23 tools including ordered batch, unified logs, sin
   assert.equal(viewRequest.arguments.profile, 'interactive'); assert.equal(viewRequest.arguments.text, false);
   assert.equal(viewRequest.arguments.text_limit, 40);
   assert.equal(viewRequest.arguments.query, 'Save'); assert.equal(viewRequest.arguments.verbose, true);
+  await call('snapshot', { tab_handle: handle, profile: 'fields', include_hidden: true, query: 'TEXTS28' });
+  const fieldRequest = f.requests.findLast(item => item.command === 'snapshot');
+  assert.equal(fieldRequest.arguments.profile, 'fields'); assert.equal(fieldRequest.arguments.include_hidden, true);
+  assert.equal(fieldRequest.arguments.query, 'TEXTS28');
   const beforeControl = f.requests.length;
   for (const args of [{ tab_handle: handle }, { action: 'all', tab_handle: handle }, { action: 'release' },
     { action: 'release', tab_handle: handle, focus_window: false }, { action: 'close', tab_handle: handle, focus_window: true },

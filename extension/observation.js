@@ -1,4 +1,5 @@
 import { renderAX, snapshotOptions, snapshotPage } from './snapshot.js';
+import { createFieldReader } from './fields.js';
 
 // Observation identity is separate from debugger session ownership.
 export function createObservations(cdp, value, sessions, viewport, currentClaim, changed) {
@@ -130,6 +131,7 @@ export function createObservations(cdp, value, sessions, viewport, currentClaim,
     const knownFrames = new Set(frames.map(frame => frame.id));
     const token = crypto.randomUUID().slice(0, 8);
     const refs = new Map(), entries = [], omittedFrames = [];
+    const readFields = options.profile === 'fields' ? createFieldReader(send, value) : null;
     for (const frame of frames) {
       let nodes;
       let target;
@@ -156,15 +158,27 @@ export function createObservations(cdp, value, sessions, viewport, currentClaim,
         const url = srcIndex >= 0 ? new URL(attributes[srcIndex + 1], frame.url).href : 'about:blank';
         knownFrames.add(childId); frames.push({ id: childId, url });
       }
-      const rendered = renderAX(nodes, token, refs, frame.id, target.sessionId, options);
-      if (rendered.length || options.query == null) entries.push({ node: false, frameId: frame.id, line: `Frame ${frame.id} ${frame.url}` });
+      let rendered;
+      if (readFields) {
+        try { rendered = await readFields(target, frame.id, nodes, token, refs, options); }
+        catch (error) {
+          if (frame.id === mainId) throw error;
+          for (const [ref, node] of refs) if (node.frameId === frame.id) refs.delete(ref);
+          omittedFrames.push({ frame_id: frame.id, url: frame.url, reason: error.message });
+          continue;
+        }
+      } else {
+        rendered = renderAX(nodes, token, refs, frame.id, target.sessionId, options);
+        if (rendered.length || options.query == null) entries.push({ node: false, frameId: frame.id, line: `Frame ${frame.id} ${frame.url}` });
+      }
       for (const entry of rendered) entries.push(entry);
     }
     const metadata = value(await send(tabId, 'Runtime.evaluate', {
       expression: '({title: document.title, url: location.href})', returnByValue: true,
     }));
     const state = { id: token, options, refs, entries, invalidFrames: new Set(), totalNodes: entries.filter(entry => entry.node).length,
-      metadata: { title: metadata.title, url: metadata.url, viewport: await (budget ? budget.run(() => viewport(tabId)) : viewport(tabId)), omitted_frames: omittedFrames } };
+      metadata: { title: metadata.title, url: metadata.url, viewport: await (budget ? budget.run(() => viewport(tabId)) : viewport(tabId)), omitted_frames: omittedFrames,
+        ...(readFields ? { frames: frames.map(frame => ({ frame_id: frame.id, url: frame.url })) } : {}) } };
     if (documentVersion !== documents.get(tabId)) throw new Error('Document changed while reading the snapshot. Take a new browser_snapshot.');
     for (const frame of frames) if (versions.get(frame.id) !== frameStates.get(tabId)?.versions.get(frame.id)) {
       omitFrame(tabId, state, frame.id, 'Frame changed while reading the snapshot; take a new snapshot to observe it');
